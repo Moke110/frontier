@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "node_id": "kg_heme",
+  "label": "heme biosynthesis",
+  "type": "process",
+  "summary": "血红素合成通路，HMBS 位于第三步。",
+  "aliases": ["haem biosynthesis"],
+  "checkpoint_ids": ["hmbs"],
+  "updated_at": "2026-10-19T10:00:00+08:00"
+}

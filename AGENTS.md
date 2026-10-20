@@ -6,7 +6,7 @@ Personal frontier repo — workspace for the mattpocock/skills engineering workf
 
 ### Issue tracker
 
-Issues and specs live as markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+Issues, specs, and wayfinder maps live in GitHub Issues of `Moke110/frontier`. See `docs/agents/issue-tracker.md`. `.scratch/` is legacy/read-only.
 
 ### Triage labels
 
@@ -15,3 +15,7 @@ Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `
 ### Domain docs
 
 Single-context layout (`CONTEXT.md` + `docs/adr/` at the repo root). See `docs/agents/domain.md`.
+
+### frontier loop
+
+The daily workflow (checkpoints → retrieval → editor/writer agent tasks → Lark push → ratings → knowledge-graph/proposition updates) is documented in `SKILL.md`. Installation is a task for the user's agent: `INSTALL.md`; contracts live in `contracts/`.

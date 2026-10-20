@@ -1,0 +1,29 @@
+schema_version: 1
+checkpoints:
+  - id: hmbs
+    label: HMBS / 羟甲基胆素合酶
+    kg_node_id: kg_hmbs
+    ontology:
+      - HMBS
+      - PBGD
+      - hydroxymethylbilane synthase
+    annotation: |
+      血红素合成第三步的胞质酶（EC 4.3.1.8）。功能缺失导致急性间歇性卟啉症（AIP）。
+      ⛔ 不含：与 HMBS 分子本身无关的卟啉症综述；ALAD / UROS 的论文
+      ⚠️ 易混：PBG 单独出现时是底物，PBGD 才是酶
+    related: [aip]
+    enabled: true
+
+  - id: virtual-cell
+    label: 虚拟细胞 / 扰动预测
+    kg_node_id: kg_vc
+    ontology:
+      - virtual cell
+      - perturbation prediction
+      - single-cell perturbation
+    annotation: |
+      用计算模型预测细胞在遗传或药物扰动下的转录响应。
+      ⛔ 不含：纯实验筛选、没有预测模型的描述性图谱
+      ⚠️ 易混：perturbation response 与 perturbation detection
+    related: []
+    enabled: true

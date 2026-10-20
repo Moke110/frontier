@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "node_id": "kg_perturbation",
+  "label": "perturbation prediction",
+  "type": "task",
+  "summary": "给定扰动预测单细胞转录组响应。",
+  "aliases": ["perturbation response prediction"],
+  "checkpoint_ids": ["virtual-cell"],
+  "updated_at": "2026-10-19T10:00:00+08:00"
+}

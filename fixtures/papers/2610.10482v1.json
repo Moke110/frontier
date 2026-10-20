@@ -1,0 +1,11 @@
+{
+  "source": "arxiv",
+  "source_id": "2610.10482v1",
+  "title": "A foundation model for virtual cell perturbation prediction",
+  "abstract": "We present a virtual cell foundation model trained on single-cell perturbation screens. The model predicts perturbation response prediction across cell types and unseen genes. We show that virtual cell embeddings improve perturbation prediction over linear baselines. These results enable in silico perturbation screens and suggest future integration with imaging data.",
+  "authors": ["Wei Chen", "Sofia Almeida"],
+  "journal": "arXiv",
+  "published": "2026-10-15",
+  "url": "https://arxiv.org/abs/2610.10482v1",
+  "is_preprint": true
+}

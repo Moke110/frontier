@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "node_id": "kg_vc",
+  "label": "virtual cell",
+  "type": "method",
+  "summary": "以计算模型预测细胞状态与扰动响应。",
+  "aliases": ["virtual cell model"],
+  "checkpoint_ids": ["virtual-cell"],
+  "updated_at": "2026-10-19T10:00:00+08:00"
+}

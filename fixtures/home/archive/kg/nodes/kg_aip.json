@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "node_id": "kg_aip",
+  "label": "AIP",
+  "type": "disease",
+  "summary": "急性间歇性卟啉症，HMBS 功能缺失引起的显性遗传病。",
+  "aliases": ["acute intermittent porphyria"],
+  "checkpoint_ids": ["hmbs"],
+  "updated_at": "2026-10-19T10:00:00+08:00"
+}

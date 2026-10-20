@@ -1,6 +1,9 @@
 # 11 发送器实现路径（四选一 + 真机验证）
 
-Type: task ｜ Status: open ｜ Blocked by: 06
+Type: task ｜ Status: open ｜ Blocked by: 06, 13
+
+> ⏸ **2026-10-19 暂缓（平台变更）**：本票的四条路径（A `no_agent` 脚本 + `hermes send` / B agent job + `deliver:local` / C 脚本直调 `send_weixin_direct` / D `hermes mcp serve`）**全部是微信专有的**。若票 13 拍板换飞书/Cloudflare，本票的路径集与合作对象要整体重写 —— 票 06 的「发送器 = CLI 契约、调度属薄胶水」原则仍然成立。
+
 
 > 📌 **票 06 已结（agent-agnostic 契约）→ 本票已解除阻塞，可开。** 票 06 的直接含义：**发送器必须是「脚本层 CLI 契约」的形态**（子命令 / `--help` / 退出码 / stdout 句柄行），因为这层换 agent 零改动 —— 这恰好把票 10 的**方案 A（`no_agent` 脚本 + `hermes send`）** 推到首选。票 06 同时定下「任务提示与调度触发物理分离」，所以发送器的**调度**属可替换的薄适配层，不进契约。
 

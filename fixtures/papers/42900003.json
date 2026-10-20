@@ -1,0 +1,11 @@
+{
+  "source": "europepmc",
+  "source_id": "42900003",
+  "title": "Benchmarking single-cell perturbation prediction across tissues",
+  "abstract": "We benchmarked eight perturbation prediction methods on single-cell perturbation datasets from four tissues. We find that performance drops sharply for unseen perturbations and that virtual cell models overfit donor effects. We suggest evaluation protocols that separate interpolation from extrapolation.",
+  "authors": ["Ravi Patel", "Elena Novak"],
+  "journal": "Nature Methods",
+  "published": "2026-10-17",
+  "url": "https://europepmc.org/article/MED/42900003",
+  "is_preprint": false
+}

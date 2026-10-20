@@ -1,0 +1,11 @@
+{
+  "source": "europepmc",
+  "source_id": "42900001",
+  "title": "HMBS loss impairs heme biosynthesis and drives porphyrin accumulation in hepatocytes",
+  "abstract": "We developed a CRISPR hepatocyte model of HMBS deficiency to study acute intermittent porphyria (AIP). Knockout of HMBS (hydroxymethylbilane synthase) reduced heme biosynthesis and caused porphyrin precursor accumulation. We show that HMBS loss increases delta-aminolevulinic acid and impairs mitochondrial function. These findings suggest that restoring heme biosynthesis may rescue the phenotype.",
+  "authors": ["Li Zhang", "Marta Ruiz", "John Bell"],
+  "journal": "Journal of Inherited Metabolic Disease",
+  "published": "2026-10-16",
+  "url": "https://europepmc.org/article/MED/42900001",
+  "is_preprint": false
+}

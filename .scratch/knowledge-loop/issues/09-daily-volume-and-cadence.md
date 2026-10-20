@@ -1,6 +1,9 @@
 # 09 每日条数与发送节奏
 
-Type: grilling ｜ Status: open ｜ Blocked by: —
+Type: grilling ｜ Status: open ｜ Blocked by: 13
+
+> ⏸ **2026-10-19 暂缓（平台变更）**：本票的「连发 vs 分批」「单卡长度预算」都是**载体行为**的函数（微信的 3 秒防抖、气泡切块、通知免打扰）。前端换掉后这些前提要重问 → 等票 13 拍板。
+
 
 ## Question
 

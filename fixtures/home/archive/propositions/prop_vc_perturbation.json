@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "prop_id": "prop_vc_perturbation",
+  "text": "虚拟细胞模型可用于单细胞扰动响应预测。",
+  "node_ids": ["kg_vc", "kg_perturbation"],
+  "status": "active",
+  "evidence": [],
+  "updated_at": "2026-10-19T10:00:00+08:00"
+}
