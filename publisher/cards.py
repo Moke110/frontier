@@ -23,7 +23,18 @@ def _button(name: str, text: str, submit: bool = True, kind: str = "default") ->
 
 
 def build_rating_card(push: dict) -> dict:
-    body_md = push.get("body_md") or ""
+    if push.get("format") == "pdf":
+        takeaway = (push.get("sections") or {}).get("takeaway") or ""
+        body_md = (
+            f"**{clip(takeaway, 300)}**\n\n"
+            "<font color='grey'>长文 PDF 已单独发送。读完后点下面的按钮给这篇评分。</font>"
+        )
+        subtitle = (
+            f"{push.get('date', '')} · checkpoint {push.get('checkpoint_id', '')} · 长文 PDF"
+        )
+    else:
+        body_md = push.get("body_md") or ""
+        subtitle = f"{push.get('date', '')} · checkpoint {push.get('checkpoint_id', '')}"
     return {
         "schema": "2.0",
         "config": {
@@ -35,7 +46,7 @@ def build_rating_card(push: dict) -> dict:
             "title": {"tag": "plain_text", "content": clip(push.get("title", "今日推送"), 60)},
             "subtitle": {
                 "tag": "plain_text",
-                "content": f"{push.get('date', '')} · checkpoint {push.get('checkpoint_id', '')}",
+                "content": subtitle,
             },
             "template": "blue",
             "icon": {"tag": "standard_icon", "token": "vote_colorful"},
@@ -159,7 +170,7 @@ def build_confirmation_card(push: dict, verdict: str, comment: str) -> dict:
                 },
                 {
                     "tag": "markdown",
-                    "content": "感谢，你的反馈会用于调整后续检索与排序。",
+                    "content": "评分已记录。本阶段不会自动调整检索或排序。",
                 },
             ],
         },

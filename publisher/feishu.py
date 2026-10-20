@@ -18,7 +18,12 @@ def available() -> bool:
     return shutil.which(BIN) is not None
 
 
-def _run(args: list[str], stdin: str | None = None, timeout: int = 60) -> dict:
+def _run(
+    args: list[str],
+    stdin: str | None = None,
+    timeout: int = 60,
+    cwd: str | None = None,
+) -> dict:
     if not available():
         raise FeishuError("lark-cli not found in PATH")
     proc = subprocess.run(
@@ -27,6 +32,7 @@ def _run(args: list[str], stdin: str | None = None, timeout: int = 60) -> dict:
         capture_output=True,
         text=True,
         timeout=timeout,
+        cwd=cwd,
     )
     if proc.returncode != 0:
         detail = (proc.stdout or proc.stderr or "").strip()
@@ -57,6 +63,22 @@ def send_card(target: str, card: dict, identity: str = "bot", to_chat: bool = Fa
     return {"message_id": data["message_id"], "chat_id": data.get("chat_id")}
 
 
+def send_file(target: str, path: str, identity: str = "bot", to_chat: bool = False) -> dict:
+    """Send a local file. lark-cli only accepts cwd-relative paths."""
+    from pathlib import Path
+
+    file_path = Path(path).resolve()
+    if not file_path.is_file():
+        raise FeishuError(f"file not found: {file_path}")
+    args = ["im", "+messages-send", "--chat-id" if to_chat else "--user-id", target]
+    args += ["--as", identity, "--file", file_path.name]
+    payload = _run(args, cwd=str(file_path.parent), timeout=120)
+    data = payload.get("data") or {}
+    if not data.get("message_id"):
+        raise FeishuError(f"send succeeded without message_id: {payload}")
+    return {"message_id": data["message_id"], "chat_id": data.get("chat_id")}
+
+
 def update_card(token: str, card: dict, identity: str = "bot") -> dict:
     body = json.dumps({"token": token, "card": card}, ensure_ascii=False)
     return _run(
@@ -73,11 +95,16 @@ def update_card(token: str, card: dict, identity: str = "bot") -> dict:
     )
 
 
-def consume_events(identity: str = "bot", max_events: int = 0, timeout: str = "0"):
+def consume_events(
+    identity: str = "bot",
+    max_events: int = 0,
+    timeout: str = "0",
+    event_key: str = "card.action.trigger",
+):
     """Blocking consume, yielded as raw NDJSON lines (for `listen`)."""
     if not available():
         raise FeishuError("lark-cli not found in PATH")
-    args = [BIN, "event", "consume", "card.action.trigger", "--as", identity]
+    args = [BIN, "event", "consume", event_key, "--as", identity]
     if max_events:
         args += ["--max-events", str(max_events)]
     if timeout and timeout != "0":

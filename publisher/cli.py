@@ -9,7 +9,8 @@ from pathlib import Path
 
 from common import emit, home, read_json
 from publisher.cards import build_rating_card
-from publisher.service import listen, replay, send_rating
+from publisher.feishu import FeishuError
+from publisher.service import listen, replay, send_push, send_rating
 from publisher.store import PublisherStore
 
 
@@ -18,10 +19,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("send", help="send one push as a rating card")
+    p = sub.add_parser("send", help="send one push: PDF file + rating card")
     p.add_argument("--push", required=True)
+    p.add_argument("--pdf", help="PDF rendered by `writer render`")
     p.add_argument("--to", required=True, help="open_id (ou_...)")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--force", action="store_true", help="re-send even if already pushed")
     p.add_argument("--as", dest="identity", default="bot", choices=["bot", "user"])
 
     p = sub.add_parser("preview", help="print the card JSON, send nothing")
@@ -49,7 +52,22 @@ def main(argv: list[str] | None = None) -> int:
             push = read_json(Path(args.push))
             if not push:
                 raise ValueError(f"no push at {args.push}")
-            emit(send_rating(root, push, args.to, args.dry_run, args.identity))
+            if args.pdf or push.get("format") == "pdf":
+                if not args.pdf:
+                    raise ValueError("--pdf is required for a pdf-format push")
+                emit(
+                    send_push(
+                        root,
+                        push,
+                        Path(args.pdf),
+                        args.to,
+                        args.dry_run,
+                        args.identity,
+                        force=args.force,
+                    )
+                )
+            else:
+                emit(send_rating(root, push, args.to, args.dry_run, args.identity))
         elif args.cmd == "preview":
             push = read_json(Path(args.push))
             if not push:
@@ -65,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
             emit(PublisherStore(root).pending_proposals())
         else:  # pragma: no cover
             raise ValueError(args.cmd)
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, FeishuError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
     return 0

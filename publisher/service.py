@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from common import emit, now, read_json, stable_id
+from common import emit, now, read_json, read_jsonl, stable_id
 from publisher import feishu
 from publisher.cards import (
     ACTION_VERDICT,
@@ -16,9 +16,37 @@ from publisher.cards import (
 )
 from publisher.store import PublisherStore
 
+# The map deliberately stops at rating collection. Approval cards and KB writes
+# belong to the next phase; proposals stay as drafts inside the push.
+ENABLE_APPROVALS = False
+
 
 def _push_path(home: Path, push_id: str) -> Path:
     return Path(home) / "archive" / "pushes" / f"{push_id}.json"
+
+
+def _duplicate_reason(home: Path, push: dict) -> dict | None:
+    """Reject re-sending the same push or another push with an overlapping paper."""
+    home = Path(home)
+    push_id = push.get("push_id")
+    store = PublisherStore(home)
+    for row in read_jsonl(store.messages):
+        if row.get("kind") == "push_file" and row.get("push_id") == push_id:
+            return {"reason": "already_sent", "push_id": push_id}
+
+    papers = set(push.get("paper_ids") or [])
+    for path in sorted((home / "archive" / "pushes").glob("*.json")):
+        other = read_json(path) or {}
+        if other.get("push_id") == push_id:
+            continue
+        overlap = papers & set(other.get("paper_ids") or [])
+        if overlap:
+            return {
+                "reason": "duplicate_paper",
+                "paper_ids": sorted(overlap),
+                "existing_push_id": other.get("push_id"),
+            }
+    return None
 
 
 def send_rating(
@@ -45,6 +73,56 @@ def send_rating(
     sent = feishu.send_card(to_user, card, identity)
     store.record_message(sent["message_id"], "rating", push["push_id"], target=to_user)
     return {"ok": True, "dry_run": False, "push_id": push["push_id"], **sent}
+
+
+def send_push(
+    home: Path,
+    push: dict,
+    pdf_path: Path,
+    to_user: str,
+    dry_run: bool = False,
+    identity: str = "bot",
+    force: bool = False,
+) -> dict:
+    """Send the PDF file, then a small rating card. One paper, one push."""
+    home = Path(home)
+    store = PublisherStore(home)
+    store.init()
+    pdf_path = Path(pdf_path).expanduser().resolve()
+    if not dry_run and not pdf_path.is_file():
+        return {"ok": False, "reason": "pdf_not_found", "pdf": str(pdf_path)}
+
+    if not force:
+        duplicate = _duplicate_reason(home, push)
+        if duplicate:
+            return {"ok": False, **duplicate}
+
+    if dry_run:
+        pdf_message_id = f"offline_file_{push['push_id']}"
+        store.save_outbox(
+            f"file_{push['push_id']}",
+            {
+                "kind": "push_file",
+                "push_id": push["push_id"],
+                "target": to_user,
+                "pdf": str(pdf_path),
+                "dry_run": True,
+            },
+        )
+    else:
+        sent = feishu.send_file(to_user, str(pdf_path), identity)
+        pdf_message_id = sent["message_id"]
+
+    store.record_message(pdf_message_id, "push_file", push["push_id"], target=to_user)
+    rating = send_rating(home, push, to_user, dry_run=dry_run, identity=identity)
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "push_id": push["push_id"],
+        "pdf": str(pdf_path),
+        "pdf_message_id": pdf_message_id,
+        "rating_message_id": rating["message_id"],
+    }
 
 
 def _parse_form(event: dict) -> dict:
@@ -108,7 +186,7 @@ def handle_event(
             "stored": stored,
         }
         proposals = push.get("proposals") or []
-        if proposals and verdict != "irrelevant":
+        if ENABLE_APPROVALS and proposals and verdict != "irrelevant":
             store.stage_proposals(proposals)
             approval = build_approval_card(push, proposals)
             ids = [p["proposal_id"] for p in proposals]

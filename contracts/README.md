@@ -273,7 +273,7 @@ checkpoints:
 `messages.jsonl`：回调路由表。
 
 ```json
-{ "message_id": "om_xxx", "kind": "rating | approval", "push_id": "…", "proposal_ids": ["…"], "sent_at": "…" }
+{ "message_id": "om_xxx", "kind": "push_file | rating | approval", "push_id": "…", "proposal_ids": ["…"], "target": "ou_xxx" }
 ```
 
 `decisions.jsonl`：
