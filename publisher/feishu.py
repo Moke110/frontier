@@ -63,6 +63,14 @@ def send_card(target: str, card: dict, identity: str = "bot", to_chat: bool = Fa
     return {"message_id": data["message_id"], "chat_id": data.get("chat_id")}
 
 
+def send_text(target: str, text: str, identity: str = "bot", to_chat: bool = False) -> dict:
+    args = ["im", "+messages-send", "--chat-id" if to_chat else "--user-id", target]
+    args += ["--as", identity, "--text", text]
+    payload = _run(args)
+    data = payload.get("data") or {}
+    return {"ok": True, "message_id": data.get("message_id"), "chat_id": data.get("chat_id")}
+
+
 def send_file(target: str, path: str, identity: str = "bot", to_chat: bool = False) -> dict:
     """Send a local file. lark-cli only accepts cwd-relative paths."""
     from pathlib import Path
@@ -109,7 +117,15 @@ def consume_events(
         args += ["--max-events", str(max_events)]
     if timeout and timeout != "0":
         args += ["--timeout", timeout]
-    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # lark-cli treats stdin EOF as "shutdown"; keep the pipe open for the
+    # lifetime of the listener (systemd starts services with stdin closed).
+    proc = subprocess.Popen(
+        args,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     assert proc.stdout is not None
     try:
         for line in proc.stdout:

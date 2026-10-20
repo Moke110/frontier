@@ -1,0 +1,19 @@
+[Unit]
+Description=frontier manual-push listener (Lark keywords)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/frontier
+Environment=KL_HOME=%h/knowledge-loop
+Environment=PATH=%h/.opencode/bin:%h/.npm-global/bin:%h/.local/bin:%h/miniconda3/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/frontier/env
+ExecStart=__PYTHON__ -m trigger.cli listen
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

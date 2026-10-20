@@ -127,6 +127,22 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 - 没有后台监听能力时，改用 `ingest` 回放导出的 NDJSON 事件。
 - 无飞书环境演练：`--dry-run`（send）与 `--offline`（ingest）。
 
+### 5.5 手动补推（飞书关键词）
+
+常驻 listener 订阅 `im.message.receive_v1`，只接受 owner 私聊的固定关键词：
+
+- `再推一篇` / `下一篇` / `next` / `more`；
+- 可跟 checkpoint id 或 label，如 `再推一篇 hmbs`；不带时按默认规则选一个。
+
+```bash
+python -m trigger.cli listen                 # 前台常驻（调试）
+systemctl --user status frontier-listener    # systemd 部署后的状态
+journalctl --user -u frontier-listener -f    # 看触发日志
+```
+
+listener 只做关键词识别、owner 校验、串行排队，然后调用
+`opencode run --auto` 执行一次正向补推；它不排序、不写作、不改知识库。
+
 ### 6. 评分之后（本阶段不启用）
 
 评分只写入 `ratings.jsonl`，**不**运行 `frontier record` / `editor fit`，**不**发知识更新审批卡，**不**写知识图或命题。下游的反馈调整与知识库审批留到下一阶段。

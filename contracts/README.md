@@ -28,6 +28,8 @@ $KL_HOME/
     ├── messages.jsonl            # message_id → push/proposal，用于回调路由
     ├── pending/<proposal_id>.json# 待审批提议副本（archive 读它来应用）
     ├── decisions.jsonl           # 用户同意/拒绝
+    ├── trigger.lock              # 手动补推串行锁
+    ├── trigger.log               # 手动补推事件日志
     └── outbox/                   # 离线模式生成的卡片 JSON（调试用）
 ```
 

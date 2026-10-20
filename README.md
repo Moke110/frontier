@@ -116,6 +116,17 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 
 真实推送需要飞书应用已订阅 `card.action.trigger` 回调（走 WebSocket 长连接，无需公网 URL）。卡片是 Card 2.0，需要客户端 ≥ 7.20。
 
+## 手动补推（飞书关键词）
+
+常驻 listener 订阅 `im.message.receive_v1`；在飞书私聊发 `再推一篇` / `下一篇` / `next` / `more`（可跟 checkpoint id）即可触发一次完整的正向补推。
+
+```bash
+python -m trigger.cli listen                 # 前台调试
+systemctl --user status frontier-listener    # systemd 常驻
+```
+
+listener 只负责关键词、owner 校验与串行排队，实际排序/写作由 `opencode run --auto` 里的 agent 完成；它不会修改知识库，也不会发审批卡。安装见 `INSTALL.md` §5.5。
+
 ## 设计要点（原型版）
 
 - **长文 PDF**：agent 写七段 HTML 片段与图片资产，固定模板 + WeasyPrint 渲染；原文图优先，取不到时用生成图并在图注标源。

@@ -1,0 +1,60 @@
+"""trigger CLI: listen for Lark keywords and run one manual push."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from common import emit, home
+from trigger.keywords import parse, resolve_checkpoint
+from trigger.service import Config, handle_event, listen, load_owner
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="trigger", description=__doc__)
+    parser.add_argument("--repo", default=str(Path(__file__).resolve().parents[1]))
+    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument("--owner", help="owner open_id (default: $FRONTIER_OWNER_ID)")
+    parser.add_argument("--timeout", type=int, default=1800, help="agent timeout seconds")
+    parser.add_argument("--dry-run", action="store_true", help="ack locally, do not call Lark/agent")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("listen", help="consume im.message.receive_v1")
+    p.add_argument("--max-events", type=int, default=0)
+    p.add_argument("--event-timeout", default="0")
+    p.add_argument("--as", dest="identity", default="bot", choices=["bot", "user"])
+
+    p = sub.add_parser("once", help="handle one NDJSON event from stdin or a file")
+    p.add_argument("--event", help="JSON file; default stdin")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    config = Config(
+        repo=Path(args.repo).expanduser().resolve(),
+        home=home(args.home),
+        owner=load_owner(args.owner),
+        timeout=args.timeout,
+        dry_run=args.dry_run,
+    )
+    if args.cmd == "listen":
+        if not config.owner and not config.dry_run:
+            print(json.dumps({"ok": False, "error": "FRONTIER_OWNER_ID is not set"}), file=sys.stderr)
+            return 1
+        return listen(config, args.max_events, args.event_timeout, args.identity)
+
+    if args.cmd == "once":
+        if args.event:
+            event = json.loads(Path(args.event).read_text(encoding="utf-8"))
+        else:
+            event = json.load(sys.stdin)
+        emit(handle_event(event, config))
+        return 0
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

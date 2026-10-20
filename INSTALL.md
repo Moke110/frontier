@@ -29,13 +29,17 @@ lark-cli auth status --json
 
 如果已安装但未登录：运行 `lark-cli auth login`，让用户在飞书里完成授权，**等状态变为 ready 再继续**。不要伪造成功。
 
-可选诊断（不阻塞安装）：卡片回调是否已订阅。
+检查两个事件订阅（缺一个都会让对应功能失效）：
 
 ```bash
+# 评分卡按钮回调
 lark-cli event consume card.action.trigger --as bot --timeout 3s
+
+# 手动补推关键词（「再推一篇」）
+lark-cli event consume im.message.receive_v1 --as bot --timeout 3s
 ```
 
-看到 `ready event_key=card.action.trigger` 即已订阅；看到 `failed_precondition` 就提醒用户去开发者后台订阅回调（WebSocket，无需公网 URL）。
+看到 `ready event_key=...` 即已订阅；看到 `failed_precondition` 就提醒用户去开发者后台订阅对应事件（WebSocket，无需公网 URL）。
 
 ### 2. 检查运行环境
 
@@ -118,6 +122,33 @@ fi
 
 **已有数据时不要覆盖**；先问用户用哪个数据根。之后 agent 执行技能时都需要设置 `KL_HOME`。
 
+### 5.5 常驻手动补推（可选，但推荐）
+
+需要 systemd user 会话（WSL 默认已开启）。先拿到用户在飞书的 open_id：
+
+```bash
+OWNER=$(lark-cli auth list --json | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['userOpenId'])")
+mkdir -p "$HOME/.config/frontier" "$HOME/.config/systemd/user"
+printf 'FRONTIER_OWNER_ID=%s\n' "$OWNER" > "$HOME/.config/frontier/env"
+
+sed "s|__PYTHON__|$(command -v python3)|" \
+  "$HOME/frontier/deploy/frontier-listener.service.in" \
+  > "$HOME/.config/systemd/user/frontier-listener.service"
+
+systemctl --user daemon-reload
+systemctl --user enable --now frontier-listener
+systemctl --user is-active frontier-listener   # 应输出 active
+```
+
+没有 systemd 时，用 tmux 常驻：
+
+```bash
+tmux new -d -s frontier \
+  "cd $HOME/frontier && KL_HOME=$HOME/knowledge-loop FRONTIER_OWNER_ID=$OWNER python3 -m trigger.cli listen"
+```
+
+手动补推只接受 owner 的私聊关键词：`再推一篇` / `下一篇` / `next` / `more`，可跟 checkpoint id（如 `再推一篇 hmbs`）。
+
 ### 6. 验证
 
 ```bash
@@ -137,12 +168,16 @@ KL_HOME="$HOME/knowledge-loop" python3 -m frontier.cli plan --out /tmp/frontier-
 - 技能目录：例如 `~/.config/opencode/skills/frontier`
 - 数据根：`KL_HOME=...`
 - Lark 登录身份：user / bot 是否 ready
+- 手动补推监听：`frontier-listener` 是否 active
 - 验证结果：测试通过数、`validate` 是否 ok
-- 下一步：**重启 agent**，然后说「跑一下 frontier 的今日循环」
+- 下一步：**重启 agent**，然后说「跑一下 frontier 的今日循环」；或在飞书私聊发「再推一篇」
 
 ### 8. 卸载（用户要求时）
 
 ```bash
+systemctl --user disable --now frontier-listener 2>/dev/null || true
+rm -f "$HOME/.config/systemd/user/frontier-listener.service"
+systemctl --user daemon-reload
 rm "$HOME/.config/opencode/skills/frontier"   # 只删软链
 # 数据在 ~/knowledge-loop，默认保留；删除前必须再确认
 ```
@@ -153,7 +188,8 @@ rm "$HOME/.config/opencode/skills/frontier"   # 只删软链
 |---|---|
 | `lark-cli: command not found` | 停止，让用户先安装 Lark CLI |
 | `auth status` 里 user 不可用 | 运行 `lark-cli auth login`，等用户完成 |
-| `event consume` 报 `failed_precondition` | 飞书开发者后台订阅 `card.action.trigger` |
+| `event consume` 报 `failed_precondition` | 飞书开发者后台订阅对应事件（`card.action.trigger` / `im.message.receive_v1`） |
+| `frontier-listener` 反复重启 | 看 `journalctl --user -u frontier-listener`；常见原因是 `lark-cli` 不在 PATH 或 owner 未配置 |
 | skills 目录已有同名文件 | 停止并询问，不要覆盖 |
 | `python3 -c "import yaml"` 失败 | 询问后安装 PyYAML |
 | `python3 -c "import weasyprint"` 失败 | 询问后安装 WeasyPrint |
