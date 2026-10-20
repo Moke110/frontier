@@ -96,6 +96,73 @@ def _europepmc(paper: dict, limit: int) -> list[dict]:
     return out
 
 
+def _arxiv_pdf(paper: dict, limit: int) -> list[dict]:
+    """Crop figure regions from the PDF when the HTML rendering is unavailable."""
+    ident = str(paper.get("source_id") or "").strip()
+    if not ident:
+        return []
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        return []
+    data, _ = _get(f"https://arxiv.org/pdf/{ident}", timeout=60)
+    doc = fitz.open(stream=data, filetype="pdf")
+    out: list[dict] = []
+    for page in doc:
+        blocks = page.get_text("blocks")
+        captions = [
+            block
+            for block in blocks
+            if re.match(r"^\s*(?:Fig\.?|Figure)\s*\d+", block[4] or "", re.IGNORECASE)
+        ]
+        for cap in captions:
+            if len(out) >= limit:
+                return out
+            x0, y0, x1, y1 = [float(v) for v in cap[:4]]
+            caption = _clean(cap[4])
+            wide = (x1 - x0) > page.rect.width * 0.55
+            left = page.rect.width * 0.5
+            if wide:
+                clip_x0, clip_x1 = 36.0, page.rect.width - 36.0
+            elif x0 < left:
+                clip_x0, clip_x1 = 36.0, left - 12.0
+            else:
+                clip_x0, clip_x1 = left + 12.0, page.rect.width - 36.0
+
+            # Prefer the vector-drawing bbox (charts); otherwise use the space
+            # above the caption (full-width figures).
+            drawings = [
+                d["rect"]
+                for d in page.get_drawings()
+                if d["rect"].x0 >= clip_x0 - 4
+                and d["rect"].x1 <= clip_x1 + 4
+                and d["rect"].y1 < y0
+            ]
+            if drawings:
+                box = fitz.Rect(drawings[0])
+                for rect in drawings[1:]:
+                    box |= rect
+                top = max(36.0, box.y0 - 10)
+                bottom = min(y0 - 2, box.y1 + 10)
+            else:
+                top = max(36.0, y0 - 300)
+                bottom = y0 - 2
+            if bottom - top < 40:
+                continue
+            clip = fitz.Rect(clip_x0, top, clip_x1, bottom)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, alpha=False)
+            out.append(
+                {
+                    "data": pix.tobytes("png"),
+                    "content_type": "image/png",
+                    "caption": caption if len(caption) > 20 else f"原文图（PDF 第 {page.number + 1} 页）",
+                    "origin": "paper",
+                    "origin_url": f"https://arxiv.org/pdf/{ident}#page={page.number + 1}",
+                }
+            )
+    return out
+
+
 def _arxiv(paper: dict, limit: int) -> list[dict]:
     ident = str(paper.get("source_id") or "").strip()
     if not ident:
@@ -196,14 +263,24 @@ def fetch_for_paper(
             candidates = _europepmc(paper, limit)
         elif source == "arxiv":
             candidates = _arxiv(paper, limit)
+            if not candidates:
+                candidates = _arxiv_pdf(paper, limit)
     except Exception:  # noqa: BLE001 - fall back to a generated visual
         candidates = []
 
     assets: list[dict] = []
     for index, candidate in enumerate(candidates[:limit], start=1):
         try:
-            data, content_type = _get(candidate["url"])
-            path = _save(data, content_type, candidate["url"], asset_dir / f"fig-{index}")
+            if candidate.get("data"):
+                data, content_type = candidate["data"], candidate["content_type"]
+            else:
+                data, content_type = _get(candidate["url"])
+            path = _save(
+                data,
+                content_type,
+                candidate.get("origin_url") or candidate.get("url", ""),
+                asset_dir / f"fig-{index}",
+            )
         except Exception:  # noqa: BLE001 - skip a broken figure, try the next
             continue
         assets.append(
@@ -212,7 +289,7 @@ def fetch_for_paper(
                 "path": str(path.relative_to(out_dir)),
                 "caption": candidate["caption"],
                 "source": "paper",
-                "origin_url": candidate["url"],
+                "origin_url": candidate.get("origin_url") or candidate.get("url", ""),
             }
         )
 

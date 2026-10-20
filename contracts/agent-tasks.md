@@ -104,7 +104,7 @@ Agent 先取图：
 
 ```bash
 python -m writer.cli figures --selection selection.json --out outbox
-# -> outbox/figures.json + outbox/assets/<push_id>/fig-*
+# -> outbox/figures.json + outbox/pushes/assets/<push_id>/fig-*
 ```
 
 然后为每个 item 写一个 push 文件，文件名 = `push_id`：

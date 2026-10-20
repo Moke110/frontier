@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
                 paper = row.get("paper") or {}
                 cp_id = row.get("checkpoint_id")
                 push_id = f"{date}_{cp_id}_{index:02d}"
-                assets = fetch_for_paper(paper, push_id, out_dir, limit=args.limit)
+                assets = fetch_for_paper(paper, push_id, out_dir / "pushes", limit=args.limit)
                 figures[push_id] = {
                     "paper_id": paper.get("paper_id"),
                     "checkpoint_id": cp_id,
