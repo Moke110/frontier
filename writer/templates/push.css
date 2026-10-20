@@ -1,0 +1,218 @@
+@page {
+  size: A4;
+  margin: 20mm 19mm 18mm 19mm;
+  @bottom-left {
+    content: "frontier · 个人前沿推送";
+    font-family: "Noto Sans CJK SC", sans-serif;
+    font-size: 7.5pt;
+    color: #8a8f98;
+  }
+  @bottom-right {
+    content: counter(page) " / " counter(pages);
+    font-family: "Noto Sans CJK SC", sans-serif;
+    font-size: 7.5pt;
+    color: #8a8f98;
+  }
+}
+
+:root {
+  --ink: #15181d;
+  --muted: #5c636e;
+  --line: #dfe3e8;
+  --accent: #0f4c5c;
+  --accent-soft: #e8f1f2;
+  --warm: #e36414;
+}
+
+* { box-sizing: border-box; }
+
+html { font-size: 10.5pt; }
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", serif;
+  line-height: 1.72;
+  text-rendering: optimizeLegibility;
+}
+
+.masthead {
+  border-top: 4pt solid var(--accent);
+  padding-top: 10pt;
+  margin-bottom: 16pt;
+}
+
+.kicker {
+  font-family: "Noto Sans CJK SC", sans-serif;
+  font-size: 8pt;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--warm);
+  font-weight: 700;
+  margin-bottom: 6pt;
+}
+
+.title {
+  font-family: "Noto Sans CJK SC", sans-serif;
+  font-size: 23pt;
+  line-height: 1.25;
+  font-weight: 800;
+  margin: 0 0 7pt;
+  letter-spacing: -0.01em;
+}
+
+.dek {
+  font-size: 11pt;
+  line-height: 1.6;
+  color: #2f3540;
+  margin: 0 0 12pt;
+  padding-left: 9pt;
+  border-left: 3pt solid var(--accent-soft);
+}
+
+.meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3pt 16pt;
+  margin: 0;
+  padding: 8pt 10pt;
+  background: #f6f8f9;
+  border: 0.6pt solid var(--line);
+  border-radius: 4pt;
+  font-family: "Noto Sans CJK SC", sans-serif;
+  font-size: 8pt;
+  line-height: 1.5;
+}
+
+.meta div { display: flex; gap: 8pt; }
+.meta dt { color: var(--muted); min-width: 34pt; margin: 0; }
+.meta dd { margin: 0; color: var(--ink); word-break: break-word; }
+
+.article h2 {
+  font-family: "Noto Sans CJK SC", sans-serif;
+  font-size: 14pt;
+  line-height: 1.35;
+  margin: 20pt 0 7pt;
+  padding-bottom: 4pt;
+  border-bottom: 1.2pt solid var(--accent);
+  page-break-after: avoid;
+}
+
+.article h3 {
+  font-family: "Noto Sans CJK SC", sans-serif;
+  font-size: 11.5pt;
+  margin: 14pt 0 5pt;
+  page-break-after: avoid;
+}
+
+.article p { margin: 0 0 9pt; text-align: justify; }
+
+.article ul, .article ol { margin: 0 0 10pt; padding-left: 18pt; }
+.article li { margin-bottom: 3pt; }
+
+.article strong { color: #0b2a33; }
+
+.article a { color: var(--accent); text-decoration: none; border-bottom: 0.5pt solid #9fc3ca; }
+
+.article blockquote {
+  margin: 12pt 0;
+  padding: 8pt 12pt;
+  border-left: 3pt solid var(--warm);
+  background: #fff8f2;
+  color: #3b332d;
+  font-size: 9.8pt;
+}
+
+.article table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12pt 0;
+  font-family: "Noto Sans CJK SC", sans-serif;
+  font-size: 8.3pt;
+  page-break-inside: avoid;
+}
+
+.article th, .article td {
+  border: 0.6pt solid var(--line);
+  padding: 5pt 6pt;
+  text-align: left;
+  vertical-align: top;
+}
+
+.article th { background: var(--accent-soft); font-weight: 700; }
+
+.article code {
+  font-family: "DejaVu Sans Mono", "Noto Sans Mono CJK SC", monospace;
+  font-size: 8.6pt;
+  background: #f2f4f6;
+  padding: 1pt 3pt;
+  border-radius: 2pt;
+}
+
+.article pre {
+  background: #f6f8f9;
+  border: 0.6pt solid var(--line);
+  border-radius: 4pt;
+  padding: 8pt 10pt;
+  overflow-x: auto;
+  font-size: 8.4pt;
+  line-height: 1.5;
+}
+
+figure {
+  margin: 14pt 0 16pt;
+  padding: 0;
+  page-break-inside: avoid;
+}
+
+figure img {
+  width: 100%;
+  max-height: 118mm;
+  object-fit: contain;
+  border: 0.6pt solid var(--line);
+  border-radius: 4pt;
+  background: #fff;
+}
+
+figcaption {
+  font-family: "Noto Sans CJK SC", sans-serif;
+  font-size: 8pt;
+  line-height: 1.55;
+  color: var(--muted);
+  margin-top: 5pt;
+}
+
+.source-pill {
+  display: inline-block;
+  margin-left: 4pt;
+  padding: 0.5pt 5pt;
+  border-radius: 8pt;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 7pt;
+  font-weight: 700;
+}
+
+.source-pill.generated { background: #fdece1; color: #9a3f08; }
+
+.callout {
+  margin: 12pt 0;
+  padding: 9pt 12pt;
+  border-radius: 4pt;
+  background: var(--accent-soft);
+  font-size: 9.8pt;
+}
+
+.colophon {
+  margin-top: 22pt;
+  padding-top: 7pt;
+  border-top: 0.6pt solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  gap: 12pt;
+  font-family: "Noto Sans CJK SC", sans-serif;
+  font-size: 7.5pt;
+  color: #8a8f98;
+}
+
+.small { font-size: 8.6pt; color: var(--muted); }

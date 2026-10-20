@@ -112,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "list-papers":
             emit(store.list_papers(args.checkpoint))
         elif args.cmd == "add-push":
-            emit(store.add_push(_payload(args)))
+            source_dir = Path(args.file).resolve().parent if args.file else None
+            emit(store.add_push(_payload(args), source_dir=source_dir))
         elif args.cmd == "get-push":
             emit(store.get_push(args.push_id))
         elif args.cmd == "list-pushes":

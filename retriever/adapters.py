@@ -111,6 +111,8 @@ def fetch_europepmc(query: dict, limit: int, timeout: int = 30) -> list[dict]:
                 "published": item.get("firstPublicationDate") or "",
                 "url": f"https://europepmc.org/article/{src}/{item.get('id')}",
                 "is_preprint": src == "PPR",
+                "pmcid": item.get("pmcid") or "",
+                "doi": item.get("doi") or "",
             }
         )
     return out

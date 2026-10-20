@@ -17,6 +17,7 @@ $KL_HOME/
 │   ├── raw/<paper_id>.json       # ① 原文（元数据）
 │   ├── raw/text/<paper_id>.txt   # ① 原文（正文/摘要文本）
 │   ├── pushes/<push_id>.json     # ② 推送
+│   ├── pushes/assets/<push_id>/  # ② 推送图片（原文图 / 生成图）
 │   ├── kg/nodes/<node_id>.json   # ③ 知识图节点（= 知识卡片）
 │   ├── kg/edges.jsonl            # ③ 知识图边
 │   ├── propositions/<id>.json    # ④ 命题
@@ -132,6 +133,63 @@ checkpoints:
   "created_at": "2026-10-20T09:10:00+08:00"
 }
 ```
+
+## 5.1 长文推送 `format: pdf`
+
+正式流程使用长文 PDF；`format` 缺省或为 `card` 时仍按 §5 的四段卡片处理（离线 fallback）。
+
+```json
+{
+  "schema_version": 1,
+  "format": "pdf",
+  "push_id": "2026-10-20_hmbs_01",
+  "date": "2026-10-20",
+  "checkpoint_id": "hmbs",
+  "checkpoint_label": "HMBS / 羟甲基胆素合酶",
+  "paper_ids": ["europepmc_42830441"],
+  "paper": {
+    "paper_id": "europepmc_42830441",
+    "source": "europepmc",
+    "title": "…",
+    "authors": ["…"],
+    "journal": "…",
+    "published": "2026-10-02",
+    "url": "https://…",
+    "is_preprint": false
+  },
+  "title": "HMBS：……",
+  "sections": {
+    "takeaway": "一句话结论",
+    "background": "研究背景与问题",
+    "methods": "方法",
+    "results": "关键结果",
+    "why": "与知识卡/命题的关系",
+    "limits": "局限与存疑",
+    "sources": "原文与数据（至少一个 URL）"
+  },
+  "body_html": "<h2>背景</h2><p>…</p><figure data-asset=\"fig-1\"></figure>",
+  "assets": [
+    {
+      "id": "fig-1",
+      "path": "assets/2026-10-20_hmbs_01/fig-1.png",
+      "caption": "图 1. …",
+      "source": "paper | generated",
+      "origin_url": "https://…"
+    }
+  ],
+  "proposals": [],
+  "status": "written",
+  "created_at": "2026-10-20T09:10:00+08:00"
+}
+```
+
+约束：
+
+- `body_html` 是正文**片段**，不是整页；不得含 `<script>` / `<style>` / `<link>` / 内联事件；
+- 每个 `<figure data-asset="…"></figure>` 必须对应 `assets` 里的一项，至少一张图；
+- `assets[].path` 是相对 push 文件的路径，不得越出 outbox；
+- `assets[].caption` 非空，`source` 只能是 `paper` 或 `generated`，渲染时会自动加「原文图 / 生成图」标记；
+- `writer render` 用固定模板把片段渲染成 PDF；`archive add-push` 会把 `assets/<push_id>/` 一并复制进 `archive/pushes/assets/`。
 
 ## 6. 知识图
 

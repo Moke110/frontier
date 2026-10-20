@@ -12,7 +12,7 @@
 | `frontier` | checkpoint 词汇表 → 检索式；记录评分反馈到权重 | `frontier.yaml` → `plan.json` |
 | `retriever` | 按计划取原文（fixture / arXiv / Europe PMC） | `plan.json` → `candidates.jsonl` |
 | `editor` | 排序候选；agent 做语义排序，脚本学偏好与校验 | candidates + ratings → `editor-task.json` → `selection.json` |
-| `writer` | agent 写四段式推送；脚本提供上下文与校验 | selection + archive 上下文 → `writer-task.json` → push JSON |
+| `writer` | agent 写长文 PDF（HTML 片段 + 图片）；脚本提供上下文、校验与渲染 | selection + archive 上下文 → `writer-task.json` → push JSON → PDF |
 | `publisher` | 飞书卡片推送、收集评分、征集更新同意 | push → 卡片 / `ratings.jsonl` / `decisions.jsonl` |
 
 模块之间**零 Python import**，只通过 `contracts/README.md` 定义的文件交换数据。唯一共享代码是根目录 `common.py`（纯 IO 工具，无领域逻辑）。因此每个模块都能单独跑、单独替换 —— 例如把 `writer` 换成 LLM 版本，或把 `retriever` 换成别的数据源，其它模块不用改。
@@ -21,7 +21,7 @@
 
 ## 安装（由你的 agent 执行）
 
-要求：已安装一个 agent（opencode / Claude Code / Codex / Cursor…）、已安装并**登录** `lark-cli`、Python 3.11+ + PyYAML。
+要求：已安装一个 agent（opencode / Claude Code / Codex / Cursor…）、已安装并**登录** `lark-cli`、Python 3.11+ + PyYAML + WeasyPrint，以及至少一种中文字体（Noto CJK）。
 
 安装方式不是运行安装脚本，而是把 [`INSTALL.md`](INSTALL.md) 开头的任务说明发给你的 agent。agent 会：
 
@@ -118,7 +118,8 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 
 ## 设计要点（原型版）
 
-- **评分卡**：正文 + 可选评语 + 三按钮（不相关 / 一般 / 很好）。评分与评语在同一次 `form` 提交里返回；按钮 `name` 决定 verdict。
+- **长文 PDF**：agent 写七段 HTML 片段与图片资产，固定模板 + WeasyPrint 渲染；原文图优先，取不到时用生成图并在图注标源。
+- **评分卡**：PDF 后紧跟一张小卡（不相关 / 一般 / 很好 + 可选评语）。评分与评语在同一次 `form` 提交里返回；按钮 `name` 决定 verdict。
 - **审批卡**：只有当评分不是「不相关」且推送带有 `proposals` 时才发；逐条列出 diff，同意后由 `archive` 写入。
 - **更新提议**：`add_evidence` / `add_alias` / `add_proposition` / `update_summary`。正式流程由 agent 生成，全部标 `draft`，agent 永不直接改知识库；`writer write` 的术语共现启发式只作为离线 fallback。
 - **反哺**：`frontier` 维护 `ema` 与 `weight`（1–10）；`editor.fit` 维护 checkpoint / 来源偏好（Beta 平滑），`rank` 用四项加权：相关性 0.40、时效 0.15、偏好 0.30、权重 0.15。
@@ -126,7 +127,7 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 
 ## 原型边界（有意不做）
 
-- writer 的 fallback 是抽取式模板，不调模型；正式写作由宿主 agent 完成。retriever 的 live 模式只取摘要，不抓全文 PDF。
+- writer 的 fallback 仍是四段抽取式模板，不调模型；正式写作由宿主 agent 完成，输出七段 HTML + 图片。retriever 的 live 模式只取摘要；图片由 `writer figures` 单独抓取。
 - 无并发写锁、无迁移、无鉴权、无重试队列；飞书 token 的 30 分钟 / 2 次限制未做兜底。
 - `archive` 的"事务"是单文件原子写，跨文件更新失败时可能部分生效。
 - 评分只做单用户三档；没有冷启动以外的反作弊与去偏。

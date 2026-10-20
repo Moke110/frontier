@@ -41,11 +41,13 @@ lark-cli event consume card.action.trigger --as bot --timeout 3s
 
 ```bash
 git --version
-python3 --version          # 需要 >= 3.11
-python3 -c "import yaml"   # 需要 PyYAML
+python3 --version              # 需要 >= 3.11
+python3 -c "import yaml"       # 需要 PyYAML
+python3 -c "import weasyprint" # 需要 WeasyPrint（PDF 渲染）
+fc-list :lang=zh | head -1     # 至少一种中文字体
 ```
 
-缺 PyYAML 时先问用户是否允许安装（`pip install pyyaml`），不要擅自改系统环境。
+缺 PyYAML / WeasyPrint 时先问用户是否允许安装（`pip install pyyaml weasyprint`），不要擅自改系统环境。缺中文字体时提醒用户安装 Noto CJK（否则 PDF 会缺字）。
 
 ### 3. 从 GitHub 获取代码与技能文档
 
@@ -154,4 +156,6 @@ rm "$HOME/.config/opencode/skills/frontier"   # 只删软链
 | `event consume` 报 `failed_precondition` | 飞书开发者后台订阅 `card.action.trigger` |
 | skills 目录已有同名文件 | 停止并询问，不要覆盖 |
 | `python3 -c "import yaml"` 失败 | 询问后安装 PyYAML |
+| `python3 -c "import weasyprint"` 失败 | 询问后安装 WeasyPrint |
+| PDF 中文缺字 | 安装 Noto CJK 字体（`fonts-noto-cjk`） |
 | `pytest` 失败 | 停止，把失败输出贴给用户，不要继续接入 |

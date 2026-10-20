@@ -11,6 +11,7 @@ Only this module writes archive/. Everything else reads the documented files.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -126,7 +127,7 @@ class Archive:
         return sorted(rows, key=lambda r: r.get("published") or "", reverse=True)
 
     # ------------------------------------------------------------ layer 2
-    def add_push(self, push: dict) -> dict:
+    def add_push(self, push: dict, source_dir: Path | None = None) -> dict:
         pid = push.get("push_id")
         if not pid:
             raise ArchiveError("push needs push_id")
@@ -135,7 +136,18 @@ class Archive:
         push.setdefault("status", "written")
         write_json(self.pushes / f"{pid}.json", push)
         append_jsonl(self.index / "pushes.jsonl", push)
-        return {"push_id": pid, "path": str(self.pushes / f"{pid}.json")}
+        copied = 0
+        if source_dir:
+            source_assets = Path(source_dir) / "assets" / pid
+            if source_assets.is_dir():
+                dest = self.pushes / "assets" / pid
+                shutil.copytree(source_assets, dest, dirs_exist_ok=True)
+                copied = len([p for p in dest.rglob("*") if p.is_file()])
+        return {
+            "push_id": pid,
+            "path": str(self.pushes / f"{pid}.json"),
+            "assets": copied,
+        }
 
     def get_push(self, push_id: str) -> dict:
         rec = read_json(self.pushes / f"{push_id}.json")

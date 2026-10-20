@@ -1,6 +1,6 @@
 ---
 name: frontier
-description: "Run the personal knowledge loop: turn checkpoints into retrieval queries, rank papers, write four-section Lark pushes, collect ratings, propose/approve knowledge-graph and proposition updates, and feed ratings back into ranking. Use when the user wants to run or advance their frontier/knowledge-loop daily workflow."
+description: "Run the personal knowledge loop: turn checkpoints into retrieval queries, rank papers, write long-form illustrated PDF pushes, send them to Lark, and collect ratings. This phase stops at rating collection; feedback-driven ranking and knowledge-base approval are not enabled. Use when the user wants to run or advance their frontier/knowledge-loop daily workflow."
 metadata:
   requires:
     bins: ["python3", "lark-cli"]
@@ -28,7 +28,7 @@ metadata:
 
 ```bash
 command -v lark-cli && lark-cli auth status --json
-python3 -c "import yaml"
+python3 -c "import yaml, weasyprint"
 python3 -m pytest -q
 ```
 
@@ -98,51 +98,38 @@ python -m editor.cli check --task editor-task.json --selection selection.json
 
 ```bash
 python -m writer.cli task --selection selection.json --out writer-task.json
+python -m writer.cli figures --selection selection.json --out outbox
 ```
 
 **你的任务**：读取 `writer-task.json`，为每个 item 写 `outbox/pushes/<push_id>.json`：
 
-- 四段：`did / found / why / keep`；
+- 七段：`takeaway / background / methods / results / why / limits / sources`；
+- `body_html` 是正文 HTML 片段，不是整页；图片用 `<figure data-asset="fig-1"></figure>` 占位；
+- `assets` 用 `figures.json` 的结果；原文图标 `paper`，生成图标 `generated`；
 - `why` 必须引用 `context`（知识卡摘要、命题、归档篇数至少其一）；
 - 需要时提出 `proposals`（`add_evidence` / `add_alias` / `add_proposition` / `update_summary`），全部 `status: draft`；
 - **绝不直接编辑** `$KL_HOME/archive/**`。
 
 ```bash
 python -m writer.cli check --task writer-task.json --outbox outbox
+python -m writer.cli render --push outbox/pushes/<push_id>.json --out outbox/<push_id>.pdf
 python -m archive.cli add-push --file outbox/pushes/<push_id>.json
 ```
 
 ### 5. 推送与评分
 
 ```bash
-python -m publisher.cli send --push outbox/pushes/<push_id>.json --to ou_xxx
+python -m publisher.cli send --push outbox/pushes/<push_id>.json --pdf outbox/<push_id>.pdf --to ou_xxx
 python -m publisher.cli listen --max-events 1 --timeout 10m
 ```
 
-- `send` 是**对外可见**操作：先向用户确认收件人与条数。
+- `send` 是**对外可见**操作：先向用户确认收件人、PDF 与条数。
 - 没有后台监听能力时，改用 `ingest` 回放导出的 NDJSON 事件。
 - 无飞书环境演练：`--dry-run`（send）与 `--offline`（ingest）。
 
-### 6. 反哺
+### 6. 评分之后（本阶段不启用）
 
-```bash
-python -m frontier.cli record --checkpoint hmbs --verdict great --pushed
-python -m editor.cli fit
-```
-
-`record` 更新 `ema` / `weight`；`fit` 更新 checkpoint 与来源偏好；下一轮 `editor task` 自动带上。
-
-### 7. 知识库更新（审批后）
-
-评分非「不相关」且 push 带 proposals 时，publisher 会发审批卡。用户同意后：
-
-```bash
-python -m archive.cli apply-decisions \
-  --pending-dir "$KL_HOME/publisher/pending" \
-  --decisions "$KL_HOME/publisher/decisions.jsonl"
-```
-
-只有这一步会真正修改知识图 / 命题。
+评分只写入 `ratings.jsonl`，**不**运行 `frontier record` / `editor fit`，**不**发知识更新审批卡，**不**写知识图或命题。下游的反馈调整与知识库审批留到下一阶段。
 
 ## 硬规则
 

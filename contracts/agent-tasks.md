@@ -68,9 +68,12 @@ python -m editor.cli check --task editor-task.json --selection selection.json
 {
   "schema_version": 1,
   "kind": "writer-task",
+  "format": "pdf",
   "date": "2026-10-20",
-  "instructions": "……四段结构、引用规则、提议规则……",
+  "instructions": "……七段结构、HTML 片段、图片、引用、提议规则……",
   "archive_cli": "python -m archive.cli",
+  "figure_command": "python -m writer.cli figures --selection <selection.json> --out <outbox>",
+  "render_command": "python -m writer.cli render --push outbox/pushes/<push_id>.json --out <pdf>",
   "items": [
     {
       "checkpoint_id": "hmbs",
@@ -97,11 +100,21 @@ python -m editor.cli check --task editor-task.json --selection selection.json
 }
 ```
 
-Agent 为每个 item 写一个 push 文件，文件名 = `push_id`：
+Agent 先取图：
 
-- `push_id = "<date>_<checkpoint_id>_<NN>"`，NN 从 01 递增；
-- `paper_ids` 必须包含该 item 的 `paper_id`；
-- `sections` 四个键 `did / found / why / keep` 都非空；
+```bash
+python -m writer.cli figures --selection selection.json --out outbox
+# -> outbox/figures.json + outbox/assets/<push_id>/fig-*
+```
+
+然后为每个 item 写一个 push 文件，文件名 = `push_id`：
+
+- `format: "pdf"`；
+- `push_id = "<date>_<checkpoint_id>_<NN>"`，NN 从 01 递增（可用 task 里的 `suggested_push_id`）；
+- `paper_ids` 必须包含该 item 的 `paper_id`，`paper` 里保留作者/期刊/日期/URL；
+- `sections` 七个键 `takeaway / background / methods / results / why / limits / sources` 都非空；
+- `body_html` 是正文 HTML 片段（不是整页），图片用 `<figure data-asset="fig-1"></figure>` 占位；
+- `assets` 至少一项，来自 `figures.json`，`caption` 非空且 `source` 为 `paper | generated`；
 - `why` 必须引用 `context`（知识卡摘要、命题、归档篇数至少其一）；
 - `proposals` 只允许四种 kind，`status` 必须是 `draft`；
 - `add_evidence` 的 `target_id` 必须是 context 里已有的命题；`add_alias` / `update_summary` 的目标必须存在；`add_proposition` 的 `node_ids` 必须都是已知节点。
@@ -111,6 +124,14 @@ Agent 为每个 item 写一个 push 文件，文件名 = `push_id`：
 ```bash
 python -m writer.cli check --task writer-task.json --outbox outbox
 ```
+
+渲染：
+
+```bash
+python -m writer.cli render --push outbox/pushes/<push_id>.json --out outbox/<push_id>.pdf
+```
+
+渲染器负责固定模板、中文字体、页眉页脚、图注与「原文图 / 生成图」标记；agent 不写 CSS。
 
 校验通过后再入库：
 

@@ -1,7 +1,8 @@
-"""writer CLI: agent task packets, validation, and a heuristic fallback.
+"""writer CLI: agent task packets, validation, PDF rendering, and a fallback.
 
 Primary flow (agent-driven):
-  writer task  -> agent writes push JSON -> writer check -> archive add-push
+  writer task -> writer figures -> agent writes push JSON -> writer check
+  -> writer render -> archive add-push
 Fallback (offline / tests):
   writer write
 """
@@ -13,8 +14,10 @@ import json
 import sys
 from pathlib import Path
 
-from common import emit, home, read_json, today, write_json
+from common import emit, home, now, read_json, today, write_json
+from writer.figures import fetch_for_paper
 from writer.model import write
+from writer.render import RenderError, render_push
 from writer.tasks import build_task, validate as validate_outbox
 
 
@@ -36,6 +39,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("check", help="validate agent-written pushes")
     p.add_argument("--task", required=True)
     p.add_argument("--outbox", required=True)
+
+    p = sub.add_parser("render", help="render a push JSON into a PDF")
+    p.add_argument("--push", required=True)
+    p.add_argument("--out", help="PDF path (default: next to the push)")
+
+    p = sub.add_parser("figures", help="fetch paper figures (or generate a fallback)")
+    p.add_argument("--selection", required=True)
+    p.add_argument("--out", required=True, help="outbox directory")
+    p.add_argument("--date")
+    p.add_argument("--limit", type=int, default=3)
     return parser
 
 
@@ -85,6 +98,50 @@ def main(argv: list[str] | None = None) -> int:
             result = validate_outbox(task, Path(args.outbox))
             emit(result)
             return 0 if result["ok"] else 1
+        elif args.cmd == "render":
+            try:
+                result = render_push(Path(args.push), Path(args.out) if args.out else None)
+            except RenderError as exc:
+                emit({"ok": False, "error": str(exc)})
+                return 1
+            emit(result)
+        elif args.cmd == "figures":
+            selection = read_json(Path(args.selection))
+            if not selection:
+                raise ValueError(f"no selection at {args.selection}")
+            date = args.date or selection.get("date") or today()
+            out_dir = Path(args.out)
+            figures: dict[str, dict] = {}
+            for index, row in enumerate(selection.get("selected", []), start=1):
+                paper = row.get("paper") or {}
+                cp_id = row.get("checkpoint_id")
+                push_id = f"{date}_{cp_id}_{index:02d}"
+                assets = fetch_for_paper(paper, push_id, out_dir, limit=args.limit)
+                figures[push_id] = {
+                    "paper_id": paper.get("paper_id"),
+                    "checkpoint_id": cp_id,
+                    "assets": assets,
+                }
+            write_json(
+                out_dir / "figures.json",
+                {"schema_version": 1, "generated_at": now(), "pushes": figures},
+            )
+            emit(
+                {
+                    "ok": True,
+                    "out": str(out_dir / "figures.json"),
+                    "pushes": {
+                        pid: {
+                            "paper_id": row["paper_id"],
+                            "figures": [
+                                {"id": a["id"], "source": a["source"], "path": a["path"]}
+                                for a in row["assets"]
+                            ],
+                        }
+                        for pid, row in figures.items()
+                    },
+                }
+            )
         else:  # pragma: no cover
             raise ValueError(args.cmd)
     except (ValueError, KeyError) as exc:
