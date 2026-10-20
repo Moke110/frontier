@@ -20,7 +20,7 @@ from writer.tasks import build_task, validate as validate_outbox
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="writer", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ./data)")
+    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("write", help="heuristic writer (fallback, no agent)")

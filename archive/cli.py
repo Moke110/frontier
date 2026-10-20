@@ -27,7 +27,7 @@ def _payload(args) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="archive", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ./data)")
+    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init", help="create layer directories")

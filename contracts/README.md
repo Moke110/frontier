@@ -5,7 +5,7 @@
 
 > editor / writer 的 agent 任务包（`editor-task.json`、`writer-task.json`）与校验规则见 [`agent-tasks.md`](agent-tasks.md)。
 
-数据根由环境变量 `KL_HOME` 指定（默认 `./data`）：
+数据根由环境变量 `KL_HOME` 指定（默认 `~/knowledge-loop`）：
 
 ```
 $KL_HOME/

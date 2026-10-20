@@ -104,10 +104,10 @@ cp -R "$HOME/frontier" "$SKILLS_DIR/frontier"
 
 ### 5. 初始化数据（可选，但推荐）
 
-数据根默认 `~/frontier/data`。如果目录为空，复制 fixtures 作为起点：
+数据根默认 `~/knowledge-loop`（与代码仓库分离）。如果目录为空，复制 fixtures 作为起点：
 
 ```bash
-export KL_HOME="$HOME/frontier/data"
+export KL_HOME="${KL_HOME:-$HOME/knowledge-loop}"
 mkdir -p "$KL_HOME"
 if [ -z "$(ls -A "$KL_HOME" 2>/dev/null)" ]; then
   cp -R "$HOME/frontier/fixtures/home/." "$KL_HOME/"
@@ -121,8 +121,8 @@ fi
 ```bash
 cd "$HOME/frontier"
 python3 -m pytest -q                          # 应全部通过（当前 18 个）
-KL_HOME="$HOME/frontier/data" python3 -m frontier.cli validate
-KL_HOME="$HOME/frontier/data" python3 -m frontier.cli plan --out /tmp/frontier-plan.json
+KL_HOME="$HOME/knowledge-loop" python3 -m frontier.cli validate
+KL_HOME="$HOME/knowledge-loop" python3 -m frontier.cli plan --out /tmp/frontier-plan.json
 ```
 
 `validate` 应返回 `ok: true`；`plan` 应生成包含 arXiv 与 Europe PMC 查询的 JSON（不联网）。
@@ -142,7 +142,7 @@ KL_HOME="$HOME/frontier/data" python3 -m frontier.cli plan --out /tmp/frontier-p
 
 ```bash
 rm "$HOME/.config/opencode/skills/frontier"   # 只删软链
-# 数据在 ~/frontier/data，默认保留；删除前必须再确认
+# 数据在 ~/knowledge-loop，默认保留；删除前必须再确认
 ```
 
 ## 故障

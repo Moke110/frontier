@@ -5,7 +5,7 @@
   -> writer.write -> archive.add-push -> publisher.send(dry-run)
   -> rating event -> approval card -> approval event -> archive.apply-decisions
 
-Runs in a throwaway $KL_HOME; never touches ./data.
+Runs in a throwaway $KL_HOME; never touches the real data root.
 """
 
 from __future__ import annotations

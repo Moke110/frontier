@@ -13,7 +13,7 @@ from frontier.model import FrontierError, plan, record, show, validate
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="frontier", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ./data)")
+    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("validate", help="check every checkpoint links to a kg node")

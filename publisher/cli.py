@@ -15,7 +15,7 @@ from publisher.store import PublisherStore
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="publisher", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ./data)")
+    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("send", help="send one push as a rating card")

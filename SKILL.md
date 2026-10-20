@@ -37,7 +37,7 @@ python3 -m pytest -q
 所有命令在**本技能目录（仓库根，含 SKILL.md）**执行：
 
 ```bash
-export KL_HOME="${KL_HOME:-$PWD/data}"
+export KL_HOME="${KL_HOME:-$HOME/knowledge-loop}"
 ```
 
 - `frontier.yaml`（人写）：checkpoint 词汇表；可从 `fixtures/home/frontier.yaml` 复制起步。

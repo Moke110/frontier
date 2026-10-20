@@ -65,10 +65,10 @@ Demo 会依次打印每一步的命令与产物，并在结尾展示：命题多
 
 ## 数据根
 
-所有模块读同一个 `$KL_HOME`（默认 `./data`）：
+所有模块读同一个 `$KL_HOME`（默认 `~/knowledge-loop`，与代码仓库分离）：
 
 ```bash
-export KL_HOME=/path/to/data
+export KL_HOME="$HOME/knowledge-loop"
 ```
 
 目录结构、每层字段、去重键、退出码约定见 [`contracts/README.md`](contracts/README.md)。`fixtures/home/` 是一份可直接复制的最小数据根。

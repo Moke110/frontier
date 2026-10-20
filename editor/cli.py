@@ -14,7 +14,7 @@ from editor.tasks import build_task, validate as validate_selection
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="editor", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ./data)")
+    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("fit", help="learn checkpoint/source preference from ratings")

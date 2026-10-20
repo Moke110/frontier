@@ -51,7 +51,7 @@ def run(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="retriever", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ./data)")
+    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("fetch")
     p.add_argument("--plan", required=True)

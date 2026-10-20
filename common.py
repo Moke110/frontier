@@ -16,11 +16,11 @@ from typing import Any, Iterable
 
 import yaml
 
-DEFAULT_HOME = "data"
+DEFAULT_HOME = "~/knowledge-loop"
 
 
 def home(override: str | None = None) -> Path:
-    """Data root. Every CLI accepts --home, else KL_HOME, else ./data."""
+    """Data root. Every CLI accepts --home, else KL_HOME, else ~/knowledge-loop."""
     return Path(override or os.environ.get("KL_HOME") or DEFAULT_HOME).expanduser().resolve()
 
 
