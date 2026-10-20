@@ -58,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True, help="candidates.jsonl path")
     p.add_argument("--source", choices=["fixture", "live"], default="fixture")
     p.add_argument("--fixtures", default="fixtures/papers")
-    p.add_argument("--checkpoint")
+    p.add_argument("--card", "--checkpoint", dest="checkpoint", help="filter by knowledge card id")
     p.add_argument("--no-window", action="store_true", help="do not filter by publication window")
     return parser
 

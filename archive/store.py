@@ -1,34 +1,146 @@
-"""archive: four-layer file store.
+"""archive: the only writer of the knowledge store.
 
 Layers (all under $KL_HOME/archive):
   1. raw/          original papers (metadata + text)
-  2. pushes/       generated cards
-  3. kg/           knowledge graph (nodes are knowledge cards)
-  4. propositions/ claims with evidence
+  2. pushes/       generated pushes (long-form PDF payload + proposals)
+  3. cards/        knowledge cards (id / label / ontology / annotation)
+  4. propositions/ cross-paper claims with history and related cards
+
+A knowledge card has no links of its own. Propositions are the only place that
+connects cards (``related_knowledge``, at least two cards).
 
 Only this module writes archive/. Everything else reads the documented files.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
-from typing import Any
 
 from common import (
     append_jsonl,
+    clip,
     ensure_dir,
     now,
     paper_id as make_paper_id,
     read_json,
     read_jsonl,
-    stable_id,
+    slug,
     write_json,
 )
+
+SCHEMA_VERSION = 2
+CARD_FIELDS = ("id", "label", "ontology", "annotation")
+PROP_FIELDS = ("id", "title", "content", "history", "related_knowledge")
+HISTORY_ACTIONS = {
+    "created",
+    "content_changed",
+    "title_changed",
+    "related_knowledge_changed",
+    "evidence_added",
+}
+CARD_ID_RE = re.compile(r"^card_[a-z0-9][a-z0-9_]*$")
+PROP_ID_RE = re.compile(r"^prop_[a-z0-9][a-z0-9_]*$")
+MIN_RELATED_CARDS = 2
+
+
+def id_slug(text: str) -> str:
+    """ASCII slug for ids: lower case, underscores only."""
+    return slug(text, fallback="").replace("-", "_").replace(".", "_").strip("_")
 
 
 class ArchiveError(RuntimeError):
     pass
+
+
+# --------------------------------------------------------------------- ids
+def _taken(prefix: str, existing: dict[str, dict]) -> set[str]:
+    return set(existing)
+
+
+def card_id_for(label: str, existing: dict[str, dict]) -> str:
+    """Semantic ``card_<slug>`` id, deduped against existing cards.
+
+    ASCII labels slugify directly. Non-ASCII labels have no ASCII slug, so the
+    caller must pass an explicit id instead.
+    """
+    base = "card_" + id_slug(label)
+    if base == "card_":
+        raise ArchiveError(
+            f"label {label!r} has no ASCII slug; pass an explicit id like card_<slug>"
+        )
+    for card in existing.values():
+        if (card.get("label") or "").strip().lower() == (label or "").strip().lower():
+            return card["id"]
+    candidate, n = base, 2
+    while candidate in existing:
+        candidate = f"{base}_{n}"
+        n += 1
+    return candidate
+
+
+def prop_id_for(title: str, existing: dict[str, dict], explicit: str | None = None) -> str:
+    """Semantic ``prop_<slug>`` id. Explicit ids win; collisions get ``_2``."""
+    if explicit:
+        if not PROP_ID_RE.match(explicit):
+            raise ArchiveError(f"bad proposition id {explicit!r} (want prop_<slug>)")
+        if explicit in existing:
+            return explicit
+        return explicit
+    base = "prop_" + id_slug(title)
+    if base == "prop_":
+        raise ArchiveError(
+            f"title {title!r} has no ASCII slug; pass an explicit id like prop_<slug>"
+        )
+    candidate, n = base, 2
+    while candidate in existing:
+        candidate = f"{base}_{n}"
+        n += 1
+    return candidate
+
+
+# --------------------------------------------------------------- validation
+def _validate_card(card: dict) -> None:
+    missing = [f for f in CARD_FIELDS if card.get(f) in (None, "", [])]
+    if missing:
+        raise ArchiveError(f"card missing {', '.join(missing)}")
+    if not CARD_ID_RE.match(card["id"]):
+        raise ArchiveError(f"bad card id {card['id']!r} (want card_<slug>)")
+    if not isinstance(card["ontology"], list) or not all(
+        isinstance(t, str) and t.strip() for t in card["ontology"]
+    ):
+        raise ArchiveError("card ontology must be a non-empty list of strings")
+    if not str(card["annotation"]).strip():
+        raise ArchiveError("card annotation must not be empty")
+
+
+def _validate_prop(prop: dict, cards: dict[str, dict]) -> None:
+    missing = [f for f in PROP_FIELDS if prop.get(f) in (None, "")]
+    if missing:
+        raise ArchiveError(f"proposition missing {', '.join(missing)}")
+    if not PROP_ID_RE.match(prop["id"]):
+        raise ArchiveError(f"bad proposition id {prop['id']!r} (want prop_<slug>)")
+    related = prop["related_knowledge"]
+    if not isinstance(related, list) or len(related) < MIN_RELATED_CARDS:
+        raise ArchiveError(
+            f"proposition {prop['id']} needs at least {MIN_RELATED_CARDS} related_knowledge cards"
+        )
+    if len(set(related)) != len(related):
+        raise ArchiveError(f"proposition {prop['id']} has duplicate related_knowledge")
+    unknown = [c for c in related if c not in cards]
+    if unknown:
+        raise ArchiveError(f"proposition {prop['id']} references unknown cards: {unknown}")
+    history = prop["history"]
+    if not isinstance(history, list) or not history:
+        raise ArchiveError(f"proposition {prop['id']} needs a non-empty history")
+    for entry in history:
+        if not entry.get("at") or not entry.get("action"):
+            raise ArchiveError(f"proposition {prop['id']} history entries need at and action")
+        if entry["action"] not in HISTORY_ACTIONS:
+            raise ArchiveError(
+                f"proposition {prop['id']} has unknown history action {entry['action']!r}"
+            )
 
 
 class Archive:
@@ -38,11 +150,11 @@ class Archive:
         self.raw = self.root / "raw"
         self.raw_text = self.raw / "text"
         self.pushes = self.root / "pushes"
-        self.kg_nodes = self.root / "kg" / "nodes"
-        self.kg_edges = self.root / "kg" / "edges.jsonl"
+        self.cards = self.root / "cards"
         self.props = self.root / "propositions"
         self.index = self.root / "index"
         self.applied = self.root / "applied"
+        self.legacy = self.root / "legacy"
 
     # ---------------------------------------------------------------- setup
     def init(self) -> dict:
@@ -50,27 +162,26 @@ class Archive:
             self.raw,
             self.raw_text,
             self.pushes,
-            self.kg_nodes,
+            self.cards,
             self.props,
             self.index,
             self.applied,
         ):
             ensure_dir(path)
-        for name in ("papers", "pushes", "kg", "propositions"):
+        for name in ("papers", "pushes", "cards", "propositions"):
             (self.index / f"{name}.jsonl").touch()
-        self.kg_edges.touch()
         return {"ok": True, "root": str(self.root)}
 
     def reindex(self) -> dict:
         ensure_dir(self.index)
         papers = [read_json(p) for p in sorted(self.raw.glob("*.json"))]
         pushes = [read_json(p) for p in sorted(self.pushes.glob("*.json"))]
-        nodes = [read_json(p) for p in sorted(self.kg_nodes.glob("*.json"))]
+        cards = [read_json(p) for p in sorted(self.cards.glob("*.json"))]
         props = [read_json(p) for p in sorted(self.props.glob("*.json"))]
         for name, rows in (
             ("papers", papers),
             ("pushes", pushes),
-            ("kg", nodes),
+            ("cards", cards),
             ("propositions", props),
         ):
             target = self.index / f"{name}.jsonl"
@@ -84,7 +195,7 @@ class Archive:
             "ok": True,
             "papers": len(papers),
             "pushes": len(pushes),
-            "kg_nodes": len(nodes),
+            "cards": len(cards),
             "propositions": len(props),
         }
 
@@ -119,11 +230,15 @@ class Archive:
             raise ArchiveError(f"unknown paper: {pid}")
         return rec
 
-    def list_papers(self, checkpoint_id: str | None = None) -> list[dict]:
+    def list_papers(self, card_id: str | None = None) -> list[dict]:
         rows = [read_json(p) for p in sorted(self.raw.glob("*.json"))]
         rows = [r for r in rows if r]
-        if checkpoint_id:
-            rows = [r for r in rows if r.get("checkpoint_id") == checkpoint_id]
+        if card_id:
+            rows = [
+                r
+                for r in rows
+                if (r.get("card_id") or r.get("checkpoint_id")) == card_id
+            ]
         return sorted(rows, key=lambda r: r.get("published") or "", reverse=True)
 
     # ------------------------------------------------------------ layer 2
@@ -155,81 +270,76 @@ class Archive:
             raise ArchiveError(f"unknown push: {push_id}")
         return rec
 
-    def list_pushes(self, checkpoint_id: str | None = None) -> list[dict]:
+    def list_pushes(self, card_id: str | None = None) -> list[dict]:
         rows = [read_json(p) for p in sorted(self.pushes.glob("*.json"))]
         rows = [r for r in rows if r]
-        if checkpoint_id:
-            rows = [r for r in rows if r.get("checkpoint_id") == checkpoint_id]
+        if card_id:
+            rows = [
+                r
+                for r in rows
+                if (r.get("card_id") or r.get("checkpoint_id")) == card_id
+            ]
         return sorted(rows, key=lambda r: r.get("created_at") or "", reverse=True)
 
     # ------------------------------------------------------------ layer 3
-    def put_node(self, node: dict) -> dict:
-        nid = node.get("node_id")
-        if not nid:
-            raise ArchiveError("node needs node_id")
-        node.setdefault("schema_version", 1)
-        node.setdefault("type", "concept")
-        node.setdefault("aliases", [])
-        node["updated_at"] = now()
-        write_json(self.kg_nodes / f"{nid}.json", node)
-        return {"node_id": nid, "path": str(self.kg_nodes / f"{nid}.json")}
+    def put_card(self, card: dict) -> dict:
+        card = dict(card)
+        existing = {c["id"]: c for c in self.list_cards()}
+        if not card.get("id"):
+            card["id"] = card_id_for(card.get("label", ""), existing)
+        _validate_card(card)
+        target = self.cards / f"{card['id']}.json"
+        previous = read_json(target)
+        if previous and (previous.get("label") or "").lower() != card["label"].lower():
+            # Changing a card's label under the same id is allowed, but make the
+            # caller be explicit about the id it is updating.
+            pass
+        now_ts = now()
+        card.setdefault("created_at", (previous or {}).get("created_at") or now_ts)
+        card["updated_at"] = now_ts
+        card["schema_version"] = SCHEMA_VERSION
+        write_json(target, card)
+        return {
+            "card_id": card["id"],
+            "created": previous is None,
+            "path": str(target),
+        }
 
-    def get_node(self, node_id: str) -> dict:
-        rec = read_json(self.kg_nodes / f"{node_id}.json")
+    def get_card(self, card_id: str) -> dict:
+        rec = read_json(self.cards / f"{card_id}.json")
         if not rec:
-            raise ArchiveError(f"unknown kg node: {node_id}")
+            raise ArchiveError(f"unknown card: {card_id}")
         return rec
 
-    def link(self, src: str, dst: str, kind: str = "related_to", note: str = "") -> dict:
-        self.get_node(src)
-        self.get_node(dst)
-        edge = {
-            "schema_version": 1,
-            "from": src,
-            "to": dst,
-            "type": kind,
-            "note": note,
-            "created_at": now(),
-        }
-        append_jsonl(self.kg_edges, edge)
-        return edge
-
-    def edges(self) -> list[dict]:
-        return read_jsonl(self.kg_edges)
-
-    def subgraph(self, node_id: str, depth: int = 1) -> dict:
-        self.get_node(node_id)
-        seen = {node_id}
-        frontier = {node_id}
-        edges: list[dict] = []
-        for _ in range(max(depth, 0)):
-            nxt = set()
-            for edge in self.edges():
-                if edge["from"] in frontier or edge["to"] in frontier:
-                    edges.append(edge)
-                    nxt.update((edge["from"], edge["to"]))
-            frontier = nxt - seen
-            seen |= nxt
-        return {
-            "root": node_id,
-            "nodes": [self.get_node(n) for n in sorted(seen)],
-            "edges": edges,
-        }
+    def list_cards(self, enabled_only: bool = False) -> list[dict]:
+        rows = [read_json(p) for p in sorted(self.cards.glob("*.json"))]
+        rows = [r for r in rows if r]
+        if enabled_only:
+            rows = [r for r in rows if r.get("enabled", True)]
+        return rows
 
     # ------------------------------------------------------------ layer 4
     def put_prop(self, prop: dict) -> dict:
-        prid = prop.get("prop_id")
-        if not prid:
-            raise ArchiveError("proposition needs prop_id")
-        prop.setdefault("schema_version", 1)
-        prop.setdefault("node_ids", [])
-        prop.setdefault("evidence", [])
-        prop.setdefault("status", "active")
-        prop["updated_at"] = now()
-        for node_id in prop["node_ids"]:
-            self.get_node(node_id)
-        write_json(self.props / f"{prid}.json", prop)
-        return {"prop_id": prid, "path": str(self.props / f"{prid}.json")}
+        prop = dict(prop)
+        cards = {c["id"]: c for c in self.list_cards()}
+        existing = {
+            p.get("id") or p.get("prop_id"): p for p in self.list_props() if p
+        }
+        if not prop.get("id"):
+            prop["id"] = prop_id_for(prop.get("title", ""), existing)
+        _validate_prop(prop, cards)
+        target = self.props / f"{prop['id']}.json"
+        previous = read_json(target)
+        now_ts = now()
+        prop.setdefault("created_at", (previous or {}).get("created_at") or now_ts)
+        prop["updated_at"] = now_ts
+        prop["schema_version"] = SCHEMA_VERSION
+        write_json(target, prop)
+        return {
+            "prop_id": prop["id"],
+            "created": previous is None,
+            "path": str(target),
+        }
 
     def get_prop(self, prop_id: str) -> dict:
         rec = read_json(self.props / f"{prop_id}.json")
@@ -237,25 +347,68 @@ class Archive:
             raise ArchiveError(f"unknown proposition: {prop_id}")
         return rec
 
-    def list_props(self, node_id: str | None = None) -> list[dict]:
+    def list_props(self, card_id: str | None = None) -> list[dict]:
         rows = [read_json(p) for p in sorted(self.props.glob("*.json"))]
         rows = [r for r in rows if r]
-        if node_id:
-            rows = [r for r in rows if node_id in r.get("node_ids", [])]
+        if card_id:
+            rows = [r for r in rows if card_id in r.get("related_knowledge", [])]
         return rows
 
+    def update_prop(
+        self,
+        prop_id: str,
+        changes: dict,
+        *,
+        action: str = "content_changed",
+        source: dict | None = None,
+        rationale: str = "",
+        evidence: list[dict] | None = None,
+    ) -> dict:
+        prop = self.get_prop(prop_id)
+        before = {k: prop.get(k) for k in ("title", "content", "related_knowledge")}
+        allowed = {"title", "content", "related_knowledge"}
+        unknown = set(changes) - allowed
+        if unknown:
+            raise ArchiveError(f"cannot update {sorted(unknown)} on a proposition")
+        prop = {**prop, **changes}
+        after = {k: prop.get(k) for k in ("title", "content", "related_knowledge")}
+        prop.setdefault("history", []).append(
+            {
+                "at": now(),
+                "action": action,
+                "source": source or {"kind": "cli", "id": prop_id},
+                "before": before,
+                "after": after,
+                "rationale": rationale,
+                "evidence": evidence or [],
+            }
+        )
+        self.put_prop(prop)
+        return {"prop_id": prop_id, "updated": sorted(changes)}
+
     # ------------------------------------------------------------ context
-    def context(self, node_id: str, checkpoint_id: str, limit: int = 5) -> dict:
-        node = self.get_node(node_id)
-        props = self.list_props(node_id)
-        papers = self.list_papers(checkpoint_id)
-        pushes = self.list_pushes(checkpoint_id)
-        related = [
-            e for e in self.edges() if node_id in (e["from"], e["to"])
-        ]
+    def context(self, card_id: str, limit: int = 5) -> dict:
+        card = self.get_card(card_id)
+        prop_rows = []
+        for prop in self.list_props(card_id):
+            prop_rows.append(
+                {
+                    "id": prop["id"],
+                    "title": prop.get("title", ""),
+                    "content": prop.get("content", ""),
+                    "related_knowledge": prop.get("related_knowledge", []),
+                    "evidence": [
+                        e
+                        for entry in prop.get("history", [])
+                        for e in entry.get("evidence", [])
+                    ],
+                }
+            )
+        papers = self.list_papers(card_id)
+        pushes = self.list_pushes(card_id)
         return {
-            "node": node,
-            "propositions": props,
+            "card": card,
+            "propositions": prop_rows,
             "archived_count": len(papers),
             "recent_papers": [
                 {
@@ -269,7 +422,6 @@ class Archive:
                 {"push_id": p["push_id"], "title": p.get("title", "")}
                 for p in pushes[:limit]
             ],
-            "related_edges": related,
         }
 
     # ------------------------------------------------------------ apply
@@ -286,60 +438,92 @@ class Archive:
     def _apply(self, proposal: dict) -> dict:
         kind = proposal.get("kind")
         target_id = proposal.get("target_id")
-        value = proposal.get("diff", {}).get("value", {})
+        raw_value = proposal.get("diff", {}).get("value", {})
+        value = raw_value if isinstance(raw_value, dict) else {}
+        source = {
+            "kind": "push",
+            "id": proposal.get("push_id"),
+        }
+        evidence = [
+            {
+                "paper_id": value.get("paper_id"),
+                "push_id": proposal.get("push_id"),
+                "page": value.get("page"),
+                "quote": value.get("quote") or value.get("note", ""),
+            }
+        ]
 
         if kind == "add_evidence":
             prop = self.get_prop(target_id)
-            entry = {
-                "paper_id": value.get("paper_id"),
-                "push_id": proposal.get("push_id"),
-                "note": value.get("note", ""),
-            }
-            if not any(e.get("paper_id") == entry["paper_id"] for e in prop["evidence"]):
-                prop["evidence"].append(entry)
-                write_json(self.props / f"{target_id}.json", {**prop, "updated_at": now()})
-        elif kind == "add_alias":
-            node = self.get_node(target_id)
-            alias = value if isinstance(value, str) else value.get("alias")
-            if alias and alias not in node["aliases"]:
-                node["aliases"].append(alias)
-                write_json(
-                    self.kg_nodes / f"{target_id}.json",
-                    {**node, "updated_at": now()},
-                )
+            self.update_prop(
+                target_id,
+                {},
+                action="evidence_added",
+                source=source,
+                rationale=proposal.get("rationale", ""),
+                evidence=evidence,
+            )
+            target_id = prop["id"]
+        elif kind in ("add_alias", "add_ontology"):
+            card = self.get_card(target_id)
+            term = raw_value if isinstance(raw_value, str) else value.get("term")
+            ontology = list(card.get("ontology", []))
+            if term and term.lower() not in {t.lower() for t in ontology}:
+                ontology.append(term)
+                card["ontology"] = ontology
+                self.put_card(card)
         elif kind == "add_proposition":
-            prop_id = value.get("prop_id") or stable_id(
-                "prop", proposal.get("push_id", ""), value.get("text", "")
+            text = value.get("content") or value.get("text", "")
+            title = value.get("title") or clip(text, 60)
+            related = value.get("related_knowledge") or value.get("node_ids") or []
+            prop_id = prop_id_for(
+                title,
+                {
+                    p.get("id") or p.get("prop_id"): p
+                    for p in self.list_props()
+                    if p
+                },
+                explicit=value.get("id") or value.get("prop_id"),
             )
             self.put_prop(
                 {
-                    "prop_id": prop_id,
-                    "text": value.get("text", ""),
-                    "node_ids": value.get("node_ids", []),
-                    "evidence": [
+                    "id": prop_id,
+                    "title": title,
+                    "content": text,
+                    "related_knowledge": related,
+                    "history": [
                         {
-                            "paper_id": value.get("paper_id"),
-                            "push_id": proposal.get("push_id"),
-                            "note": value.get("note", ""),
+                            "at": now(),
+                            "action": "created",
+                            "source": source,
+                            "before": None,
+                            "after": {
+                                "title": title,
+                                "content": text,
+                                "related_knowledge": related,
+                            },
+                            "rationale": proposal.get("rationale", ""),
+                            "evidence": evidence,
                         }
                     ],
                 }
             )
             target_id = prop_id
         elif kind == "update_summary":
-            text = value if isinstance(value, str) else value.get("text", "")
+            text = raw_value if isinstance(raw_value, str) else value.get("text", "")
             if proposal.get("target_type") == "proposition":
-                prop = self.get_prop(target_id)
-                write_json(
-                    self.props / f"{target_id}.json",
-                    {**prop, "text": text, "updated_at": now()},
+                self.update_prop(
+                    target_id,
+                    {"content": text},
+                    action="content_changed",
+                    source=source,
+                    rationale=proposal.get("rationale", ""),
+                    evidence=evidence,
                 )
             else:
-                node = self.get_node(target_id)
-                write_json(
-                    self.kg_nodes / f"{target_id}.json",
-                    {**node, "summary": text, "updated_at": now()},
-                )
+                card = self.get_card(target_id)
+                card["annotation"] = text
+                self.put_card(card)
         else:
             raise ArchiveError(f"unknown proposal kind: {kind}")
 
@@ -400,8 +584,7 @@ class Archive:
         return {
             "papers": len(list(self.raw.glob("*.json"))),
             "pushes": len(list(self.pushes.glob("*.json"))),
-            "kg_nodes": len(list(self.kg_nodes.glob("*.json"))),
-            "kg_edges": len(read_jsonl(self.kg_edges)),
+            "cards": len(list(self.cards.glob("*.json"))),
             "propositions": len(list(self.props.glob("*.json"))),
             "applied": len(list(self.applied.glob("*.json"))),
         }

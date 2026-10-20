@@ -1,38 +1,48 @@
-"""frontier: checkpoints -> retrieval queries, plus rating-driven state."""
+"""frontier: knowledge cards -> retrieval queries, plus rating-driven state.
+
+Cards live in ``$KL_HOME/archive/cards/<card_id>.json`` and carry
+``id / label / ontology / annotation``. ``frontier.yaml`` is retired: retrieval
+reads the archive directly. Rating state stays in ``state/checkpoints.yaml`` but
+is keyed by card id.
+"""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
-from common import now, read_yaml, write_yaml
+from common import now, read_json, read_yaml, write_yaml
 
 VERDICT_VALUE = {"irrelevant": 0.0, "ok": 0.5, "great": 1.0}
 SOURCES = ("arxiv", "europepmc")
+CARD_FIELDS = ("id", "label", "ontology", "annotation")
 
 
 class FrontierError(RuntimeError):
     pass
 
 
-def load(home: Path) -> tuple[dict, dict]:
-    vocab = read_yaml(Path(home) / "frontier.yaml")
-    if not vocab:
-        raise FrontierError(f"missing {(Path(home) / 'frontier.yaml')}")
+def load_cards(home: Path) -> list[dict]:
+    card_dir = Path(home) / "archive" / "cards"
+    rows = [read_json(p) for p in sorted(card_dir.glob("*.json"))] if card_dir.exists() else []
+    rows = [r for r in rows if r]
+    if not rows:
+        raise FrontierError(f"no knowledge cards under {card_dir}")
+    return rows
+
+
+def load(home: Path) -> tuple[list[dict], dict]:
+    cards = load_cards(home)
     state = read_yaml(Path(home) / "state" / "checkpoints.yaml") or {
         "schema_version": 1,
         "checkpoints": {},
     }
     state.setdefault("checkpoints", {})
-    return vocab, state
+    return cards, state
 
 
 def save_state(home: Path, state: dict) -> None:
     write_yaml(Path(home) / "state" / "checkpoints.yaml", state)
-
-
-def checkpoints(vocab: dict) -> list[dict]:
-    return list(vocab.get("checkpoints") or [])
 
 
 def _quote(term: str) -> str:
@@ -58,19 +68,29 @@ def plan(
     limit: int = 20,
     sources: tuple[str, ...] = SOURCES,
 ) -> dict:
-    vocab, state = load(home)
+    cards, state = load(home)
     end = date.fromisoformat(day) if day else date.today()
     start = end - timedelta(days=max(days - 1, 0))
+    # Higher-weight cards query first: the retriever dedupes by paper, so the
+    # first matching query owns the candidate.
+    cards = sorted(
+        cards,
+        key=lambda c: (
+            -float(state["checkpoints"].get(c["id"], {}).get("weight", 5)),
+            c["id"],
+        ),
+    )
     queries = []
-    for cp in checkpoints(vocab):
-        st = state["checkpoints"].get(cp["id"], {})
-        if not cp.get("enabled", True) or st.get("enabled") is False:
+    for card in cards:
+        card_id = card["id"]
+        st = state["checkpoints"].get(card_id, {})
+        if st.get("enabled") is False:
             continue
-        terms = [t for t in cp.get("ontology", []) if t]
+        terms = [t for t in card.get("ontology", []) if t]
         if not terms:
             continue
         for source in sources:
-            query_id = f"q_{cp['id']}_{source}"
+            query_id = f"q_{card_id}_{source}"
             query = (
                 _arxiv_query(terms, start.isoformat(), end.isoformat())
                 if source == "arxiv"
@@ -79,17 +99,18 @@ def plan(
             queries.append(
                 {
                     "query_id": query_id,
-                    "checkpoint_id": cp["id"],
-                    "kg_node_id": cp.get("kg_node_id"),
+                    "checkpoint_id": card_id,
+                    "card_id": card_id,
+                    "card_label": card.get("label", ""),
                     "source": source,
                     "query": query,
                     "terms": terms,
-                    "annotation": cp.get("annotation", ""),
+                    "annotation": card.get("annotation", ""),
                     "limit": limit,
                 }
             )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "date": end.isoformat(),
         "window": {"start": start.isoformat(), "end": end.isoformat()},
         "generated_at": now(),
@@ -98,36 +119,30 @@ def plan(
 
 
 def validate(home: Path) -> dict:
-    vocab, _ = load(home)
+    cards = load_cards(home)
     problems, rows = [], []
-    for cp in checkpoints(vocab):
-        node_id = cp.get("kg_node_id")
-        exists = bool(node_id) and (
-            Path(home) / "archive" / "kg" / "nodes" / f"{node_id}.json"
-        ).exists()
+    for card in cards:
+        missing = [f for f in CARD_FIELDS if card.get(f) in (None, "", [])]
+        if missing:
+            problems.append(f"{card.get('id')}: missing {', '.join(missing)}")
         rows.append(
             {
-                "checkpoint_id": cp.get("id"),
-                "label": cp.get("label", ""),
-                "kg_node_id": node_id,
-                "kg_node_exists": exists,
-                "terms": len(cp.get("ontology", [])),
-                "enabled": bool(cp.get("enabled", True)),
+                "card_id": card.get("id"),
+                "label": card.get("label", ""),
+                "terms": len(card.get("ontology", []) or []),
             }
         )
-        if not exists:
-            problems.append(f"{cp.get('id')}: missing kg node {node_id!r}")
-    return {"ok": not problems, "checkpoints": rows, "problems": problems}
+    return {"ok": not problems, "cards": rows, "problems": problems}
 
 
-def record(home: Path, checkpoint_id: str, verdict: str, pushed: bool = False) -> dict:
+def record(home: Path, card_id: str, verdict: str, pushed: bool = False) -> dict:
     if verdict not in VERDICT_VALUE:
         raise FrontierError(f"verdict must be one of {sorted(VERDICT_VALUE)}")
-    vocab, state = load(home)
-    if checkpoint_id not in {c["id"] for c in checkpoints(vocab)}:
-        raise FrontierError(f"unknown checkpoint: {checkpoint_id}")
+    cards, state = load(home)
+    if card_id not in {c["id"] for c in cards}:
+        raise FrontierError(f"unknown card: {card_id}")
     st = state["checkpoints"].setdefault(
-        checkpoint_id,
+        card_id,
         {
             "weight": 5,
             "ema": 0.5,
@@ -157,7 +172,8 @@ def record(home: Path, checkpoint_id: str, verdict: str, pushed: bool = False) -
     st["last_checked"] = date.today().isoformat()
     save_state(home, state)
     return {
-        "checkpoint_id": checkpoint_id,
+        "checkpoint_id": card_id,
+        "card_id": card_id,
         "verdict": verdict,
         "ema": st["ema"],
         "weight": st["weight"],
@@ -165,23 +181,23 @@ def record(home: Path, checkpoint_id: str, verdict: str, pushed: bool = False) -
     }
 
 
-def show(home: Path, checkpoint_id: str | None = None) -> dict:
-    vocab, state = load(home)
+def show(home: Path, card_id: str | None = None) -> dict:
+    cards, state = load(home)
     rows = []
-    for cp in checkpoints(vocab):
-        if checkpoint_id and cp["id"] != checkpoint_id:
+    for card in cards:
+        if card_id and card["id"] != card_id:
             continue
-        st = state["checkpoints"].get(cp["id"], {})
+        st = state["checkpoints"].get(card["id"], {})
         rows.append(
             {
-                "id": cp["id"],
-                "label": cp.get("label", ""),
-                "kg_node_id": cp.get("kg_node_id"),
-                "enabled": bool(cp.get("enabled", True)),
+                "id": card["id"],
+                "label": card.get("label", ""),
+                "ontology": card.get("ontology", []),
+                "enabled": st.get("enabled", True),
                 "weight": st.get("weight", 5),
                 "ema": st.get("ema", 0.5),
                 "last_checked": st.get("last_checked"),
                 "hit_rate": st.get("hit_rate", {}),
             }
         )
-    return {"schema_version": 1, "checkpoints": rows}
+    return {"schema_version": 2, "cards": rows}

@@ -155,7 +155,7 @@ tmux new -d -s frontier \
   "cd $HOME/frontier && KL_HOME=$HOME/knowledge-loop FRONTIER_OWNER_ID=$OWNER python3 -m trigger.cli listen"
 ```
 
-手动补推只接受 owner 的私聊关键词：`再推一篇` / `下一篇` / `next` / `more`，可跟 checkpoint id（如 `再推一篇 hmbs`）。
+手动补推只接受 owner 的私聊关键词：`再推一篇` / `下一篇` / `next` / `more`，可跟知识卡片 id（如 `再推一篇 card_hmbs`）。
 
 ### 6. 验证
 

@@ -1,0 +1,14 @@
+{
+  "id": "card_hmbs",
+  "label": "HMBS",
+  "ontology": [
+    "HMBS",
+    "PBGD",
+    "hydroxymethylbilane synthase",
+    "HMBS enzyme"
+  ],
+  "annotation": "血红素合成第三步的胞质酶（EC 4.3.1.8）。功能缺失导致急性间歇性卟啉症（AIP）。\n⛔ 不含：与 HMBS 分子本身无关的卟啉症综述；ALAD / UROS 的论文\n⚠️ 易混：PBG 单独出现时是底物，PBGD 才是酶",
+  "created_at": "2026-10-20T23:55:50+08:00",
+  "updated_at": "2026-10-20T23:55:50+08:00",
+  "schema_version": 2
+}

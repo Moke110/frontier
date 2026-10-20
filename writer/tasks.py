@@ -9,7 +9,7 @@ import json
 import re
 from pathlib import Path
 
-from common import now, read_json, read_yaml
+from common import now, read_json
 from writer.model import _context
 from writer.render import inspect as inspect_pdf
 
@@ -33,34 +33,41 @@ INSTRUCTIONS = """你是知识循环的写作者。对每个 item 写一篇长�
 
 PROPOSAL_KINDS = {
     "add_evidence": "给现有命题补一条证据，target_type=proposition",
-    "add_alias": "给知识卡补别名，target_type=kg_node",
-    "add_proposition": "新建命题，target_type=none，value 含 text + node_ids",
-    "update_summary": "改写知识卡摘要或命题文本，target_type=kg_node|proposition",
+    "add_alias": "给知识卡片补一个 ontology 词，target_type=card",
+    "add_proposition": "新建命题，target_type=none，value 含 title + content + related_knowledge",
+    "update_summary": "改写知识卡片 annotation 或命题 content，target_type=card|proposition",
 }
+
+
+def _cards(home: Path) -> dict[str, dict]:
+    card_dir = Path(home) / "archive" / "cards"
+    rows = [read_json(p) for p in sorted(card_dir.glob("*.json"))] if card_dir.exists() else []
+    return {r["id"]: r for r in rows if r and r.get("id")}
 
 
 def build_task(home: Path, selection: dict, date: str) -> dict:
     home = Path(home)
-    vocab = read_yaml(home / "frontier.yaml") or {}
-    checkpoints = {cp["id"]: cp for cp in vocab.get("checkpoints", [])}
+    cards = _cards(home)
     items = []
     for index, row in enumerate(selection.get("selected", []), start=1):
         paper = row.get("paper") or {}
         cp_id = row.get("checkpoint_id")
-        cp = checkpoints.get(cp_id, {})
-        ctx = _context(home, cp.get("kg_node_id"), cp_id)
+        card = cards.get(cp_id, {})
+        ctx = _context(home, cp_id)
         items.append(
             {
                 "checkpoint_id": cp_id,
+                "card_id": cp_id,
                 "suggested_push_id": f"{date}_{cp_id}_{index:02d}",
-                "checkpoint": {
-                    "label": cp.get("label"),
-                    "annotation": cp.get("annotation", ""),
-                    "ontology": cp.get("ontology", []),
+                "card": {
+                    "id": card.get("id"),
+                    "label": card.get("label"),
+                    "annotation": card.get("annotation", ""),
+                    "ontology": card.get("ontology", []),
                 },
                 "paper": paper,
                 "context": {
-                    "node": ctx["node"],
+                    "card": ctx["card"],
                     "propositions": ctx["props"],
                     "archived_count": ctx["archived"],
                     "recent_papers": [
@@ -68,9 +75,9 @@ def build_task(home: Path, selection: dict, date: str) -> dict:
                         for p in sorted(
                             (home / "archive" / "raw").glob("*.json")
                         )
-                        if (read_json(p) or {}).get("checkpoint_id") == cp_id
+                        if ((read_json(p) or {}).get("card_id") or (read_json(p) or {}).get("checkpoint_id")) == cp_id
                     ][:5],
-                    "nodes": ctx["nodes"],
+                    "cards": ctx["cards"],
                 },
             }
         )
@@ -95,19 +102,19 @@ def build_task(home: Path, selection: dict, date: str) -> dict:
 
 
 def _target_sets(task: dict) -> tuple[set[str], set[str]]:
-    props, nodes = set(), set()
+    props, cards = set(), set()
     for item in task.get("items", []):
         ctx = item.get("context", {})
-        node = ctx.get("node") or {}
-        if node.get("node_id"):
-            nodes.add(node["node_id"])
+        card = ctx.get("card") or {}
+        if card.get("id"):
+            cards.add(card["id"])
         for prop in ctx.get("propositions", []):
-            if prop.get("prop_id"):
-                props.add(prop["prop_id"])
-        for n in ctx.get("nodes", []):
-            if n.get("node_id"):
-                nodes.add(n["node_id"])
-    return props, nodes
+            if prop.get("id"):
+                props.add(prop["id"])
+        for other in ctx.get("cards", []):
+            if other.get("id"):
+                cards.add(other["id"])
+    return props, cards
 
 
 def validate(task: dict, outbox: Path) -> dict:
@@ -120,7 +127,7 @@ def validate(task: dict, outbox: Path) -> dict:
     expected = {
         item["paper"]["paper_id"]: item for item in task.get("items", []) if item.get("paper")
     }
-    props, nodes = _target_sets(task)
+    props, cards = _target_sets(task)
     seen_papers: dict[str, str] = {}
     proposal_ids: set[str] = set()
     date = task.get("date")
@@ -136,7 +143,7 @@ def validate(task: dict, outbox: Path) -> dict:
             errors.append(f"{where}: filename must equal push_id")
         if push.get("date") != date:
             errors.append(f"{where}: date {push.get('date')} != task date {date}")
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}_[a-z0-9-]+_\d{2}", str(push.get("push_id", ""))):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}_[a-z0-9_-]+_\d{2}", str(push.get("push_id", ""))):
             errors.append(f"{where}: push_id must look like <date>_<checkpoint>_<NN>")
 
         paper_ids = push.get("paper_ids") or []
@@ -179,20 +186,24 @@ def validate(task: dict, outbox: Path) -> dict:
             if kind in ("add_evidence", "update_summary") and proposal.get("target_type") == "proposition":
                 if target not in props:
                     errors.append(f"{where}: proposal {pid} targets unknown proposition {target}")
-            if kind in ("add_alias", "update_summary") and proposal.get("target_type") == "kg_node":
-                if target not in nodes:
-                    errors.append(f"{where}: proposal {pid} targets unknown kg node {target}")
+            if kind in ("add_alias", "update_summary") and proposal.get("target_type") == "card":
+                if target not in cards:
+                    errors.append(f"{where}: proposal {pid} targets unknown card {target}")
             if kind == "add_evidence" and proposal.get("target_type") != "proposition":
                 errors.append(f"{where}: proposal {pid} add_evidence needs target_type=proposition")
-            if kind == "add_alias" and proposal.get("target_type") != "kg_node":
-                errors.append(f"{where}: proposal {pid} add_alias needs target_type=kg_node")
+            if kind == "add_alias" and proposal.get("target_type") != "card":
+                errors.append(f"{where}: proposal {pid} add_alias needs target_type=card")
             if kind == "add_proposition":
                 value = (proposal.get("diff") or {}).get("value") or {}
-                if not value.get("text"):
-                    errors.append(f"{where}: proposal {pid} add_proposition needs diff.value.text")
-                for node_id in value.get("node_ids") or []:
-                    if node_id not in nodes:
-                        errors.append(f"{where}: proposal {pid} references unknown node {node_id}")
+                if not (value.get("content") or value.get("text")):
+                    errors.append(
+                        f"{where}: proposal {pid} add_proposition needs diff.value.content"
+                    )
+                for card_id in value.get("related_knowledge") or []:
+                    if card_id not in cards:
+                        errors.append(
+                            f"{where}: proposal {pid} references unknown card {card_id}"
+                        )
 
     missing = set(expected) - set(seen_papers)
     for pid in sorted(missing):

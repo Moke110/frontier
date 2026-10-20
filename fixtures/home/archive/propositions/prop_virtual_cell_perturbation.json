@@ -1,0 +1,44 @@
+{
+  "id": "prop_virtual_cell_perturbation",
+  "title": "虚拟细胞模型可用于单细胞扰动响应预测",
+  "content": "虚拟细胞模型可用于单细胞扰动响应预测。",
+  "related_knowledge": [
+    "card_virtual_cell",
+    "card_perturbation_prediction"
+  ],
+  "history": [
+    {
+      "at": "2026-10-20T23:55:50+08:00",
+      "action": "created",
+      "source": {
+        "kind": "migration",
+        "id": "v1:prop_vc_perturbation"
+      },
+      "before": {
+        "schema_version": 1,
+        "prop_id": "prop_vc_perturbation",
+        "text": "虚拟细胞模型可用于单细胞扰动响应预测。",
+        "node_ids": [
+          "kg_vc",
+          "kg_perturbation"
+        ],
+        "status": "active",
+        "evidence": [],
+        "updated_at": "2026-10-19T10:00:00+08:00"
+      },
+      "after": {
+        "title": "虚拟细胞模型可用于单细胞扰动响应预测",
+        "content": "虚拟细胞模型可用于单细胞扰动响应预测。",
+        "related_knowledge": [
+          "card_virtual_cell",
+          "card_perturbation_prediction"
+        ]
+      },
+      "rationale": "v1 → v2 迁移：文本字段改为 title/content，node_ids 改为 related_knowledge，evidence 移入 history。",
+      "evidence": []
+    }
+  ],
+  "created_at": "2026-10-20T23:55:50+08:00",
+  "updated_at": "2026-10-20T23:55:50+08:00",
+  "schema_version": 2
+}

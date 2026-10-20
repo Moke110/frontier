@@ -9,31 +9,41 @@ from pathlib import Path
 
 from common import now, read_json, read_yaml
 
-INSTRUCTIONS = """你是检索排序器。根据每个 checkpoint 的 ontology / annotation / 知识卡 / 命题，
+INSTRUCTIONS = """你是检索排序器。根据每张知识卡片的 ontology / annotation 与关联命题，
 从候选论文中挑出最值得今天推送的条目。排序时综合考虑：
-1) 与 checkpoint 语义的相关性（ontology 命中但要以 annotation 排除误召回）；
+1) 与知识卡片的语义相关性（ontology 命中但要以 annotation 排除误召回）；
 2) 时效性；
 3) 历史偏好（preferences.checkpoints / sources，冷启动时都是 0.5）；
-4) checkpoint 权重。
+4) 知识卡片权重。
 输出 selection.json，字段见 contracts/README.md §4。每条必须写一句 rationale。
 不得编造 candidates 之外的论文，不得超过 limits。"""
 
 
-def _checkpoint_context(home: Path, cp: dict) -> dict:
+def _cards(home: Path) -> list[dict]:
+    card_dir = Path(home) / "archive" / "cards"
+    rows = [read_json(p) for p in sorted(card_dir.glob("*.json"))] if card_dir.exists() else []
+    return [r for r in rows if r]
+
+
+def _card_context(home: Path, card: dict, weight: int) -> dict:
     root = Path(home) / "archive"
-    node_id = cp.get("kg_node_id")
-    node = read_json(root / "kg" / "nodes" / f"{node_id}.json") if node_id else None
+    card_id = card.get("id")
     props = []
     prop_dir = root / "propositions"
     if prop_dir.exists():
         for path in sorted(prop_dir.glob("*.json")):
             prop = read_json(path) or {}
-            if node_id and node_id in prop.get("node_ids", []):
+            if card_id and card_id in prop.get("related_knowledge", []):
                 props.append(
                     {
-                        "prop_id": prop.get("prop_id"),
-                        "text": prop.get("text"),
-                        "evidence": [e.get("paper_id") for e in prop.get("evidence", [])],
+                        "prop_id": prop.get("id"),
+                        "title": prop.get("title"),
+                        "text": prop.get("content"),
+                        "evidence": [
+                            e.get("paper_id")
+                            for entry in prop.get("history", [])
+                            for e in entry.get("evidence", [])
+                        ],
                     }
                 )
     archived = 0
@@ -41,23 +51,19 @@ def _checkpoint_context(home: Path, cp: dict) -> dict:
     if raw_dir.exists():
         for path in raw_dir.glob("*.json"):
             rec = read_json(path) or {}
-            if rec.get("checkpoint_id") == cp.get("id"):
+            if (rec.get("card_id") or rec.get("checkpoint_id")) == card_id:
                 archived += 1
     return {
-        "label": cp.get("label"),
-        "annotation": cp.get("annotation", ""),
-        "ontology": cp.get("ontology", []),
-        "weight": cp.get("weight", 5),
-        "kg_node": (
-            {
-                "node_id": node.get("node_id"),
-                "label": node.get("label"),
-                "summary": node.get("summary"),
-                "aliases": node.get("aliases", []),
-            }
-            if node
-            else None
-        ),
+        "label": card.get("label"),
+        "annotation": card.get("annotation", ""),
+        "ontology": card.get("ontology", []),
+        "weight": weight,
+        "card": {
+            "id": card.get("id"),
+            "label": card.get("label"),
+            "annotation": card.get("annotation", ""),
+            "ontology": card.get("ontology", []),
+        },
         "propositions": props,
         "archived_count": archived,
     }
@@ -71,14 +77,12 @@ def build_task(
     per_checkpoint: int = 2,
 ) -> dict:
     home = Path(home)
-    vocab = read_yaml(home / "frontier.yaml") or {}
     state = read_yaml(home / "state" / "checkpoints.yaml") or {}
     model = read_yaml(home / "state" / "editor.yaml") or {}
     checkpoints = {}
-    for cp in vocab.get("checkpoints", []):
-        st = state.get("checkpoints", {}).get(cp["id"], {})
-        enriched = {**cp, "weight": st.get("weight", 5)}
-        checkpoints[cp["id"]] = _checkpoint_context(home, enriched)
+    for card in _cards(home):
+        st = state.get("checkpoints", {}).get(card["id"], {})
+        checkpoints[card["id"]] = _card_context(home, card, st.get("weight", 5))
 
     papers = []
     seen = set()

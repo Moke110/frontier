@@ -1,0 +1,12 @@
+{
+  "id": "card_perturbation_prediction",
+  "label": "perturbation prediction",
+  "ontology": [
+    "perturbation prediction",
+    "perturbation response prediction"
+  ],
+  "annotation": "给定扰动预测单细胞转录组响应。",
+  "created_at": "2026-10-20T23:55:50+08:00",
+  "updated_at": "2026-10-20T23:55:50+08:00",
+  "schema_version": 2
+}

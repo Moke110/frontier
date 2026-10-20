@@ -1,24 +1,57 @@
 schema_version: 1
 checkpoints:
-  hmbs:
+  card_hmbs:
     weight: 6
     ema: 0.6
     enabled: true
-    last_checked: "2026-10-19"
+    last_checked: '2026-10-19'
     hit_rate:
       checked: 12
       pushed: 4
       scored_total: 3
       scored_positive: 2
     proposals: []
-  virtual-cell:
+  card_virtual_cell:
     weight: 5
     ema: 0.5
     enabled: true
-    last_checked: "2026-10-19"
+    last_checked: '2026-10-19'
     hit_rate:
       checked: 8
       pushed: 2
       scored_total: 1
+      scored_positive: 0
+    proposals: []
+  card_aip:
+    weight: 5
+    ema: 0.5
+    enabled: true
+    last_checked: null
+    hit_rate:
+      checked: 0
+      pushed: 0
+      scored_total: 0
+      scored_positive: 0
+    proposals: []
+  card_heme_biosynthesis:
+    weight: 5
+    ema: 0.5
+    enabled: true
+    last_checked: null
+    hit_rate:
+      checked: 0
+      pushed: 0
+      scored_total: 0
+      scored_positive: 0
+    proposals: []
+  card_perturbation_prediction:
+    weight: 5
+    ema: 0.5
+    enabled: true
+    last_checked: null
+    hit_rate:
+      checked: 0
+      pushed: 0
+      scored_total: 0
       scored_positive: 0
     proposals: []

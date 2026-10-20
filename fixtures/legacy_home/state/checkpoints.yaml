@@ -1,0 +1,24 @@
+schema_version: 1
+checkpoints:
+  hmbs:
+    weight: 6
+    ema: 0.6
+    enabled: true
+    last_checked: "2026-10-19"
+    hit_rate:
+      checked: 12
+      pushed: 4
+      scored_total: 3
+      scored_positive: 2
+    proposals: []
+  virtual-cell:
+    weight: 5
+    ema: 0.5
+    enabled: true
+    last_checked: "2026-10-19"
+    hit_rate:
+      checked: 8
+      pushed: 2
+      scored_total: 1
+      scored_positive: 0
+    proposals: []

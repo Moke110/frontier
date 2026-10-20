@@ -6,7 +6,7 @@
 editor task  →  agent 排序  →  editor check  →  writer task  →  agent 写作  →  writer check
 ```
 
-任务文件里已经包含 agent 需要的全部上下文（checkpoint 的 ontology / annotation / 知识卡 / 命题 / 历史篇数），agent 也可以随时用 `archive.cli` 自行读取更多细节。
+任务文件里已经包含 agent 需要的全部上下文（知识卡片的 ontology / annotation、关联命题、历史篇数），agent 也可以随时用 `archive.cli` 自行读取更多细节。
 
 ## 1. editor task → selection
 
@@ -20,31 +20,31 @@ editor task  →  agent 排序  →  editor check  →  writer task  →  agent 
   "instructions": "……排序标准、输出要求……",
   "limits": { "limit": 5, "per_checkpoint": 2 },
   "preferences": {
-    "checkpoints": { "hmbs": { "n": 3, "mean": 0.72 } },
+    "checkpoints": { "card_hmbs": { "n": 3, "mean": 0.72 } },
     "sources": { "europepmc": { "n": 2, "mean": 0.6 } }
   },
   "checkpoints": {
-    "hmbs": {
-      "label": "HMBS / 羟甲基胆素合酶",
+    "card_hmbs": {
+      "label": "HMBS",
       "annotation": "……判据……",
       "ontology": ["HMBS", "PBGD"],
       "weight": 6,
-      "kg_node": { "node_id": "kg_hmbs", "summary": "……", "aliases": ["PBGD"] },
-      "propositions": [ { "prop_id": "prop_…", "text": "……" } ],
+      "card": { "id": "card_hmbs", "label": "HMBS", "annotation": "……", "ontology": ["HMBS", "PBGD"] },
+      "propositions": [ { "prop_id": "prop_hmbs_aip", "title": "…", "text": "……" } ],
       "archived_count": 12
     }
   },
   "candidates": [
     {
       "paper_id": "europepmc_42900001",
-      "checkpoint_id": "hmbs",
+      "checkpoint_id": "card_hmbs",
       "source": "europepmc",
       "title": "……",
       "abstract": "……",
       "published": "2026-10-16",
       "is_preprint": false,
       "url": "https://…",
-      "retrieval": { "query_id": "q_hmbs_europepmc", "rank_hint": 1 }
+      "retrieval": { "query_id": "q_card_hmbs_europepmc", "rank_hint": 1 }
     }
   ]
 }
@@ -76,11 +76,11 @@ python -m editor.cli check --task editor-task.json --selection selection.json
   "render_command": "python -m writer.cli render --push outbox/pushes/<push_id>.json --out <pdf>",
   "items": [
     {
-      "checkpoint_id": "hmbs",
+      "checkpoint_id": "card_hmbs",
       "paper": { "paper_id": "…", "title": "…", "abstract": "…" },
       "context": {
-        "node": { "node_id": "kg_hmbs", "summary": "…", "aliases": ["PBGD"] },
-        "propositions": [ { "prop_id": "prop_hmbs_aip", "text": "…", "evidence": [] } ],
+        "card": { "id": "card_hmbs", "label": "HMBS", "annotation": "…", "ontology": ["PBGD"] },
+        "propositions": [ { "prop_id": "prop_hmbs_aip", "title": "…", "text": "…", "evidence": [] } ],
         "archived_count": 2,
         "recent_papers": [ { "paper_id": "…", "title": "…", "published": "…" } ]
       }
@@ -88,7 +88,7 @@ python -m editor.cli check --task editor-task.json --selection selection.json
   ],
   "proposal_kinds": {
     "add_evidence": "给命题补一条证据 …",
-    "add_alias": "给知识卡补别名 …",
+    "add_alias": "给知识卡片补一个 ontology 词 …",
     "add_proposition": "新建命题 …",
     "update_summary": "改写摘要 …"
   },
@@ -110,14 +110,14 @@ python -m writer.cli figures --selection selection.json --out outbox
 然后为每个 item 写一个 push 文件，文件名 = `push_id`：
 
 - `format: "pdf"`；
-- `push_id = "<date>_<checkpoint_id>_<NN>"`，NN 从 01 递增（可用 task 里的 `suggested_push_id`）；
+- `push_id = "<date>_<checkpoint_id>_<NN>"`（值是卡片 id，如 `2026-10-20_card_hmbs_01`），NN 从 01 递增（可用 task 里的 `suggested_push_id`）；
 - `paper_ids` 必须包含该 item 的 `paper_id`，`paper` 里保留作者/期刊/日期/URL；
 - `sections` 七个键 `takeaway / background / methods / results / why / limits / sources` 都非空；
 - `body_html` 是正文 HTML 片段（不是整页），图片用 `<figure data-asset="fig-1"></figure>` 占位；
 - `assets` 至少一项，来自 `figures.json`，`caption` 非空且 `source` 为 `paper | generated`；
 - `why` 必须引用 `context`（知识卡摘要、命题、归档篇数至少其一）；
 - `proposals` 只允许四种 kind，`status` 必须是 `draft`；
-- `add_evidence` 的 `target_id` 必须是 context 里已有的命题；`add_alias` / `update_summary` 的目标必须存在；`add_proposition` 的 `node_ids` 必须都是已知节点。
+- `add_evidence` 的 `target_id` 必须是 context 里已有的命题；`add_alias` / `update_summary` 的目标必须是已有卡片；`add_proposition` 的 `related_knowledge`（至少 2 个）必须都是已知卡片。
 
 校验：
 
@@ -143,7 +143,7 @@ python -m archive.cli add-push --file outbox/pushes/<push_id>.json
 
 | 动作 | 谁做 | 怎么做 |
 |---|---|---|
-| 读知识卡 / 命题 / 上下文 | agent | 任务文件已附带；需要更多时调 `archive.cli context / kg-get / prop-list` |
+| 读知识卡 / 命题 / 上下文 | agent | 任务文件已附带；需要更多时调 `archive.cli card-get / card-list / context / prop-list` |
 | 写知识卡 / 命题 | **只有 archive** | `archive.cli apply-proposal` 或 `apply-decisions`（用户审批后） |
 | 提出更新 | agent（writer） | 写进 push 的 `proposals`，状态 `draft` |
 | 让用户同意 | publisher | 评分后发审批卡，落 `decisions.jsonl` |

@@ -9,24 +9,23 @@
 
 ```
 $KL_HOME/
-├── frontier.yaml                 # 人写：checkpoint 词汇表
 ├── state/
-│   ├── checkpoints.yaml          # 机器写：权重 / 命中率 / 最后检索
+│   ├── checkpoints.yaml          # 机器写：按知识卡片 id 存权重 / 命中率 / 最后检索
 │   └── editor.yaml               # 机器写：评分学出的偏好模型
 ├── archive/                      # 只有 archive 模块写
 │   ├── raw/<paper_id>.json       # ① 原文（元数据）
 │   ├── raw/text/<paper_id>.txt   # ① 原文（正文/摘要文本）
 │   ├── pushes/<push_id>.json     # ② 推送
 │   ├── pushes/assets/<push_id>/  # ② 推送图片（原文图 / 生成图）
-│   ├── kg/nodes/<node_id>.json   # ③ 知识图节点（= 知识卡片）
-│   ├── kg/edges.jsonl            # ③ 知识图边
+│   ├── cards/<card_id>.json      # ③ 知识卡片（取代 checkpoint + kg node）
 │   ├── propositions/<id>.json    # ④ 命题
 │   ├── index/*.jsonl             # 各层索引（可 reindex 重建）
-│   └── applied/<proposal_id>.json# 已应用的更新记录
+│   ├── applied/<proposal_id>.json# 已应用的更新记录
+│   └── legacy/v1-<ts>/           # v1 迁移备份（可 rollback）
 ├── ratings.jsonl                 # publisher 写，editor/frontier 读
 └── publisher/
     ├── messages.jsonl            # message_id → push/proposal，用于回调路由
-    ├── pending/<proposal_id>.json# 待审批提议副本（archive 读它来应用）
+    ├── pending/<proposal_id>.json# 待审批提议副本
     ├── decisions.jsonl           # 用户同意/拒绝
     ├── trigger.lock              # 手动补推串行锁
     ├── trigger.log               # 手动补推事件日志
@@ -35,30 +34,35 @@ $KL_HOME/
 
 ---
 
-## 1. checkpoint 与状态
+## 1. 知识卡片与状态
 
-`frontier.yaml`（人写、低频；agent 只能提议，不能改）：
+知识卡片是 frontier 的唯一知识单元，取代 v1 的 checkpoint 与 kg node。**卡片不存任何链接**（知识—知识、知识—命题都不存）；连接只存在于命题的 `related_knowledge`。
 
-```yaml
-schema_version: 1
-checkpoints:
-  - id: hmbs
-    label: HMBS / 羟甲基胆素合酶
-    kg_node_id: kg_hmbs          # ← 链接到 archive 的知识图节点（知识卡片）
-    ontology: [HMBS, PBGD, hydroxymethylbilane synthase]
-    annotation: |
-      血红素合成第三步的胞质酶……
-      ⛔ 不含：……
-    related: [aip]               # 同属一个命题的其他 checkpoint
-    enabled: true
+`archive/cards/<card_id>.json`（`archive` 写）：
+
+```json
+{
+  "schema_version": 2,
+  "id": "card_hmbs",
+  "label": "HMBS",
+  "ontology": ["HMBS", "PBGD", "hydroxymethylbilane synthase"],
+  "annotation": "血红素合成第三步的胞质酶……\n⛔ 不含：……\n⚠️ 易混：……",
+  "created_at": "2026-10-20T09:00:00+08:00",
+  "updated_at": "2026-10-20T09:00:00+08:00"
+}
 ```
 
-`state/checkpoints.yaml`（机器写、高频）：
+- `id`：语义 slug，`^card_[a-z0-9][a-z0-9_]*$`，如 `card_hmbs`、`card_virtual_cell`。
+- `label` 非空；`ontology` 是非空字符串列表（检索召回用）；`annotation` 非空（精确性判断与排除项）。
+- 自动生成 id 时用 label 的 ASCII slug；冲突追加 `_2`、`_3`；非 ASCII label 必须显式给 id。
+- `frontier.yaml` 已退役；检索计划直接读卡片。旧 checkpoint 词汇（`checkpoint_id`）在新数据里就是卡片 id。
+
+`state/checkpoints.yaml`（机器写、高频；文件名保留，键是卡片 id）：
 
 ```yaml
 schema_version: 1
 checkpoints:
-  hmbs:
+  card_hmbs:
     weight: 5                    # 1..10，editor 排序用
     ema: 0.5                     # 评分的指数滑动平均
     enabled: true
@@ -75,7 +79,7 @@ checkpoints:
   "paper_id": "europepmc_42830441",
   "source": "europepmc | arxiv | fixture",
   "source_id": "42830441",
-  "checkpoint_id": "hmbs",
+  "checkpoint_id": "card_hmbs",
   "title": "…",
   "abstract": "…",
   "text_path": "raw/text/europepmc_42830441.txt",
@@ -90,13 +94,14 @@ checkpoints:
 ```
 
 去重键 `source:source_id`；`paper_id = <source>_<sanitized source_id>`。
+`checkpoint_id` 是历史字段名，值是知识卡片 id（如 `card_hmbs`）；新代码也接受 `card_id`。
 
 ## 3. 候选 `candidates.jsonl`（retriever → editor）
 
 每行是一篇原文记录，外加：
 
 ```json
-{ "…paper 字段…": "…", "retrieval": { "query_id": "…", "checkpoint_id": "hmbs", "rank_hint": 1 } }
+{ "…paper 字段…": "…", "retrieval": { "query_id": "q_card_hmbs_europepmc", "checkpoint_id": "card_hmbs", "rank_hint": 1 } }
 ```
 
 ## 4. 选择 `selection.json`（editor → writer）
@@ -107,7 +112,7 @@ checkpoints:
   "date": "2026-10-20",
   "selected": [
     {
-      "checkpoint_id": "hmbs",
+      "checkpoint_id": "card_hmbs",
       "paper": { "…paper 字段…": "…" },
       "score": 0.82,
       "breakdown": { "relevance": 0.9, "recency": 1.0, "preference": 0.5, "weight": 0.5 },
@@ -122,14 +127,14 @@ checkpoints:
 ```json
 {
   "schema_version": 1,
-  "push_id": "2026-10-20_hmbs_01",
+  "push_id": "2026-10-20_card_hmbs_01",
   "date": "2026-10-20",
-  "checkpoint_id": "hmbs",
+  "checkpoint_id": "card_hmbs",
   "paper_ids": ["europepmc_42830441"],
   "title": "HMBS：…",
   "body_md": "…四段结构…",
   "sections": { "did": "…", "found": "…", "why": "…", "keep": "…" },
-  "context": { "kg_node_id": "kg_hmbs", "propositions": ["prop_…"], "archived_count": 12 },
+  "context": { "card_id": "card_hmbs", "propositions": ["prop_…"], "archived_count": 12 },
   "proposals": [ { "…proposal…": "…" } ],
   "status": "written",
   "created_at": "2026-10-20T09:10:00+08:00"
@@ -144,10 +149,10 @@ checkpoints:
 {
   "schema_version": 1,
   "format": "pdf",
-  "push_id": "2026-10-20_hmbs_01",
+  "push_id": "2026-10-20_card_hmbs_01",
   "date": "2026-10-20",
-  "checkpoint_id": "hmbs",
-  "checkpoint_label": "HMBS / 羟甲基胆素合酶",
+  "checkpoint_id": "card_hmbs",
+  "checkpoint_label": "HMBS",
   "paper_ids": ["europepmc_42830441"],
   "paper": {
     "paper_id": "europepmc_42830441",
@@ -193,45 +198,61 @@ checkpoints:
 - `assets[].caption` 非空，`source` 只能是 `paper` 或 `generated`，渲染时会自动加「原文图 / 生成图」标记；
 - `writer render` 用固定模板把片段渲染成 PDF；`archive add-push` 会把 `assets/<push_id>/` 一并复制进 `archive/pushes/assets/`。
 
-## 6. 知识图
+## 6. 知识卡片
 
-节点（知识卡片）`archive/kg/nodes/<node_id>.json`：
+卡片即 `archive/cards/<card_id>.json`，形状见 §1。没有 `kg/nodes`、没有 `kg/edges.jsonl`：
+v2 不存知识—知识链接，也不存知识—命题链接。需要“关联”时读命题的
+`related_knowledge`（反向查：`archive.cli prop-list --card <card_id>`）。
+
+写入命令：
+
+```bash
+python -m archive.cli card-put --file card.json      # 新建或更新（id 省略则按 label 生成）
+python -m archive.cli card-get card_hmbs
+python -m archive.cli card-list
+python -m archive.cli context --card card_hmbs       # 卡片 + 命题 + 历史篇数
+```
+
+## 7. 命题 `archive/propositions/<id>.json`
 
 ```json
 {
-  "schema_version": 1,
-  "node_id": "kg_hmbs",
-  "label": "HMBS",
-  "type": "concept",
-  "summary": "血红素合成第三步的胞质酶；缺失导致急性间歇性卟啉症。",
-  "aliases": ["PBGD", "hydroxymethylbilane synthase"],
-  "checkpoint_ids": ["hmbs"],
-  "updated_at": "2026-10-20T09:00:00+08:00"
-}
-```
-
-边 `archive/kg/edges.jsonl`：
-
-```json
-{ "schema_version": 1, "from": "kg_hmbs", "to": "kg_aip", "type": "related_to", "note": "…", "created_at": "…" }
-```
-
-`type` ∈ `related_to | supports | contradicts`。
-
-## 7. 命题 `archive/propositions/<prop_id>.json`
-
-```json
-{
-  "schema_version": 1,
-  "prop_id": "prop_hmbs_aip",
-  "text": "HMBS 功能缺失导致急性间歇性卟啉症。",
-  "node_ids": ["kg_hmbs", "kg_aip"],
-  "status": "active",
-  "evidence": [
-    { "paper_id": "europepmc_42830441", "push_id": "2026-10-20_hmbs_01", "note": "…" }
+  "schema_version": 2,
+  "id": "prop_hmbs_aip",
+  "title": "HMBS 功能缺失导致 AIP",
+  "content": "HMBS 功能缺失导致急性间歇性卟啉症（AIP）。",
+  "related_knowledge": ["card_hmbs", "card_aip"],
+  "history": [
+    {
+      "at": "2026-10-20T09:00:00+08:00",
+      "action": "created",
+      "source": { "kind": "paper | push | user | migration | cli", "id": "…" },
+      "before": null,
+      "after": { "title": "…", "content": "…", "related_knowledge": ["…"] },
+      "rationale": "为什么改",
+      "evidence": [
+        { "paper_id": "europepmc_42830441", "push_id": "…", "page": 7, "quote": "原文引文" }
+      ]
+    }
   ],
+  "created_at": "2026-10-20T09:00:00+08:00",
   "updated_at": "2026-10-20T09:00:00+08:00"
 }
+```
+
+约束：
+
+- `related_knowledge` 至少 2 个**已存在**的卡片 id，不得重复；
+- `history` 非空，`action ∈ created | content_changed | title_changed | related_knowledge_changed | evidence_added`；
+- 改 title / content / related_knowledge 必须追加 history（`archive.store.update_prop` 会做）；
+- 证据只存在 history 里，不再有顶层 `evidence` 字段。
+
+写入命令：
+
+```bash
+python -m archive.cli prop-put --file prop.json
+python -m archive.cli prop-get prop_hmbs_aip
+python -m archive.cli prop-list --card card_hmbs
 ```
 
 ## 8. 评分 `ratings.jsonl`（publisher → editor / frontier）
@@ -256,19 +277,24 @@ checkpoints:
 ```json
 {
   "schema_version": 1,
-  "proposal_id": "p_2026-10-20_hmbs_01_1",
-  "push_id": "2026-10-20_hmbs_01",
+  "proposal_id": "p_2026-10-20_card_hmbs_01_1",
+  "push_id": "2026-10-20_card_hmbs_01",
   "kind": "add_evidence | add_alias | add_proposition | update_summary",
-  "target_type": "proposition | kg_node | none",
+  "target_type": "proposition | card | none",
   "target_id": "prop_hmbs_aip",
   "diff": { "op": "add", "path": "evidence", "value": { "paper_id": "…", "note": "…" } },
   "before": "…",
   "after": "…",
   "rationale": "…",
   "confidence": 0.7,
-  "status": "draft | pending_approval | approved | rejected"
+  "status": "draft | pending_approval | approved | rejected | historical"
 }
 ```
+
+v2 落点：`add_alias` → 卡片 `ontology`；`update_summary`（target_type=card）→ `annotation`；
+`update_summary`（proposition）→ `content` + history；`add_proposition` 的 value 用
+`title + content + related_knowledge`。v1 迁移来的旧提议标 `status: historical`，不补问。
+正式的新提议契约（卡片/命题更新组、每题同意全部/拒绝全部）由后续票定稿。
 
 ## 10. publisher 内部
 

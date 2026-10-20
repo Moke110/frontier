@@ -13,11 +13,11 @@ def test_parse_keywords_with_optional_checkpoint():
 
 
 def test_resolve_checkpoint_matches_id_or_label():
-    vocab = {"checkpoints": [{"id": "hmbs", "label": "HMBS / 羟甲基胆素合酶"}]}
-    assert resolve_checkpoint("hmbs", vocab) == "hmbs"
-    assert resolve_checkpoint("HMBS / 羟甲基胆素合酶", vocab) == "hmbs"
-    assert resolve_checkpoint("nope", vocab) == ""
-    assert resolve_checkpoint(None, vocab) is None
+    cards = [{"id": "card_hmbs", "label": "HMBS / 羟甲基胆素合酶"}]
+    assert resolve_checkpoint("card_hmbs", cards) == "card_hmbs"
+    assert resolve_checkpoint("HMBS / 羟甲基胆素合酶", cards) == "card_hmbs"
+    assert resolve_checkpoint("nope", cards) == ""
+    assert resolve_checkpoint(None, cards) is None
 
 
 def _config(kl_home):
@@ -57,10 +57,10 @@ def test_handle_event_runs_one_job_and_replies(kl_home):
         return subprocess.CompletedProcess([], 0, "已推送 2026-10-20_hmbs_01", "")
 
     result = handle_event(
-        _event("再推一篇 hmbs"), _config(kl_home), runner=runner, replier=replier
+        _event("再推一篇 card_hmbs"), _config(kl_home), runner=runner, replier=replier
     )
     assert result["ok"] is True
-    assert result["checkpoint"] == "hmbs"
+    assert result["checkpoint"] == "card_hmbs"
     assert replies[0] == "收到，开始检索。"
     assert replies[-1] == "补推完成。"
     assert (kl_home / "publisher" / "trigger.log").exists()

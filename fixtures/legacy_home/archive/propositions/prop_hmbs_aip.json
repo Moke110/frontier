@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "prop_id": "prop_hmbs_aip",
+  "text": "HMBS 功能缺失导致急性间歇性卟啉症（AIP）。",
+  "node_ids": ["kg_hmbs", "kg_aip"],
+  "status": "active",
+  "evidence": [],
+  "updated_at": "2026-10-19T10:00:00+08:00"
+}

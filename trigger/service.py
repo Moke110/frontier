@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from common import append_jsonl, now, read_yaml
+from common import append_jsonl, now, read_json
 from publisher import feishu
 from trigger.keywords import parse, resolve_checkpoint
 
@@ -145,8 +145,12 @@ def handle_event(
     if not request:
         return {"ok": False, "reason": "no_keyword"}
 
-    vocab = read_yaml(Path(config.home) / "frontier.yaml") or {}
-    checkpoint = resolve_checkpoint(request.checkpoint, vocab)
+    card_dir = Path(config.home) / "archive" / "cards"
+    cards = [
+        read_json(path) or {}
+        for path in sorted(card_dir.glob("*.json"))
+    ] if card_dir.exists() else []
+    checkpoint = resolve_checkpoint(request.checkpoint, cards)
     if checkpoint == "":
         replier(event, f"未知 checkpoint：{request.checkpoint}", config)
         return {"ok": False, "reason": "unknown_checkpoint"}

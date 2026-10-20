@@ -1,6 +1,6 @@
 ---
 name: frontier
-description: "Run the personal knowledge loop: turn checkpoints into retrieval queries, rank papers, write long-form illustrated PDF pushes, send them to Lark, and collect ratings. This phase stops at rating collection; feedback-driven ranking and knowledge-base approval are not enabled. Use when the user wants to run or advance their frontier/knowledge-loop daily workflow."
+description: "Run the personal knowledge loop: turn knowledge cards into retrieval queries, rank papers, write long-form illustrated PDF pushes, send them to Lark, and collect ratings. This phase stops at rating collection; feedback-driven ranking and knowledge-base approval are not enabled. Use when the user wants to run or advance their frontier/knowledge-loop daily workflow."
 metadata:
   requires:
     bins: ["python3", "lark-cli"]
@@ -40,9 +40,9 @@ python3 -m pytest -q
 export KL_HOME="${KL_HOME:-$HOME/knowledge-loop}"
 ```
 
-- `frontier.yaml`（人写）：checkpoint 词汇表；可从 `fixtures/home/frontier.yaml` 复制起步。
-- `state/checkpoints.yaml`（机器写）：权重/命中率。
-- `archive/`：四层存储 —— 原文、推送、知识图、命题。
+- `archive/cards/`（archive 写）：知识卡片，字段 `id / label / ontology / annotation`；`frontier.yaml` 已退役。
+- `state/checkpoints.yaml`（机器写）：按卡片 id 存权重/命中率。
+- `archive/`：四层存储 —— 原文、推送、知识卡片、命题。
 - 数据格式见 `contracts/README.md`；agent 任务格式见 `contracts/agent-tasks.md`。
 
 ## 主循环
@@ -54,7 +54,7 @@ python -m frontier.cli validate
 python -m frontier.cli plan --date "$(date +%F)" --days 7 --out plan.json
 ```
 
-`validate` 必须通过：每个 checkpoint 的 `kg_node_id` 都要指向 `archive/kg/nodes/` 里真实存在的知识卡。
+`validate` 必须通过：每张知识卡片都要有 `id / label / ontology / annotation`。
 
 ### 2. 取原文并入档
 
@@ -132,7 +132,7 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 常驻 listener 订阅 `im.message.receive_v1`，只接受 owner 私聊的固定关键词：
 
 - `再推一篇` / `下一篇` / `next` / `more`；
-- 可跟 checkpoint id 或 label，如 `再推一篇 hmbs`；不带时按默认规则选一个。
+- 可跟知识卡片 id 或 label，如 `再推一篇 card_hmbs`；不带时按默认规则选一个。
 
 ```bash
 python -m trigger.cli listen                 # 前台常驻（调试）

@@ -1,0 +1,12 @@
+{
+  "id": "card_heme_biosynthesis",
+  "label": "heme biosynthesis",
+  "ontology": [
+    "heme biosynthesis",
+    "haem biosynthesis"
+  ],
+  "annotation": "血红素合成通路，HMBS 位于第三步。",
+  "created_at": "2026-10-20T23:55:50+08:00",
+  "updated_at": "2026-10-20T23:55:50+08:00",
+  "schema_version": 2
+}

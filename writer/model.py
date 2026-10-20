@@ -1,8 +1,8 @@
-"""writer: selection -> push (four sections) + knowledge-update proposals.
+"""writer: selection -> push + knowledge-update proposals.
 
 Deterministic extractive prototype. The only "intelligence" is sentence
-selection + simple keyword matching against the archive's knowledge graph.
-Replace `_summarise` / `_propose` with an LLM later; the output contract stays.
+selection + simple keyword matching against knowledge cards. Replace
+`_summarise` / `_propose` with an LLM later; the output contract stays.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from common import clip, now, read_json, read_yaml, write_json
+from common import clip, now, read_json, write_json
 
 SENTENCE_RE = re.compile(r"(?<=[.!?。！？])\s+")
 
@@ -69,48 +69,48 @@ def _summarise(abstract: str) -> dict:
     }
 
 
-def _context(home: Path, node_id: str | None, checkpoint_id: str) -> dict:
+def _cards(home: Path) -> list[dict]:
+    card_dir = Path(home) / "archive" / "cards"
+    rows = [read_json(p) for p in sorted(card_dir.glob("*.json"))] if card_dir.exists() else []
+    return [r for r in rows if r]
+
+
+def _context(home: Path, card_id: str | None) -> dict:
     root = Path(home) / "archive"
-    node = read_json(root / "kg" / "nodes" / f"{node_id}.json") if node_id else None
+    card = None
+    if card_id:
+        card = read_json(root / "cards" / f"{card_id}.json")
     prop_dir = root / "propositions"
     props = []
     for path in sorted(prop_dir.glob("*.json")) if prop_dir.exists() else []:
         prop = read_json(path) or {}
-        if node_id and node_id in prop.get("node_ids", []):
+        if card_id and card_id in prop.get("related_knowledge", []):
             props.append(prop)
     raw_dir = root / "raw"
     papers = list(raw_dir.glob("*.json")) if raw_dir.exists() else []
     archived = 0
     for path in papers:
         rec = read_json(path) or {}
-        if rec.get("checkpoint_id") == checkpoint_id:
+        if (rec.get("card_id") or rec.get("checkpoint_id")) == card_id:
             archived += 1
-    node_dir = root / "kg" / "nodes"
-    nodes = []
-    for path in sorted(node_dir.glob("*.json")) if node_dir.exists() else []:
-        nodes.append(read_json(path) or {})
-    return {"node": node, "props": props, "archived": archived, "nodes": nodes}
+    return {"card": card, "props": props, "archived": archived, "cards": _cards(home)}
 
 
 def _why(context: dict) -> str:
-    node = context["node"]
+    card = context["card"]
     parts = []
-    if node and node.get("summary"):
-        parts.append(node["summary"].rstrip("。."))
+    if card and card.get("annotation"):
+        parts.append(card["annotation"].strip().rstrip("。."))
     for prop in context["props"][:2]:
-        parts.append(f"命题「{prop.get('text','').rstrip('。.')}」")
+        parts.append(f"命题「{(prop.get('title') or prop.get('content','')).rstrip('。.')}」")
     if context["archived"]:
-        parts.append(f"该 checkpoint 已归档 {context['archived']} 篇，本篇是其中之一")
-    return clip("；".join(parts) or "暂无知识卡脉络，本篇作为该 checkpoint 的新线索。", 400)
+        parts.append(f"该知识卡片已归档 {context['archived']} 篇，本篇是其中之一")
+    return clip("；".join(parts) or "暂无知识卡片脉络，本篇作为该卡片的新线索。", 400)
 
 
-def _propose(
-    push: dict, paper: dict, context: dict, checkpoint_id: str, home: Path
-) -> list[dict]:
+def _propose(push: dict, paper: dict, context: dict, card_id: str) -> list[dict]:
     """Heuristic proposals. Every one is a *proposal*; the user approves later."""
     proposals: list[dict] = []
-    node = context["node"] or {}
-    node_id = node.get("node_id")
     abstract = paper.get("abstract", "")
     low = abstract.lower()
     counter = 0
@@ -139,66 +139,57 @@ def _propose(
     best, best_hits = None, 0
     for prop in context["props"]:
         hits = 0
-        for nid in prop.get("node_ids", []):
-            other = next((n for n in context["nodes"] if n.get("node_id") == nid), None)
+        for related in prop.get("related_knowledge", []):
+            other = next((c for c in context["cards"] if c.get("id") == related), None)
             if not other:
                 continue
-            labels = [other.get("label", "")] + list(other.get("aliases", []))
-            hits += sum(1 for label in labels if label and label.lower() in low)
+            terms = [other.get("label", "")] + list(other.get("ontology", []))
+            hits += sum(1 for term in terms if term and term.lower() in low)
         if hits > best_hits:
             best, best_hits = prop, hits
     if best and best_hits:
-        already = any(e.get("paper_id") == paper.get("paper_id") for e in best.get("evidence", []))
-        if not already:
+        evidence = [
+            e
+            for entry in best.get("history", [])
+            for e in entry.get("evidence", [])
+            if e.get("paper_id") == paper.get("paper_id")
+        ]
+        if not evidence:
             add(
                 "add_evidence",
                 "proposition",
-                best["prop_id"],
+                best["id"],
                 {
                     "op": "add",
                     "path": "evidence",
-                    "value": {"paper_id": paper.get("paper_id"), "note": clip(paper.get("title", ""), 160)},
+                    "value": {
+                        "paper_id": paper.get("paper_id"),
+                        "note": clip(paper.get("title", ""), 160),
+                    },
                 },
-                len(best.get("evidence", [])),
-                len(best.get("evidence", [])) + 1,
-                f"摘要中出现 {best_hits} 个与该命题节点相关的术语，可作为新证据。",
+                len(best.get("history", [])),
+                len(best.get("history", [])) + 1,
+                f"摘要中出现 {best_hits} 个与该命题关联卡片相关的术语，可作为新证据。",
                 0.7,
             )
 
-    # 2) propose an alias that exists in the checkpoint ontology but not on the node
-    vocab = read_yaml(Path(home) / "frontier.yaml") or {}
-    cp = next((c for c in vocab.get("checkpoints", []) if c.get("id") == checkpoint_id), {})
-    aliases = {a.lower() for a in node.get("aliases", [])}
-    for term in sorted(cp.get("ontology", []), key=len, reverse=True):
-        if term.lower() == (node.get("label") or "").lower():
-            continue
-        if term.lower() not in aliases and term.lower() in low:
-            add(
-                "add_alias",
-                "kg_node",
-                node_id,
-                {"op": "add", "path": "aliases", "value": term},
-                list(node.get("aliases", [])),
-                list(node.get("aliases", [])) + [term],
-                "该词已在该 checkpoint 的 ontology 中，但知识卡未收录为别名。",
-                0.4,
-            )
-            break
-
-    # 3) propose a new proposition when two graph nodes co-occur in one sentence
+    # 2) propose a new proposition when two cards co-occur in one sentence
     for sentence in _sentences(abstract):
         low_sentence = sentence.lower()
-        hit_nodes = []
-        for candidate in context["nodes"]:
-            labels = [candidate.get("label", "")] + list(candidate.get("aliases", []))
-            if any(label and label.lower() in low_sentence for label in labels):
-                hit_nodes.append(candidate)
-        if len(hit_nodes) < 2:
+        hit_cards = []
+        for candidate in context["cards"]:
+            terms = [candidate.get("label", "")] + list(candidate.get("ontology", []))
+            if any(term and term.lower() in low_sentence for term in terms):
+                hit_cards.append(candidate)
+        if len(hit_cards) < 2:
             continue
-        ids = [n["node_id"] for n in hit_nodes[:2]]
-        linked = any(set(ids).issubset(set(p.get("node_ids", []))) for p in context["props"])
+        ids = [c["id"] for c in hit_cards[:2]]
+        linked = any(
+            set(ids).issubset(set(p.get("related_knowledge", []))) for p in context["props"]
+        )
         if linked or ids[0] == ids[1]:
             continue
+        title = clip(sentence, 60)
         add(
             "add_proposition",
             "none",
@@ -207,15 +198,16 @@ def _propose(
                 "op": "add",
                 "path": "proposition",
                 "value": {
-                    "text": clip(sentence, 300),
-                    "node_ids": ids,
+                    "title": title,
+                    "content": clip(sentence, 300),
+                    "related_knowledge": ids,
                     "paper_id": paper.get("paper_id"),
                     "note": "由摘要中的共现句抽取",
                 },
             },
             None,
             clip(sentence, 300),
-            "同一句话同时提到两个知识节点，且现有命题未连接它们。",
+            "同一句话同时提到两张知识卡片，且现有命题未连接它们。",
             0.5,
         )
         break
@@ -229,9 +221,9 @@ def write(selection: dict, home: Path, out_dir: Path, day: str | None = None) ->
     for index, row in enumerate(selection.get("selected", []), start=1):
         paper = row["paper"]
         cp_id = row["checkpoint_id"]
-        context = _context(home, row.get("kg_node_id") or _node_for(home, cp_id), cp_id)
-        node = context["node"] or {}
-        label = node.get("label") or cp_id
+        context = _context(home, cp_id)
+        card = context["card"] or {}
+        label = card.get("label") or cp_id
         title = f"{label}：{clip(paper.get('title', ''), 60)}"
         sections = _summarise(paper.get("abstract", ""))
         sections["why"] = _why(context)
@@ -240,13 +232,13 @@ def write(selection: dict, home: Path, out_dir: Path, day: str | None = None) ->
             "push_id": f"{day}_{cp_id}_{index:02d}",
             "date": day,
             "checkpoint_id": cp_id,
-            "kg_node_id": node.get("node_id"),
+            "card_id": cp_id,
             "paper_ids": [paper.get("paper_id")],
             "title": title,
             "sections": sections,
             "context": {
-                "kg_node_id": node.get("node_id"),
-                "propositions": [p["prop_id"] for p in context["props"]],
+                "card_id": card.get("id"),
+                "propositions": [p["id"] for p in context["props"]],
                 "archived_count": context["archived"],
             },
             "source": paper.get("source"),
@@ -255,7 +247,7 @@ def write(selection: dict, home: Path, out_dir: Path, day: str | None = None) ->
             "status": "written",
             "created_at": now(),
         }
-        push["proposals"] = _propose(push, paper, context, cp_id, home)
+        push["proposals"] = _propose(push, paper, context, cp_id)
         push["body_md"] = _render(push, paper)
         pushes.append(push)
 
@@ -264,14 +256,6 @@ def write(selection: dict, home: Path, out_dir: Path, day: str | None = None) ->
     for push in pushes:
         write_json(out_dir / "pushes" / f"{push['push_id']}.json", push)
     return {"ok": True, "count": len(pushes), "out_dir": str(out_dir), "pushes": pushes}
-
-
-def _node_for(home: Path, checkpoint_id: str) -> str | None:
-    vocab = read_yaml(Path(home) / "frontier.yaml") or {}
-    for cp in vocab.get("checkpoints", []):
-        if cp.get("id") == checkpoint_id:
-            return cp.get("kg_node_id")
-    return None
 
 
 def _render(push: dict, paper: dict) -> str:

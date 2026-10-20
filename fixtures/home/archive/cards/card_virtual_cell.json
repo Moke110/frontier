@@ -1,0 +1,14 @@
+{
+  "id": "card_virtual_cell",
+  "label": "virtual cell",
+  "ontology": [
+    "virtual cell",
+    "perturbation prediction",
+    "single-cell perturbation",
+    "virtual cell model"
+  ],
+  "annotation": "用计算模型预测细胞在遗传或药物扰动下的转录响应。\n⛔ 不含：纯实验筛选、没有预测模型的描述性图谱\n⚠️ 易混：perturbation response 与 perturbation detection",
+  "created_at": "2026-10-20T23:55:50+08:00",
+  "updated_at": "2026-10-20T23:55:50+08:00",
+  "schema_version": 2
+}

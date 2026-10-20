@@ -49,11 +49,11 @@ def main() -> int:
     env = {**os.environ, "KL_HOME": str(home)}
     print(f"KL_HOME = {home}")
 
-    step("1. archive: 四层存储（fixtures 已预置知识图 + 命题）")
+    step("1. archive: 四层存储（fixtures 已预置知识卡片 + 命题）")
     run([PY, "-m", "archive.cli", "reindex"], env)
     run([PY, "-m", "archive.cli", "stats"], env)
 
-    step("2. frontier: checkpoint -> 检索式")
+    step("2. frontier: 知识卡片 -> 检索式")
     run([PY, "-m", "frontier.cli", "validate"], env)
     run(
         [
@@ -217,13 +217,13 @@ def main() -> int:
     )
     node = json.loads(
         subprocess.run(
-            [PY, "-m", "archive.cli", "kg-get", "kg_hmbs"],
+            [PY, "-m", "archive.cli", "card-get", "card_hmbs"],
             cwd=ROOT, env=env, capture_output=True, text=True,
         ).stdout
     )
-    print(f"命题 prop_hmbs_aip 证据数：{len(prop['evidence'])} -> {[e['paper_id'] for e in prop['evidence']]}")
-    print(f"知识卡 kg_hmbs 别名：{node['aliases']}")
-    print(f"知识图节点数：{len(list((home / 'archive' / 'kg' / 'nodes').glob('*.json')))}")
+    print(f"命题 prop_hmbs_aip 历史条数：{len(prop['history'])} -> {[e.get('paper_id') for h in prop['history'] for e in h.get('evidence', [])]}")
+    print(f"知识卡 card_hmbs ontology：{node['ontology']}")
+    print(f"知识卡片数：{len(list((home / 'archive' / 'cards').glob('*.json')))}")
     print(f"命题数：{len(list((home / 'archive' / 'propositions').glob('*.json')))}")
     print(f"评分：{(home / 'ratings.jsonl').read_text().strip()}")
     print(f"排序前 3：{[s['paper_id'] for s in rerank.get('scores', [])]}")

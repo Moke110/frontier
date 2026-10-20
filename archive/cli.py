@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from archive import migrate as migration
 from archive.store import Archive, ArchiveError
 from common import emit, home, read_json
 
@@ -41,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("paper_id")
 
     p = sub.add_parser("list-papers")
-    p.add_argument("--checkpoint")
+    p.add_argument("--card", help="filter by knowledge card id")
 
     p = sub.add_parser("add-push", help="store a generated push")
     p.add_argument("--json")
@@ -51,26 +52,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("push_id")
 
     p = sub.add_parser("list-pushes")
-    p.add_argument("--checkpoint")
+    p.add_argument("--card", help="filter by knowledge card id")
 
-    p = sub.add_parser("kg-put-node")
+    p = sub.add_parser("card-put", help="create or update a knowledge card")
     p.add_argument("--json")
     p.add_argument("--file")
 
-    p = sub.add_parser("kg-get")
-    p.add_argument("node_id")
+    p = sub.add_parser("card-get")
+    p.add_argument("card_id")
 
-    p = sub.add_parser("kg-link")
-    p.add_argument("--from", dest="src", required=True)
-    p.add_argument("--to", dest="dst", required=True)
-    p.add_argument("--type", default="related_to")
-    p.add_argument("--note", default="")
+    sub.add_parser("card-list", help="list knowledge cards")
 
-    p = sub.add_parser("kg-subgraph")
-    p.add_argument("node_id")
-    p.add_argument("--depth", type=int, default=1)
-
-    p = sub.add_parser("prop-put")
+    p = sub.add_parser("prop-put", help="create or replace a proposition")
     p.add_argument("--json")
     p.add_argument("--file")
 
@@ -78,11 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("prop_id")
 
     p = sub.add_parser("prop-list")
-    p.add_argument("--node")
+    p.add_argument("--card", help="filter by knowledge card id")
 
-    p = sub.add_parser("context", help="aggregate KG + propositions + history for writer")
-    p.add_argument("--node", required=True)
-    p.add_argument("--checkpoint", required=True)
+    p = sub.add_parser("context", help="aggregate card + propositions + history for writer")
+    p.add_argument("--card", required=True)
     p.add_argument("--limit", type=int, default=5)
 
     p = sub.add_parser("apply-proposal")
@@ -93,13 +85,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pending-dir", required=True)
     p.add_argument("--decisions", required=True)
 
+    p = sub.add_parser("migrate-v2", help="migrate a v1 data root (idempotent, backed up)")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--rollback", metavar="BACKUP_DIR", help="restore a v1 backup")
+
     sub.add_parser("stats")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    store = Archive(home(args.home))
+    root = home(args.home)
+    store = Archive(root)
     try:
         if args.cmd == "init":
             emit(store.init())
@@ -110,34 +107,37 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "get-paper":
             emit(store.get_paper(args.paper_id))
         elif args.cmd == "list-papers":
-            emit(store.list_papers(args.checkpoint))
+            emit(store.list_papers(args.card))
         elif args.cmd == "add-push":
             source_dir = Path(args.file).resolve().parent if args.file else None
             emit(store.add_push(_payload(args), source_dir=source_dir))
         elif args.cmd == "get-push":
             emit(store.get_push(args.push_id))
         elif args.cmd == "list-pushes":
-            emit(store.list_pushes(args.checkpoint))
-        elif args.cmd == "kg-put-node":
-            emit(store.put_node(_payload(args)))
-        elif args.cmd == "kg-get":
-            emit(store.get_node(args.node_id))
-        elif args.cmd == "kg-link":
-            emit(store.link(args.src, args.dst, args.type, args.note))
-        elif args.cmd == "kg-subgraph":
-            emit(store.subgraph(args.node_id, args.depth))
+            emit(store.list_pushes(args.card))
+        elif args.cmd == "card-put":
+            emit(store.put_card(_payload(args)))
+        elif args.cmd == "card-get":
+            emit(store.get_card(args.card_id))
+        elif args.cmd == "card-list":
+            emit(store.list_cards())
         elif args.cmd == "prop-put":
             emit(store.put_prop(_payload(args)))
         elif args.cmd == "prop-get":
             emit(store.get_prop(args.prop_id))
         elif args.cmd == "prop-list":
-            emit(store.list_props(args.node))
+            emit(store.list_props(args.card))
         elif args.cmd == "context":
-            emit(store.context(args.node, args.checkpoint, args.limit))
+            emit(store.context(args.card, args.limit))
         elif args.cmd == "apply-proposal":
             emit(store.apply_proposal(args.push_id, args.proposal_id))
         elif args.cmd == "apply-decisions":
             emit(store.apply_decisions(Path(args.pending_dir), Path(args.decisions)))
+        elif args.cmd == "migrate-v2":
+            if args.rollback:
+                emit(migration.rollback(root, args.rollback))
+            else:
+                emit(migration.migrate(root, dry_run=args.dry_run))
         elif args.cmd == "stats":
             emit(store.stats())
         else:  # pragma: no cover

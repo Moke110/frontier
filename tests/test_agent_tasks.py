@@ -20,8 +20,8 @@ def test_editor_task_contains_knowledge_context(kl_home, fixtures_dir):
     task = editor_tasks.build_task(kl_home, rows, "2026-10-20", limit=4, per_checkpoint=2)
     assert task["kind"] == "editor-task"
     assert len(task["candidates"]) == 4
-    hmbs = task["checkpoints"]["hmbs"]
-    assert hmbs["kg_node"]["node_id"] == "kg_hmbs"
+    hmbs = task["checkpoints"]["card_hmbs"]
+    assert hmbs["card"]["id"] == "card_hmbs"
     assert any(p["prop_id"] == "prop_hmbs_aip" for p in hmbs["propositions"])
     assert "annotation" in hmbs
 
@@ -60,7 +60,7 @@ def test_writer_task_and_validation_roundtrip(kl_home, fixtures_dir, tmp_path):
             "source_id": "42900001",
             "title": "HMBS loss",
             "abstract": "We show HMBS loss impairs heme biosynthesis.",
-            "checkpoint_id": "hmbs",
+            "checkpoint_id": "card_hmbs",
             "published": "2026-10-16",
         }
     )
@@ -68,8 +68,8 @@ def test_writer_task_and_validation_roundtrip(kl_home, fixtures_dir, tmp_path):
     task = writer_tasks.build_task(kl_home, selection, "2026-10-20")
     assert task["kind"] == "writer-task"
     assert len(task["items"]) == len(selection["selected"])
-    assert task["items"][0]["context"]["node"]["node_id"]
-    hmbs_item = next(i for i in task["items"] if i["checkpoint_id"] == "hmbs")
+    assert task["items"][0]["context"]["card"]["id"]
+    hmbs_item = next(i for i in task["items"] if i["checkpoint_id"] == "card_hmbs")
     assert hmbs_item["context"]["recent_papers"]
 
     outbox = tmp_path / "outbox"
@@ -99,13 +99,13 @@ def test_writer_rejects_unknown_proposal_target(kl_home, fixtures_dir, tmp_path)
             "proposal_id": "px",
             "push_id": push["push_id"],
             "kind": "add_alias",
-            "target_type": "kg_node",
-            "target_id": "kg_missing",
-            "diff": {"op": "add", "path": "aliases", "value": "x"},
+            "target_type": "card",
+            "target_id": "card_missing",
+            "diff": {"op": "add", "path": "ontology", "value": "x"},
             "status": "draft",
         }
     ]
     target.write_text(json.dumps(push, ensure_ascii=False))
     result = writer_tasks.validate(task, outbox)
     assert result["ok"] is False
-    assert any("unknown kg node" in e for e in result["errors"])
+    assert any("unknown card" in e for e in result["errors"])

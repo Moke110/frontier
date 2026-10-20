@@ -43,8 +43,8 @@ def test_editor_ranks_by_relevance_and_preference(kl_home, fixtures_dir, tmp_pat
         {
             "schema_version": 1,
             "checkpoints": {
-                "hmbs": {"n": 10, "mean": 1.0},
-                "virtual-cell": {"n": 10, "mean": 0.0},
+                "card_hmbs": {"n": 10, "mean": 1.0},
+                "card_perturbation_prediction": {"n": 10, "mean": 0.0},
             },
             "sources": {},
         },
@@ -63,11 +63,11 @@ def test_writer_produces_four_sections_and_proposals(kl_home, fixtures_dir, tmp_
     selection = editor_model.rank(kl_home, rows, day="2026-10-20", limit=4, per_checkpoint=2)
     result = writer_model.write(selection, kl_home, tmp_path / "outbox", "2026-10-20")
     assert result["count"] == 4
-    hmbs = next(p for p in result["pushes"] if p["checkpoint_id"] == "hmbs")
+    hmbs = next(p for p in result["pushes"] if p["checkpoint_id"] == "card_hmbs")
     assert set(hmbs["sections"]) == {"did", "found", "why", "keep"}
     assert "为什么重要" in hmbs["body_md"]
     assert hmbs["title"].startswith("HMBS")
     kinds = {p["kind"] for p in hmbs["proposals"]}
-    assert {"add_evidence", "add_alias", "add_proposition"} <= kinds
+    assert {"add_evidence", "add_proposition"} <= kinds
     assert all(p["status"] == "draft" for p in hmbs["proposals"])
     assert (tmp_path / "outbox" / "pushes" / f"{hmbs['push_id']}.json").exists()

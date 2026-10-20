@@ -36,14 +36,14 @@ def parse(text: str) -> Request | None:
     return Request(keyword=match.group(1), checkpoint=checkpoint)
 
 
-def resolve_checkpoint(name: str | None, vocab: dict) -> str | None:
-    """Resolve a checkpoint id or exact label; None means 'use the default rule'."""
+def resolve_checkpoint(name: str | None, cards: list[dict]) -> str | None:
+    """Resolve a knowledge-card id or exact label; None means 'use the default rule'."""
     if not name:
         return None
     needle = name.strip().lower()
-    for cp in vocab.get("checkpoints", []):
-        cp_id = str(cp.get("id") or "")
-        label = str(cp.get("label") or "")
-        if needle in {cp_id.lower(), label.lower()}:
-            return cp_id
+    for card in cards:
+        card_id = str(card.get("id") or "")
+        label = str(card.get("label") or "")
+        if needle in {card_id.lower(), label.lower()}:
+            return card_id
     return ""

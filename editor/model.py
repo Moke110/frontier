@@ -85,6 +85,15 @@ def _recency(published: str | None, day: date) -> float:
     return math.exp(-max(delta, 0) / 14)
 
 
+def _cards(home: Path) -> dict[str, dict]:
+    card_dir = Path(home) / "archive" / "cards"
+    return {
+        row["id"]: row
+        for row in (read_json(p) or {} for p in sorted(card_dir.glob("*.json")))
+        if row.get("id")
+    }
+
+
 def rank(
     home: Path,
     candidates: list[dict],
@@ -94,11 +103,10 @@ def rank(
     model_path: Path | None = None,
 ) -> dict:
     home = Path(home)
-    vocab = read_yaml(home / "frontier.yaml") or {}
+    checkpoints = _cards(home)
     state = read_yaml(home / "state" / "checkpoints.yaml") or {}
     model = read_yaml(Path(model_path or home / "state" / "editor.yaml")) or {}
     day_obj = date.fromisoformat(day) if day else date.today()
-    checkpoints = {cp["id"]: cp for cp in vocab.get("checkpoints", [])}
     states = state.get("checkpoints", {})
 
     ranked: list[dict] = []

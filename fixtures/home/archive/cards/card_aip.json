@@ -1,0 +1,12 @@
+{
+  "id": "card_aip",
+  "label": "AIP",
+  "ontology": [
+    "AIP",
+    "acute intermittent porphyria"
+  ],
+  "annotation": "急性间歇性卟啉症，HMBS 功能缺失引起的显性遗传病。",
+  "created_at": "2026-10-20T23:55:50+08:00",
+  "updated_at": "2026-10-20T23:55:50+08:00",
+  "schema_version": 2
+}

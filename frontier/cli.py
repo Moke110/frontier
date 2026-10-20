@@ -16,7 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("validate", help="check every checkpoint links to a kg node")
+    sub.add_parser("validate", help="check every knowledge card has its four fields")
     sub.add_parser("show")
 
     p = sub.add_parser("plan", help="emit retrieval queries")
@@ -26,8 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source", action="append", choices=["arxiv", "europepmc"])
     p.add_argument("--out", help="write plan JSON here (also printed)")
 
-    p = sub.add_parser("record", help="record one rating against a checkpoint")
-    p.add_argument("--checkpoint", required=True)
+    p = sub.add_parser("record", help="record one rating against a knowledge card")
+    p.add_argument("--card", "--checkpoint", dest="checkpoint", required=True)
     p.add_argument("--verdict", required=True, choices=["irrelevant", "ok", "great"])
     p.add_argument("--pushed", action="store_true", help="count this as a pushed card")
     return parser
