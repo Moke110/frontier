@@ -240,7 +240,7 @@ def _fallback_svg(paper: dict, push_id: str) -> str:
 {tspans}
   </text>
   <text x="72" y="560" fill="#cfe3e7" font-family="Noto Sans CJK SC, sans-serif" font-size="26">{html.escape(clip(source, 60))} · {html.escape(date)}</text>
-  <text x="72" y="612" fill="#9fc3ca" font-family="Noto Sans CJK SC, sans-serif" font-size="22">生成示意图：用于版式与定位，不是论文原图 · {html.escape(push_id)}</text>
+  <text x="72" y="612" fill="#9fc3ca" font-family="Noto Sans CJK SC, sans-serif" font-size="22">生成示意图：用于版式与定位，不是论文原图</text>
 </svg>
 """
 

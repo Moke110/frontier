@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-20T15:04:08+08:00",
+  "pushes": {
+    "2026-10-20_virtual-cell_02": {
+      "paper_id": "europepmc_ppr1345330",
+      "checkpoint_id": "virtual-cell",
+      "assets": [
+        {
+          "id": "fig-1",
+          "path": "assets/2026-10-20_virtual-cell_02/fig-1.svg",
+          "caption": "研究定位示意：Genetic Perturbation Prediction Models Fail Out-of-Distribution: A Rigorous Benchmark and Systematic Evaluation",
+          "source": "generated",
+          "origin_url": ""
+        }
+      ]
+    }
+  }
+}

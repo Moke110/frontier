@@ -122,7 +122,8 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 
 ```bash
 python -m trigger.cli listen                 # 前台调试
-systemctl --user status frontier-listener    # systemd 常驻
+systemctl --user status frontier-listener         # 关键词监听
+systemctl --user status frontier-rating-listener  # 评分卡回调
 ```
 
 listener 只负责关键词、owner 校验与串行排队，实际排序/写作由 `opencode run --auto` 里的 agent 完成；它不会修改知识库，也不会发审批卡。安装见 `INSTALL.md` §5.5。

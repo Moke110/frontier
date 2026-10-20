@@ -134,11 +134,19 @@ printf 'FRONTIER_OWNER_ID=%s\n' "$OWNER" > "$HOME/.config/frontier/env"
 sed "s|__PYTHON__|$(command -v python3)|" \
   "$HOME/frontier/deploy/frontier-listener.service.in" \
   > "$HOME/.config/systemd/user/frontier-listener.service"
+sed "s|__PYTHON__|$(command -v python3)|" \
+  "$HOME/frontier/deploy/frontier-rating-listener.service.in" \
+  > "$HOME/.config/systemd/user/frontier-rating-listener.service"
 
 systemctl --user daemon-reload
-systemctl --user enable --now frontier-listener
-systemctl --user is-active frontier-listener   # 应输出 active
+systemctl --user enable --now frontier-listener frontier-rating-listener
+systemctl --user is-active frontier-listener frontier-rating-listener   # 都应输出 active
 ```
+
+两个服务缺一不可：
+
+- `frontier-listener`：收 `im.message.receive_v1`（手动补推关键词）；
+- `frontier-rating-listener`：收 `card.action.trigger`（评分卡按钮）。没有它，点击评分不会落库。
 
 没有 systemd 时，用 tmux 常驻：
 
@@ -175,8 +183,9 @@ KL_HOME="$HOME/knowledge-loop" python3 -m frontier.cli plan --out /tmp/frontier-
 ### 8. 卸载（用户要求时）
 
 ```bash
-systemctl --user disable --now frontier-listener 2>/dev/null || true
-rm -f "$HOME/.config/systemd/user/frontier-listener.service"
+systemctl --user disable --now frontier-listener frontier-rating-listener 2>/dev/null || true
+rm -f "$HOME/.config/systemd/user/frontier-listener.service" \
+      "$HOME/.config/systemd/user/frontier-rating-listener.service"
 systemctl --user daemon-reload
 rm "$HOME/.config/opencode/skills/frontier"   # 只删软链
 # 数据在 ~/knowledge-loop，默认保留；删除前必须再确认
@@ -190,6 +199,7 @@ rm "$HOME/.config/opencode/skills/frontier"   # 只删软链
 | `auth status` 里 user 不可用 | 运行 `lark-cli auth login`，等用户完成 |
 | `event consume` 报 `failed_precondition` | 飞书开发者后台订阅对应事件（`card.action.trigger` / `im.message.receive_v1`） |
 | `frontier-listener` 反复重启 | 看 `journalctl --user -u frontier-listener`；常见原因是 `lark-cli` 不在 PATH 或 owner 未配置 |
+| 点了评分但 `ratings.jsonl` 为空 | 确认 `frontier-rating-listener` 是 active；没有它，`card.action.trigger` 不会被消费 |
 | skills 目录已有同名文件 | 停止并询问，不要覆盖 |
 | `python3 -c "import yaml"` 失败 | 询问后安装 PyYAML |
 | `python3 -c "import weasyprint"` 失败 | 询问后安装 WeasyPrint |

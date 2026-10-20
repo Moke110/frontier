@@ -136,8 +136,9 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 
 ```bash
 python -m trigger.cli listen                 # 前台常驻（调试）
-systemctl --user status frontier-listener    # systemd 部署后的状态
-journalctl --user -u frontier-listener -f    # 看触发日志
+systemctl --user status frontier-listener         # 关键词监听
+systemctl --user status frontier-rating-listener  # 评分卡回调
+journalctl --user -u frontier-listener -f         # 看触发日志
 ```
 
 listener 只做关键词识别、owner 校验、串行排队，然后调用

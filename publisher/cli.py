@@ -27,6 +27,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="re-send even if already pushed")
     p.add_argument("--as", dest="identity", default="bot", choices=["bot", "user"])
 
+    p = sub.add_parser("rating", help="(re)send only the rating card for a push")
+    p.add_argument("--push", required=True)
+    p.add_argument("--to", required=True, help="open_id (ou_...)")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--as", dest="identity", default="bot", choices=["bot", "user"])
+
     p = sub.add_parser("preview", help="print the card JSON, send nothing")
     p.add_argument("--push", required=True)
 
@@ -68,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 emit(send_rating(root, push, args.to, args.dry_run, args.identity))
+        elif args.cmd == "rating":
+            push = read_json(Path(args.push))
+            if not push:
+                raise ValueError(f"no push at {args.push}")
+            emit(send_rating(root, push, args.to, args.dry_run, args.identity))
         elif args.cmd == "preview":
             push = read_json(Path(args.push))
             if not push:
