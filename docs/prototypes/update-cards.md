@@ -6,6 +6,7 @@
 - 样张输出：`fixtures/update-cards/*.card.json`
 - 预览：`fixtures/update-cards/preview.md`（文字版）/ `preview.html`（近似视觉版，非飞书真实渲染）
 - 重新生成：`python scripts/build_update_card_samples.py`
+- 用户确认：2026-10-21，三张样张已通过机器人发到飞书，确认版式可用，作为 #16 的默认样式。
 
 ## 1. 三张样张
 
