@@ -71,6 +71,7 @@ def test_writer_task_and_validation_roundtrip(kl_home, fixtures_dir, tmp_path):
     assert task["items"][0]["context"]["card"]["id"]
     hmbs_item = next(i for i in task["items"] if i["checkpoint_id"] == "card_hmbs")
     assert hmbs_item["context"]["recent_papers"]
+    assert "paper_id" in hmbs_item["context"]["recent_papers"][0]
 
     outbox = tmp_path / "outbox"
     writer_model.write(selection, kl_home, outbox, "2026-10-20")

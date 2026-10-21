@@ -4,8 +4,13 @@ from pathlib import Path
 import pytest
 
 from archive.store import Archive, ArchiveError
-from publisher.service import handle_event, replay, send_rating
+from editor import model as editor_model
+from frontier import model as frontier_model
+from publisher.service import handle_event, replay, send_push, send_rating
 from question_queue.store import QueueStore
+from retriever import cli as retriever_cli
+from writer import model as writer_model
+from writer import tasks as writer_tasks
 
 
 def _push(home: Path, push_id: str = "2026-10-21_card_hmbs_01") -> dict:
@@ -367,6 +372,64 @@ def test_ndjson_replay_finishes_rating_and_four_updates(kl_home, tmp_path):
     queue = QueueStore(kl_home)
     assert not queue.has_unfinished()
     assert Archive(kl_home).get_prop("prop_hmbs_mitochondria")
+
+
+def test_writer_push_enters_queue_and_approval_applies(kl_home, fixtures_dir, tmp_path):
+    plan = frontier_model.plan(kl_home, day="2026-10-20", days=7)
+    rows = retriever_cli.run(plan, "fixture", fixtures_dir, check_window=True)
+    selection = editor_model.rank(
+        kl_home, rows, day="2026-10-20", limit=4, per_checkpoint=2
+    )
+    outbox = tmp_path / "writer-outbox"
+    result = writer_model.write(selection, kl_home, outbox, "2026-10-20")
+    task = writer_tasks.build_task(kl_home, selection, "2026-10-20")
+    checked = writer_tasks.validate(task, outbox)
+    assert checked["ok"] is True, checked["errors"]
+    push = next(p for p in result["pushes"] if p.get("proposals"))
+    assert all(p["schema_version"] == 2 for p in push["proposals"])
+    Archive(kl_home).add_push(push)
+    before_props = {
+        prop["id"]: sum(len(h.get("evidence", [])) for h in prop.get("history", []))
+        for prop in Archive(kl_home).list_props()
+    }
+
+    sent = send_push(
+        kl_home,
+        push,
+        tmp_path / "not-rendered.pdf",
+        "ou_demo",
+        dry_run=True,
+    )
+    assert sent["ok"] is True
+    queue = QueueStore(kl_home)
+    items = queue.items(push["push_id"])
+    assert items[0]["kind"] == "rating"
+    assert len(items) == 1 + len({p["proposal_id"] for p in push["proposals"]})
+
+    rating = handle_event(
+        kl_home, _event(sent["rating_message_id"], "score_high"), offline=True
+    )
+    assert rating["ok"] is True
+    results = [rating]
+    while results[-1].get("next_message_id"):
+        results.append(
+            handle_event(
+                kl_home,
+                _event(results[-1]["next_message_id"], "agree_all"),
+                offline=True,
+            )
+        )
+    assert results[-1]["queue_empty"] is True
+    assert not QueueStore(kl_home).has_unfinished()
+
+    archive = Archive(kl_home)
+    after_props = {
+        prop["id"]: sum(len(h.get("evidence", [])) for h in prop.get("history", []))
+        for prop in archive.list_props()
+    }
+    grew = any(after_props[key] > before_props.get(key, 0) for key in after_props)
+    created = set(after_props) - set(before_props)
+    assert grew or created
 
 
 def test_pending_request_coalesces_and_waits_for_empty_queue(kl_home):

@@ -81,6 +81,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--push-id", required=True)
     p.add_argument("--proposal-id", required=True)
 
+    p = sub.add_parser("apply-group", help="apply one queue item's proposals atomically")
+    p.add_argument("--file", required=True, help="queue item / JSON with proposals")
+    p.add_argument("--group-id", help="idempotence key (default: item id or file stem)")
+
     p = sub.add_parser("apply-decisions", help="apply approved publisher decisions")
     p.add_argument("--pending-dir", required=True)
     p.add_argument("--decisions", required=True)
@@ -131,6 +135,15 @@ def main(argv: list[str] | None = None) -> int:
             emit(store.context(args.card, args.limit))
         elif args.cmd == "apply-proposal":
             emit(store.apply_proposal(args.push_id, args.proposal_id))
+        elif args.cmd == "apply-group":
+            payload = read_json(Path(args.file)) or {}
+            proposals = (
+                payload.get("proposals")
+                or (payload.get("payload") or {}).get("proposals")
+                or []
+            )
+            group_id = args.group_id or payload.get("id") or Path(args.file).stem
+            emit(store.apply_group(proposals, group_id))
         elif args.cmd == "apply-decisions":
             emit(store.apply_decisions(Path(args.pending_dir), Path(args.decisions)))
         elif args.cmd == "migrate-v2":

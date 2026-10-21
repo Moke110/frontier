@@ -210,6 +210,22 @@ python -m writer.cli render --push outbox/pushes/<push_id>.json --out outbox/<pu
 python -m archive.cli add-push --file outbox/pushes/<push_id>.json
 ```
 
+入库后交给 publisher 入队并发送当前题：
+
+```bash
+python -m publisher.cli send --push outbox/pushes/<push_id>.json --pdf outbox/<push_id>.pdf --to ou_xxx
+# 或只发评分/队首题：python -m publisher.cli rating --push ... --to ou_xxx
+python -m question_queue.cli status
+```
+
+`add-push` 只写 archive；**入队发生在 `publisher send/rating`**。队列按实体把同一目标的多个 proposals 合并为一题，评分题在前、更新题在后；每题答完才发下一题。
+
+## 2.3 更新题的落盘
+
+- 同意全部 → publisher/queue 调 `Archive.apply_group`（等价 `python -m archive.cli apply-group --file <item.json>`），以 `group_id=queue_item_id` 幂等；失败会回滚整组。
+- 拒绝全部 → 只写 `publisher/decisions.jsonl`，archive 不变。
+- 评分「不在关注领域」→ 本 push 的更新题全部 dropped。
+
 ## 3. 知识库读写边界
 
 | 动作 | 谁做 | 怎么做 |

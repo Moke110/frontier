@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -183,6 +184,45 @@ def test_proposition_requires_two_known_cards(kl_home):
                 "history": [{"at": "now", "action": "created"}],
             }
         )
+
+
+def test_apply_group_cli(kl_home, tmp_path, capsys):
+    from archive.cli import main
+
+    card = Archive(kl_home).get_card("card_hmbs")
+    item = {
+        "id": "q_cli_test",
+        "payload": {
+            "proposals": [
+                {
+                    "schema_version": 2,
+                    "proposal_id": "p_cli_01",
+                    "push_id": "push_cli",
+                    "op": "add_card_ontology",
+                    "target_type": "card",
+                    "target_id": "card_hmbs",
+                    "diff": {"op": "add", "path": "ontology", "value": "CLI term"},
+                    "before": card["ontology"],
+                    "after": card["ontology"] + ["CLI term"],
+                    "rationale": "CLI test rationale that is long enough.",
+                    "confidence": 0.5,
+                    "evidence": {
+                        "paper_id": "p1",
+                        "page": 1,
+                        "quote": "A quote long enough for evidence.",
+                    },
+                    "status": "draft",
+                }
+            ]
+        },
+    }
+    path = tmp_path / "item.json"
+    path.write_text(json.dumps(item), encoding="utf-8")
+    assert main(["--home", str(kl_home), "apply-group", "--file", str(path)]) == 0
+    assert "CLI term" in Archive(kl_home).get_card("card_hmbs")["ontology"]
+    assert main(["--home", str(kl_home), "apply-group", "--file", str(path)]) == 0
+    again = [p for p in Archive(kl_home).get_card("card_hmbs")["ontology"] if p == "CLI term"]
+    assert len(again) == 1
 
 
 def test_migration_is_idempotent_and_rolls_back(tmp_path):

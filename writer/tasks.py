@@ -92,11 +92,18 @@ def build_task(home: Path, selection: dict, date: str) -> dict:
                     "propositions": ctx["props"],
                     "archived_count": ctx["archived"],
                     "recent_papers": [
-                        (read_json(p) or {}).get("paper_id")
-                        for p in sorted(
-                            (home / "archive" / "raw").glob("*.json")
+                        {
+                            "paper_id": rec.get("paper_id"),
+                            "title": rec.get("title", ""),
+                            "published": rec.get("published"),
+                        }
+                        for rec in (
+                            read_json(p) or {}
+                            for p in sorted((home / "archive" / "raw").glob("*.json"))
                         )
-                        if ((read_json(p) or {}).get("card_id") or (read_json(p) or {}).get("checkpoint_id")) == cp_id
+                        if (
+                            (rec.get("card_id") or rec.get("checkpoint_id")) == cp_id
+                        )
                     ][:5],
                     "cards": ctx["cards"],
                 },

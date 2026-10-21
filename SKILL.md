@@ -124,8 +124,10 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 ```
 
 - `send` 是**对外可见**操作：先向用户确认收件人、PDF 与条数。
+- `send` 会把本次 push 的评分题与更新题一起入队，**只发送当前 active 题**；之后每题答完才发下一题。
 - 没有后台监听能力时，改用 `ingest` 回放导出的 NDJSON 事件。
 - 无飞书环境演练：`--dry-run`（send）与 `--offline`（ingest）。
+- 查看队列：`python -m question_queue.cli status`。
 
 ### 5.5 手动补推（飞书关键词）
 
@@ -137,16 +139,20 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 ```bash
 python -m trigger.cli listen                 # 前台常驻（调试）
 systemctl --user status frontier-listener         # 关键词监听
-systemctl --user status frontier-rating-listener  # 评分卡回调
+systemctl --user status frontier-rating-listener  # 评分/更新卡回调
 journalctl --user -u frontier-listener -f         # 看触发日志
 ```
 
 listener 只做关键词识别、owner 校验、串行排队，然后调用
 `opencode run --auto` 执行一次正向补推；它不排序、不写作、不改知识库。
 
-### 6. 评分之后（本阶段不启用）
+### 6. 评分与更新题
 
-评分只写入 `ratings.jsonl`，**不**运行 `frontier record` / `editor fit`，**不**发知识更新审批卡，**不**写知识图或命题。下游的反馈调整与知识库审批留到下一阶段。
+- 评分写入 `ratings.jsonl`；本阶段**不**运行 `frontier record` / `editor fit`，评分不反哺排序。
+- 评分后按队列发更新题：一张卡或一条命题一题，按钮只有「同意全部 / 拒绝全部」。
+- 同意 → archive 立即写入该组；拒绝 → 只写 `publisher/decisions.jsonl`，知识库不变。
+- 评分「质量差/不在关注领域」→ 本次 push 的更新题全部丢弃。
+- 队列清空后才允许下一次检索推送；有失败题时队列闸住，用 `question_queue.cli retry/abandon` 处理。
 
 ## 硬规则
 
