@@ -66,36 +66,65 @@ python -m editor.cli check --task editor-task.json --selection selection.json
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "kind": "writer-task",
   "format": "pdf",
-  "date": "2026-10-20",
+  "date": "2026-10-21",
   "instructions": "……七段结构、HTML 片段、图片、引用、提议规则……",
   "archive_cli": "python -m archive.cli",
   "figure_command": "python -m writer.cli figures --selection <selection.json> --out <outbox>",
   "render_command": "python -m writer.cli render --push outbox/pushes/<push_id>.json --out <pdf>",
+  "limits": { "cards": 2, "propositions": 2, "per_entity": 1 },
+  "evidence_rules": {
+    "paper_id": "must be one of push.paper_ids",
+    "page": "integer >= 1, or null when the quote is from the abstract",
+    "quote": "verbatim substring of the paper text/abstract, 8..500 chars"
+  },
   "items": [
     {
       "checkpoint_id": "card_hmbs",
+      "card_id": "card_hmbs",
       "paper": { "paper_id": "…", "title": "…", "abstract": "…" },
       "context": {
         "card": { "id": "card_hmbs", "label": "HMBS", "annotation": "…", "ontology": ["PBGD"] },
-        "propositions": [ { "prop_id": "prop_hmbs_aip", "title": "…", "text": "…", "evidence": [] } ],
+        "propositions": [
+          {
+            "id": "prop_hmbs_aip",
+            "title": "…",
+            "content": "…",
+            "related_knowledge": ["card_hmbs", "card_aip"],
+            "history": [
+              {
+                "at": "…",
+                "action": "created",
+                "before": null,
+                "after": { "…": "…" },
+                "rationale": "…",
+                "evidence": [{ "paper_id": "…", "page": 3, "quote": "…" }]
+              }
+            ]
+          }
+        ],
+        "cards": [ { "id": "card_aip", "label": "AIP", "ontology": ["…"], "annotation": "…" } ],
         "archived_count": 2,
         "recent_papers": [ { "paper_id": "…", "title": "…", "published": "…" } ]
       }
     }
   ],
   "proposal_kinds": {
-    "add_evidence": "给命题补一条证据 …",
-    "add_alias": "给知识卡片补一个 ontology 词 …",
-    "add_proposition": "新建命题 …",
-    "update_summary": "改写摘要 …"
+    "add_card_ontology": "给现有卡片加 ontology 词：target_type=card，diff.path=ontology",
+    "update_card_annotation": "改写卡片 annotation：target_type=card，diff.path=annotation",
+    "create_card": "新建卡片：target_type=none，value=label+ontology+annotation",
+    "create_proposition": "新建命题：target_type=none，value=title+content+related_knowledge（≥2 张已有卡）",
+    "update_proposition_title": "改命题标题：target_type=proposition，diff.path=title",
+    "update_proposition_content": "改命题内容：target_type=proposition，diff.path=content",
+    "add_proposition_evidence": "给命题补证据：target_type=proposition，value={paper_id,page,quote}",
+    "update_proposition_related_knowledge": "改命题关联卡片：target_type=proposition，diff.path=related_knowledge"
   },
   "output": {
     "dir": "outbox/pushes",
     "filename": "<push_id>.json",
-    "schema": "contracts/README.md §5"
+    "schema": "contracts/README.md §5.1 + §9"
   }
 }
 ```
@@ -110,14 +139,56 @@ python -m writer.cli figures --selection selection.json --out outbox
 然后为每个 item 写一个 push 文件，文件名 = `push_id`：
 
 - `format: "pdf"`；
-- `push_id = "<date>_<checkpoint_id>_<NN>"`（值是卡片 id，如 `2026-10-20_card_hmbs_01`），NN 从 01 递增（可用 task 里的 `suggested_push_id`）；
+- `push_id = "<date>_<checkpoint_id>_<NN>"`（值是卡片 id，如 `2026-10-21_card_hmbs_01`），NN 从 01 递增（可用 task 里的 `suggested_push_id`）；
 - `paper_ids` 必须包含该 item 的 `paper_id`，`paper` 里保留作者/期刊/日期/URL；
 - `sections` 七个键 `takeaway / background / methods / results / why / limits / sources` 都非空；
 - `body_html` 是正文 HTML 片段（不是整页），图片用 `<figure data-asset="fig-1"></figure>` 占位；
 - `assets` 至少一项，来自 `figures.json`，`caption` 非空且 `source` 为 `paper | generated`；
-- `why` 必须引用 `context`（知识卡摘要、命题、归档篇数至少其一）；
-- `proposals` 只允许四种 kind，`status` 必须是 `draft`；
-- `add_evidence` 的 `target_id` 必须是 context 里已有的命题；`add_alias` / `update_summary` 的目标必须是已有卡片；`add_proposition` 的 `related_knowledge`（至少 2 个）必须都是已知卡片。
+- `why` 必须引用 `context`（知识卡片、命题、history、归档篇数至少其一）；
+- `proposals` 只允许 §2.2 的 8 种 `op`，`status` 必须是 `draft`。
+
+### 2.2 更新提议契约（v2）
+
+每条 proposal 的公共字段：
+
+```json
+{
+  "schema_version": 2,
+  "proposal_id": "p_<push_id>_<NN>",
+  "push_id": "…",
+  "op": "add_proposition_evidence",
+  "target_type": "proposition",
+  "target_id": "prop_hmbs_aip",
+  "diff": { "op": "add|replace", "path": "<字段>", "value": "…" },
+  "before": "…",
+  "after": "…",
+  "rationale": "…（≥8 字）",
+  "confidence": 0.7,
+  "evidence": { "paper_id": "…", "page": 3, "quote": "…", "section": "results" },
+  "status": "draft"
+}
+```
+
+| `op` | 目标 | `diff.path` / `value` | `before` → `after` |
+|---|---|---|---|
+| `add_card_ontology` | 已有 card | `ontology` / 新词或词列表 | 当前列表 → 追加后列表 |
+| `update_card_annotation` | 已有 card | `annotation` / 新文本 | 当前文本 → 新文本 |
+| `create_card` | 无 | `card` / `{id?, label, ontology, annotation}` | `null` → 新卡片 |
+| `create_proposition` | 无 | `proposition` / `{id?, title, content, related_knowledge}` | `null` → 新命题 |
+| `update_proposition_title` | 已有 prop | `title` / 新标题 | 当前标题 → 新标题 |
+| `update_proposition_content` | 已有 prop | `content` / 新内容 | 当前内容 → 新内容 |
+| `add_proposition_evidence` | 已有 prop | `evidence` / 与顶层 evidence 相同 | 当前证据数 → +1 |
+| `update_proposition_related_knowledge` | 已有 prop | `related_knowledge` / ≥2 卡 id | 当前列表 → 新列表 |
+
+硬规则（`writer check` 会逐条校验）：
+
+1. 每篇推送最多 **2 个卡片目标 + 2 个命题目标**；同一目标的多个操作合并成一个更新题，不重复占名额。
+2. `before` 必须等于任务快照里的当前值（防陈旧 diff）；`after` 必须等于 `diff.value`（或按上表推导），且必须发生变化。
+3. `evidence.paper_id` 必须是 `push.paper_ids` 之一；`page` 为 ≥1 整数或 `null`（摘要引文）；`quote` 8–500 字。
+4. `create_proposition.related_knowledge` ≥2 张**已存在**卡片；本次新建的卡片不能在同一 push 里被新命题引用。
+5. `create_card.id` / `create_proposition.id` 可省略（由 archive 按 label/title 生成），给定时必须符合 `card_<slug>` / `prop_<slug>`。
+6. 目标必须存在于本 item 的 `context`；不得编造卡片、命题或论文。
+7. `proposal_id` 在 push 内唯一，`status` 只能 `draft`；writer 永不直接写 `archive/`。
 
 校验：
 

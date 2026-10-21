@@ -67,7 +67,7 @@ def test_writer_produces_four_sections_and_proposals(kl_home, fixtures_dir, tmp_
     assert set(hmbs["sections"]) == {"did", "found", "why", "keep"}
     assert "为什么重要" in hmbs["body_md"]
     assert hmbs["title"].startswith("HMBS")
-    kinds = {p["kind"] for p in hmbs["proposals"]}
-    assert {"add_evidence", "add_proposition"} <= kinds
+    ops = {p["op"] for p in hmbs["proposals"]}
+    assert {"add_proposition_evidence", "create_proposition"} <= ops
     assert all(p["status"] == "draft" for p in hmbs["proposals"])
     assert (tmp_path / "outbox" / "pushes" / f"{hmbs['push_id']}.json").exists()

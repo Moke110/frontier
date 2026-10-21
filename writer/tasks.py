@@ -1,11 +1,11 @@
 """Agent-facing writer tasks: build a writing packet, validate the pushes.
 
-The agent writes the card and the proposals. This module never calls a model.
+The agent writes the push and the knowledge updates. This module never calls a
+model. Proposal contract: `contracts/agent-tasks.md` §2.2.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -17,7 +17,7 @@ INSTRUCTIONS = """你是知识循环的写作者。对每个 item 写一篇长�
 1) 先运行 figures 命令取图：python -m writer.cli figures --selection <selection.json> --out <outbox>；
    它会把原文图或生成图落到 outbox/assets/<push_id>/，并返回 assets 列表；
 2) 七个 sections 都必填：takeaway / background / methods / results / why / limits / sources；
-   中文 1500–2500 字，克制、具体；「why」必须引用 context 里的知识卡摘要、命题、或归档篇数；
+   中文 1500–2500 字，克制、具体；「why」必须引用 context 里的知识卡、命题、或归档篇数；
 3) body_html 是文章正文片段（HTML），不是整页，也不要写 <style>/<script>/CSS；
    用 <h2>、<h3>、<p>、<ul>、<table>、<blockquote> 组织内容；
 4) 图片用占位符 <figure data-asset="fig-1"></figure>，渲染器会替换成本地图片与图注；
@@ -25,18 +25,39 @@ INSTRUCTIONS = """你是知识循环的写作者。对每个 item 写一篇长�
 5) assets 直接使用 figures 命令的输出；source=paper|generated，caption 必须写清来源；
    generated 图不能伪装成原文图；
 6) sections.sources 必须包含原文 URL；paper 元数据（authors / journal / published / url）要保留；
-7) 如果原文足以更新知识卡或命题，在 proposals 里提出（add_evidence / add_alias /
-   add_proposition / update_summary），每条都要有 rationale 与 confidence；
-8) proposals 一律 status=draft，绝不直接改 archive。
+7) 如果原文足以更新知识卡或命题，在 proposals 里提出，op 只能是：
+   add_card_ontology / update_card_annotation / create_card /
+   create_proposition / update_proposition_title / update_proposition_content /
+   add_proposition_evidence / update_proposition_related_knowledge；
+   每条都要有 diff / before / after / rationale / confidence / evidence；
+8) 每篇推送最多 2 个卡片目标 + 2 个命题目标（同一目标的多个操作合并成一个更新题）；
+9) proposals 一律 status=draft，绝不直接改 archive。
 输出目录 outbox/pushes，一个 push 一个文件，文件名 = push_id。
 渲染：python -m writer.cli render --push outbox/pushes/<push_id>.json --out <pdf>。"""
 
-PROPOSAL_KINDS = {
-    "add_evidence": "给现有命题补一条证据，target_type=proposition",
-    "add_alias": "给知识卡片补一个 ontology 词，target_type=card",
-    "add_proposition": "新建命题，target_type=none，value 含 title + content + related_knowledge",
-    "update_summary": "改写知识卡片 annotation 或命题 content，target_type=card|proposition",
+CARD_OPS = {"add_card_ontology", "update_card_annotation", "create_card"}
+PROP_OPS = {
+    "create_proposition",
+    "update_proposition_title",
+    "update_proposition_content",
+    "add_proposition_evidence",
+    "update_proposition_related_knowledge",
 }
+PROPOSAL_KINDS = {
+    "add_card_ontology": "给现有卡片加 ontology 词：target_type=card，diff.path=ontology",
+    "update_card_annotation": "改写卡片 annotation：target_type=card，diff.path=annotation",
+    "create_card": "新建卡片：target_type=none，value=label+ontology+annotation",
+    "create_proposition": "新建命题：target_type=none，value=title+content+related_knowledge（≥2 张已有卡）",
+    "update_proposition_title": "改命题标题：target_type=proposition，diff.path=title",
+    "update_proposition_content": "改命题内容：target_type=proposition，diff.path=content",
+    "add_proposition_evidence": "给命题补证据：target_type=proposition，value={paper_id,page,quote}",
+    "update_proposition_related_knowledge": "改命题关联卡片：target_type=proposition，diff.path=related_knowledge",
+}
+MAX_CARD_TARGETS = 2
+MAX_PROP_TARGETS = 2
+PROPOSAL_ID_RE = re.compile(r"^p_[a-z0-9_-]+$")
+CARD_ID_RE = re.compile(r"^card_[a-z0-9][a-z0-9_]*$")
+PROP_ID_RE = re.compile(r"^prop_[a-z0-9][a-z0-9_]*$")
 
 
 def _cards(home: Path) -> dict[str, dict]:
@@ -82,7 +103,7 @@ def build_task(home: Path, selection: dict, date: str) -> dict:
             }
         )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "writer-task",
         "format": "pdf",
         "date": date,
@@ -92,29 +113,240 @@ def build_task(home: Path, selection: dict, date: str) -> dict:
         "figure_command": "python -m writer.cli figures --selection <selection.json> --out <outbox>",
         "render_command": "python -m writer.cli render --push outbox/pushes/<push_id>.json --out <pdf>",
         "proposal_kinds": PROPOSAL_KINDS,
+        "limits": {
+            "cards": MAX_CARD_TARGETS,
+            "propositions": MAX_PROP_TARGETS,
+            "per_entity": 1,
+        },
+        "evidence_rules": {
+            "paper_id": "must be one of push.paper_ids",
+            "page": "integer >= 1, or null when the quote is from the abstract",
+            "quote": "verbatim substring of the paper text/abstract, 8..500 chars",
+        },
         "items": items,
         "output": {
             "dir": "outbox/pushes",
             "filename": "<push_id>.json",
-            "schema": "contracts/README.md §5.1",
+            "schema": "contracts/README.md §5.1 + §9",
         },
     }
 
 
-def _target_sets(task: dict) -> tuple[set[str], set[str]]:
-    props, cards = set(), set()
+def _target_sets(task: dict) -> tuple[dict[str, dict], dict[str, dict]]:
+    props, cards = {}, {}
     for item in task.get("items", []):
         ctx = item.get("context", {})
         card = ctx.get("card") or {}
         if card.get("id"):
-            cards.add(card["id"])
+            cards[card["id"]] = card
         for prop in ctx.get("propositions", []):
             if prop.get("id"):
-                props.add(prop["id"])
+                props[prop["id"]] = prop
         for other in ctx.get("cards", []):
             if other.get("id"):
-                cards.add(other["id"])
+                cards[other["id"]] = other
     return props, cards
+
+
+def _evidence_count(prop: dict) -> int:
+    return sum(len(h.get("evidence", [])) for h in prop.get("history", []))
+
+
+def _validate_evidence(evidence, paper_ids: list[str], where: str, pid: str) -> list[str]:
+    errors = []
+    if not isinstance(evidence, dict):
+        return [f"{where}: proposal {pid} needs an evidence object"]
+    paper_id = evidence.get("paper_id")
+    if paper_id not in paper_ids:
+        errors.append(f"{where}: proposal {pid} evidence.paper_id {paper_id!r} is not the pushed paper")
+    page = evidence.get("page")
+    if page is not None and (not isinstance(page, int) or page < 1):
+        errors.append(f"{where}: proposal {pid} evidence.page must be a positive integer or null")
+    quote = evidence.get("quote")
+    if not isinstance(quote, str) or not (8 <= len(quote.strip()) <= 500):
+        errors.append(f"{where}: proposal {pid} evidence.quote must be 8..500 characters")
+    return errors
+
+
+def _validate_proposals(
+    push: dict, props: dict[str, dict], cards: dict[str, dict]
+) -> list[str]:
+    """Validate the v2 proposal contract and the 2-card/2-proposal limits."""
+    errors: list[str] = []
+    where = f"push[{push.get('push_id')}]"
+    paper_ids = push.get("paper_ids") or []
+    proposals = push.get("proposals") or []
+    card_targets: list[str] = []
+    prop_targets: list[str] = []
+    proposal_ids: set[str] = set()
+
+    for proposal in proposals:
+        pid = proposal.get("proposal_id") or "<missing>"
+        op = proposal.get("op")
+        target_type = proposal.get("target_type")
+        target_id = proposal.get("target_id")
+
+        if not PROPOSAL_ID_RE.match(str(pid)):
+            errors.append(f"{where}: bad proposal_id {pid!r} (want p_<slug>)")
+        if pid in proposal_ids:
+            errors.append(f"{where}: duplicate proposal_id {pid}")
+        proposal_ids.add(pid)
+        if proposal.get("push_id") != push.get("push_id"):
+            errors.append(f"{where}: proposal {pid} push_id mismatch")
+        if proposal.get("status") != "draft":
+            errors.append(f"{where}: proposal {pid} status must be draft")
+        if proposal.get("schema_version") != 2:
+            errors.append(f"{where}: proposal {pid} schema_version must be 2")
+        if op not in PROPOSAL_KINDS:
+            errors.append(f"{where}: proposal {pid} unknown op {op!r}")
+            continue
+        confidence = proposal.get("confidence")
+        if not isinstance(confidence, (int, float)) or not (0 <= float(confidence) <= 1):
+            errors.append(f"{where}: proposal {pid} confidence must be 0..1")
+        rationale = proposal.get("rationale")
+        if not isinstance(rationale, str) or len(rationale.strip()) < 8:
+            errors.append(f"{where}: proposal {pid} needs a rationale")
+        errors.extend(_validate_evidence(proposal.get("evidence"), paper_ids, where, pid))
+
+        diff = proposal.get("diff") or {}
+        value = diff.get("value")
+        before = proposal.get("before")
+        after = proposal.get("after")
+        path = diff.get("path")
+
+        if op in CARD_OPS:
+            if op == "create_card":
+                if target_type not in ("none", None) or target_id not in (None, ""):
+                    errors.append(f"{where}: proposal {pid} create_card must not have a target")
+                if not isinstance(value, dict):
+                    errors.append(f"{where}: proposal {pid} create_card needs diff.value object")
+                    continue
+                card_id = value.get("id")
+                label = value.get("label")
+                ontology = value.get("ontology")
+                annotation = value.get("annotation")
+                if not label or not isinstance(label, str):
+                    errors.append(f"{where}: proposal {pid} create_card needs label")
+                if card_id and not CARD_ID_RE.match(card_id):
+                    errors.append(f"{where}: proposal {pid} create_card id must look like card_<slug>")
+                if card_id and card_id in cards:
+                    errors.append(f"{where}: proposal {pid} create_card id {card_id} already exists")
+                if not isinstance(ontology, list) or not ontology or not all(
+                    isinstance(t, str) and t.strip() for t in ontology
+                ):
+                    errors.append(f"{where}: proposal {pid} create_card needs a non-empty ontology list")
+                if not isinstance(annotation, str) or not annotation.strip():
+                    errors.append(f"{where}: proposal {pid} create_card needs annotation")
+                key = card_id or f"new:{label}"
+                card_targets.append(key)
+                if before is not None:
+                    errors.append(f"{where}: proposal {pid} create_card before must be null")
+            else:
+                if target_type != "card" or target_id not in cards:
+                    errors.append(f"{where}: proposal {pid} {op} targets unknown card {target_id}")
+                    continue
+                card = cards[target_id]
+                card_targets.append(target_id)
+                if op == "add_card_ontology":
+                    terms = value if isinstance(value, list) else [value]
+                    if not all(isinstance(t, str) and t.strip() for t in terms):
+                        errors.append(f"{where}: proposal {pid} ontology terms must be strings")
+                    current = list(card.get("ontology", []))
+                    if before != current:
+                        errors.append(f"{where}: proposal {pid} before does not match card ontology")
+                    expected = current + [
+                        t for t in terms if t.strip().lower() not in {x.lower() for x in current}
+                    ]
+                    if after != expected:
+                        errors.append(f"{where}: proposal {pid} after must be before + new terms")
+                elif op == "update_card_annotation":
+                    if not isinstance(value, str) or len(value.strip()) < 20:
+                        errors.append(f"{where}: proposal {pid} annotation must be a useful string")
+                    if before != card.get("annotation", ""):
+                        errors.append(f"{where}: proposal {pid} before does not match card annotation")
+                    if after != value or after == before:
+                        errors.append(f"{where}: proposal {pid} after must equal diff.value and change")
+        else:
+            if op == "create_proposition":
+                if target_type not in ("none", None) or target_id not in (None, ""):
+                    errors.append(f"{where}: proposal {pid} create_proposition must not have a target")
+                if not isinstance(value, dict):
+                    errors.append(f"{where}: proposal {pid} create_proposition needs diff.value object")
+                    continue
+                title = value.get("title")
+                content = value.get("content")
+                related = value.get("related_knowledge")
+                prop_id = value.get("id")
+                if not isinstance(title, str) or not title.strip():
+                    errors.append(f"{where}: proposal {pid} create_proposition needs title")
+                if not isinstance(content, str) or len(content.strip()) < 20:
+                    errors.append(f"{where}: proposal {pid} create_proposition needs content")
+                if not isinstance(related, list) or len(set(related)) < 2:
+                    errors.append(
+                        f"{where}: proposal {pid} create_proposition needs >=2 related_knowledge cards"
+                    )
+                else:
+                    for card_id in related:
+                        if card_id not in cards:
+                            errors.append(
+                                f"{where}: proposal {pid} references unknown card {card_id} "
+                                "(new cards cannot be linked in the same push)"
+                            )
+                if prop_id and not PROP_ID_RE.match(str(prop_id)):
+                    errors.append(f"{where}: proposal {pid} proposition id must look like prop_<slug>")
+                key = prop_id or f"new:{title}"
+                prop_targets.append(key)
+                if before is not None:
+                    errors.append(f"{where}: proposal {pid} create_proposition before must be null")
+            else:
+                if target_type != "proposition" or target_id not in props:
+                    errors.append(f"{where}: proposal {pid} {op} targets unknown proposition {target_id}")
+                    continue
+                prop = props[target_id]
+                prop_targets.append(target_id)
+                if op == "update_proposition_title":
+                    if before != prop.get("title", ""):
+                        errors.append(f"{where}: proposal {pid} before does not match proposition title")
+                    if not isinstance(value, str) or not value.strip() or after != value or after == before:
+                        errors.append(f"{where}: proposal {pid} needs a changed title")
+                elif op == "update_proposition_content":
+                    if before != prop.get("content", ""):
+                        errors.append(f"{where}: proposal {pid} before does not match proposition content")
+                    if not isinstance(value, str) or len(value.strip()) < 20 or after != value or after == before:
+                        errors.append(f"{where}: proposal {pid} needs a changed content")
+                elif op == "update_proposition_related_knowledge":
+                    current = list(prop.get("related_knowledge", []))
+                    if before != current:
+                        errors.append(f"{where}: proposal {pid} before does not match related_knowledge")
+                    if not isinstance(value, list) or len(set(value)) < 2:
+                        errors.append(f"{where}: proposal {pid} needs >=2 related_knowledge cards")
+                    else:
+                        for card_id in value:
+                            if card_id not in cards:
+                                errors.append(f"{where}: proposal {pid} references unknown card {card_id}")
+                    if after != value or after == before:
+                        errors.append(f"{where}: proposal {pid} must change related_knowledge")
+                elif op == "add_proposition_evidence":
+                    evidence = proposal.get("evidence") or {}
+                    if not isinstance(value, dict):
+                        errors.append(f"{where}: proposal {pid} needs diff.value evidence")
+                    else:
+                        if any(value.get(k) != evidence.get(k) for k in ("paper_id", "page", "quote")):
+                            errors.append(f"{where}: proposal {pid} diff.value must equal evidence")
+                    if before != _evidence_count(prop):
+                        errors.append(f"{where}: proposal {pid} before must be current evidence count")
+                    if after != _evidence_count(prop) + 1:
+                        errors.append(f"{where}: proposal {pid} after must be before + 1")
+
+    if len(set(card_targets)) > MAX_CARD_TARGETS:
+        errors.append(
+            f"{where}: {len(set(card_targets))} card targets > limit {MAX_CARD_TARGETS}"
+        )
+    if len(set(prop_targets)) > MAX_PROP_TARGETS:
+        errors.append(
+            f"{where}: {len(set(prop_targets))} proposition targets > limit {MAX_PROP_TARGETS}"
+        )
+    return errors
 
 
 def validate(task: dict, outbox: Path) -> dict:
@@ -168,42 +400,9 @@ def validate(task: dict, outbox: Path) -> dict:
             if not isinstance(push.get("body_md"), str) or not push["body_md"].strip():
                 errors.append(f"{where}: body_md must be non-empty")
 
+        errors.extend(_validate_proposals(push, props, cards))
         for proposal in push.get("proposals") or []:
-            pid = proposal.get("proposal_id")
-            kind = proposal.get("kind")
-            if not pid:
-                errors.append(f"{where}: proposal without proposal_id")
-            elif pid in proposal_ids:
-                errors.append(f"{where}: duplicate proposal_id {pid}")
-            proposal_ids.add(pid)
-            if kind not in PROPOSAL_KINDS:
-                errors.append(f"{where}: unknown proposal kind {kind}")
-            if proposal.get("status") != "draft":
-                errors.append(f"{where}: proposal {pid} status must be draft")
-            if proposal.get("push_id") != push.get("push_id"):
-                errors.append(f"{where}: proposal {pid} push_id mismatch")
-            target = proposal.get("target_id")
-            if kind in ("add_evidence", "update_summary") and proposal.get("target_type") == "proposition":
-                if target not in props:
-                    errors.append(f"{where}: proposal {pid} targets unknown proposition {target}")
-            if kind in ("add_alias", "update_summary") and proposal.get("target_type") == "card":
-                if target not in cards:
-                    errors.append(f"{where}: proposal {pid} targets unknown card {target}")
-            if kind == "add_evidence" and proposal.get("target_type") != "proposition":
-                errors.append(f"{where}: proposal {pid} add_evidence needs target_type=proposition")
-            if kind == "add_alias" and proposal.get("target_type") != "card":
-                errors.append(f"{where}: proposal {pid} add_alias needs target_type=card")
-            if kind == "add_proposition":
-                value = (proposal.get("diff") or {}).get("value") or {}
-                if not (value.get("content") or value.get("text")):
-                    errors.append(
-                        f"{where}: proposal {pid} add_proposition needs diff.value.content"
-                    )
-                for card_id in value.get("related_knowledge") or []:
-                    if card_id not in cards:
-                        errors.append(
-                            f"{where}: proposal {pid} references unknown card {card_id}"
-                        )
+            proposal_ids.add(proposal.get("proposal_id"))
 
     missing = set(expected) - set(seen_papers)
     for pid in sorted(missing):

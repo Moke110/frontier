@@ -109,34 +109,55 @@ def _why(context: dict) -> str:
 
 
 def _propose(push: dict, paper: dict, context: dict, card_id: str) -> list[dict]:
-    """Heuristic proposals. Every one is a *proposal*; the user approves later."""
+    """Heuristic proposals in the v2 contract. Every one is a *proposal*."""
     proposals: list[dict] = []
     abstract = paper.get("abstract", "")
     low = abstract.lower()
     counter = 0
 
-    def add(kind: str, target_type: str, target_id: str, diff: dict, before, after, why: str, conf: float) -> None:
+    def add(
+        op: str,
+        target_type: str,
+        target_id: str | None,
+        path: str,
+        value,
+        before,
+        after,
+        why: str,
+        quote: str,
+        conf: float,
+    ) -> None:
         nonlocal counter
+        quote = clip(quote, 400)
+        if len(quote.strip()) < 8:
+            return
         counter += 1
+        evidence = {
+            "paper_id": paper.get("paper_id"),
+            "page": None,
+            "quote": quote,
+            "section": "abstract",
+        }
         proposals.append(
             {
-                "schema_version": 1,
-                "proposal_id": f"p_{push['push_id']}_{counter}",
+                "schema_version": 2,
+                "proposal_id": f"p_{push['push_id']}_{counter:02d}",
                 "push_id": push["push_id"],
-                "kind": kind,
+                "op": op,
                 "target_type": target_type,
                 "target_id": target_id,
-                "diff": diff,
+                "diff": {"op": "add", "path": path, "value": value},
                 "before": before,
                 "after": after,
                 "rationale": why,
                 "confidence": conf,
+                "evidence": evidence,
                 "status": "draft",
             }
         )
 
     # 1) add evidence to the most relevant existing proposition
-    best, best_hits = None, 0
+    best, best_hits, best_sentence = None, 0, ""
     for prop in context["props"]:
         hits = 0
         for related in prop.get("related_knowledge", []):
@@ -147,6 +168,14 @@ def _propose(push: dict, paper: dict, context: dict, card_id: str) -> list[dict]
             hits += sum(1 for term in terms if term and term.lower() in low)
         if hits > best_hits:
             best, best_hits = prop, hits
+            for sentence in _sentences(abstract):
+                if any(
+                    term and term.lower() in sentence.lower()
+                    for term in [other.get("label", "") for other in context["cards"]]
+                    if term
+                ):
+                    best_sentence = sentence
+                    break
     if best and best_hits:
         evidence = [
             e
@@ -154,26 +183,27 @@ def _propose(push: dict, paper: dict, context: dict, card_id: str) -> list[dict]
             for e in entry.get("evidence", [])
             if e.get("paper_id") == paper.get("paper_id")
         ]
-        if not evidence:
+        if not evidence and best_sentence:
+            count = sum(len(entry.get("evidence", [])) for entry in best.get("history", []))
             add(
-                "add_evidence",
+                "add_proposition_evidence",
                 "proposition",
                 best["id"],
+                "evidence",
                 {
-                    "op": "add",
-                    "path": "evidence",
-                    "value": {
-                        "paper_id": paper.get("paper_id"),
-                        "note": clip(paper.get("title", ""), 160),
-                    },
+                    "paper_id": paper.get("paper_id"),
+                    "page": None,
+                    "quote": clip(best_sentence, 400),
+                    "section": "abstract",
                 },
-                len(best.get("history", [])),
-                len(best.get("history", [])) + 1,
+                count,
+                count + 1,
                 f"摘要中出现 {best_hits} 个与该命题关联卡片相关的术语，可作为新证据。",
+                best_sentence,
                 0.7,
             )
 
-    # 2) propose a new proposition when two cards co-occur in one sentence
+    # 2) propose a new proposition when two existing cards co-occur in one sentence
     for sentence in _sentences(abstract):
         low_sentence = sentence.lower()
         hit_cards = []
@@ -190,24 +220,21 @@ def _propose(push: dict, paper: dict, context: dict, card_id: str) -> list[dict]
         if linked or ids[0] == ids[1]:
             continue
         title = clip(sentence, 60)
+        content = clip(sentence, 300)
         add(
-            "add_proposition",
+            "create_proposition",
             "none",
-            "",
+            None,
+            "proposition",
             {
-                "op": "add",
-                "path": "proposition",
-                "value": {
-                    "title": title,
-                    "content": clip(sentence, 300),
-                    "related_knowledge": ids,
-                    "paper_id": paper.get("paper_id"),
-                    "note": "由摘要中的共现句抽取",
-                },
+                "title": title,
+                "content": content,
+                "related_knowledge": ids,
             },
             None,
-            clip(sentence, 300),
+            {"title": title, "content": content, "related_knowledge": ids},
             "同一句话同时提到两张知识卡片，且现有命题未连接它们。",
+            sentence,
             0.5,
         )
         break

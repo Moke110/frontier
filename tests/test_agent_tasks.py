@@ -96,12 +96,22 @@ def test_writer_rejects_unknown_proposal_target(kl_home, fixtures_dir, tmp_path)
     push = json.loads(target.read_text())
     push["proposals"] = [
         {
-            "proposal_id": "px",
+            "schema_version": 2,
+            "proposal_id": "p_test_01",
             "push_id": push["push_id"],
-            "kind": "add_alias",
+            "op": "add_card_ontology",
             "target_type": "card",
             "target_id": "card_missing",
             "diff": {"op": "add", "path": "ontology", "value": "x"},
+            "before": [],
+            "after": ["x"],
+            "rationale": "testing an unknown card target",
+            "confidence": 0.5,
+            "evidence": {
+                "paper_id": push["paper_ids"][0],
+                "page": 1,
+                "quote": "HMBS loss impairs heme biosynthesis",
+            },
             "status": "draft",
         }
     ]

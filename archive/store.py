@@ -436,43 +436,57 @@ class Archive:
         return self._apply(proposal)
 
     def _apply(self, proposal: dict) -> dict:
-        kind = proposal.get("kind")
+        applied_path = self.applied / f"{proposal.get('proposal_id')}.json"
+        previous = read_json(applied_path)
+        if previous:
+            return {**previous, "deduped": True}
+        op = proposal.get("op") or proposal.get("kind")
         target_id = proposal.get("target_id")
-        raw_value = proposal.get("diff", {}).get("value", {})
+        raw_value = proposal.get("diff", {}).get("value")
         value = raw_value if isinstance(raw_value, dict) else {}
         source = {
             "kind": "push",
             "id": proposal.get("push_id"),
         }
-        evidence = [
-            {
-                "paper_id": value.get("paper_id"),
-                "push_id": proposal.get("push_id"),
-                "page": value.get("page"),
-                "quote": value.get("quote") or value.get("note", ""),
-            }
-        ]
+        raw_evidence = proposal.get("evidence") or {}
+        evidence = {
+            "paper_id": raw_evidence.get("paper_id") or value.get("paper_id"),
+            "push_id": proposal.get("push_id"),
+            "page": raw_evidence.get("page") if raw_evidence else value.get("page"),
+            "quote": raw_evidence.get("quote") or value.get("quote") or value.get("note", ""),
+        }
+        evidence_list = [evidence] if evidence.get("quote") or evidence.get("paper_id") else []
 
-        if kind == "add_evidence":
-            prop = self.get_prop(target_id)
-            self.update_prop(
-                target_id,
-                {},
-                action="evidence_added",
-                source=source,
-                rationale=proposal.get("rationale", ""),
-                evidence=evidence,
-            )
-            target_id = prop["id"]
-        elif kind in ("add_alias", "add_ontology"):
+        if op in ("add_card_ontology", "add_alias", "add_ontology"):
             card = self.get_card(target_id)
-            term = raw_value if isinstance(raw_value, str) else value.get("term")
+            terms = raw_value if isinstance(raw_value, list) else [raw_value]
+            if isinstance(value.get("term"), str):
+                terms = [value["term"]]
             ontology = list(card.get("ontology", []))
-            if term and term.lower() not in {t.lower() for t in ontology}:
-                ontology.append(term)
-                card["ontology"] = ontology
-                self.put_card(card)
-        elif kind == "add_proposition":
+            seen = {t.lower() for t in ontology}
+            for term in terms:
+                if isinstance(term, str) and term.strip() and term.lower() not in seen:
+                    ontology.append(term.strip())
+                    seen.add(term.lower())
+            card["ontology"] = ontology
+            self.put_card(card)
+        elif op == "update_card_annotation":
+            text = raw_value if isinstance(raw_value, str) else value.get("text", "")
+            card = self.get_card(target_id)
+            card["annotation"] = text
+            self.put_card(card)
+        elif op == "create_card":
+            card = {
+                "id": value.get("id") or None,
+                "label": value.get("label"),
+                "ontology": list(value.get("ontology") or []),
+                "annotation": value.get("annotation"),
+            }
+            if not card["id"]:
+                card.pop("id")
+            result = self.put_card(card)
+            target_id = result["card_id"]
+        elif op in ("create_proposition", "add_proposition"):
             text = value.get("content") or value.get("text", "")
             title = value.get("title") or clip(text, 60)
             related = value.get("related_knowledge") or value.get("node_ids") or []
@@ -503,40 +517,64 @@ class Archive:
                                 "related_knowledge": related,
                             },
                             "rationale": proposal.get("rationale", ""),
-                            "evidence": evidence,
+                            "evidence": evidence_list,
                         }
                     ],
                 }
             )
             target_id = prop_id
-        elif kind == "update_summary":
+        elif op in ("add_proposition_evidence", "add_evidence"):
+            self.update_prop(
+                target_id,
+                {},
+                action="evidence_added",
+                source=source,
+                rationale=proposal.get("rationale", ""),
+                evidence=evidence_list,
+            )
+        elif op == "update_proposition_title":
+            text = raw_value if isinstance(raw_value, str) else value.get("title", "")
+            self.update_prop(
+                target_id,
+                {"title": text},
+                action="title_changed",
+                source=source,
+                rationale=proposal.get("rationale", ""),
+                evidence=evidence_list,
+            )
+        elif op in ("update_proposition_content", "update_summary"):
             text = raw_value if isinstance(raw_value, str) else value.get("text", "")
-            if proposal.get("target_type") == "proposition":
-                self.update_prop(
-                    target_id,
-                    {"content": text},
-                    action="content_changed",
-                    source=source,
-                    rationale=proposal.get("rationale", ""),
-                    evidence=evidence,
-                )
-            else:
-                card = self.get_card(target_id)
-                card["annotation"] = text
-                self.put_card(card)
+            self.update_prop(
+                target_id,
+                {"content": text},
+                action="content_changed",
+                source=source,
+                rationale=proposal.get("rationale", ""),
+                evidence=evidence_list,
+            )
+        elif op == "update_proposition_related_knowledge":
+            related = raw_value if isinstance(raw_value, list) else value.get("related_knowledge", [])
+            self.update_prop(
+                target_id,
+                {"related_knowledge": related},
+                action="related_knowledge_changed",
+                source=source,
+                rationale=proposal.get("rationale", ""),
+                evidence=evidence_list,
+            )
         else:
-            raise ArchiveError(f"unknown proposal kind: {kind}")
+            raise ArchiveError(f"unknown proposal op: {op}")
 
         record = {
-            "schema_version": 1,
+            "schema_version": 2,
             "proposal_id": proposal.get("proposal_id"),
             "push_id": proposal.get("push_id"),
-            "kind": kind,
+            "op": op,
             "target_id": target_id,
             "applied_at": now(),
             "status": "applied",
         }
-        write_json(self.applied / f"{proposal.get('proposal_id')}.json", record)
+        write_json(applied_path, record)
         return record
 
     def apply_decisions(self, pending_dir: Path, decisions_path: Path) -> dict:

@@ -272,29 +272,51 @@ python -m archive.cli prop-list --card card_hmbs
 
 ## 9. 更新提议 `proposal`
 
-嵌在 push 里，也单独复制到 `publisher/pending/` 等审批。
+嵌在 push 里；v2 每篇推送最多 **2 个卡片目标 + 2 个命题目标**，同一目标的多个操作在入队时合并成一个更新题（见 `docs/specs/unified-question-queue.md`）。
 
 ```json
 {
-  "schema_version": 1,
-  "proposal_id": "p_2026-10-20_card_hmbs_01_1",
-  "push_id": "2026-10-20_card_hmbs_01",
-  "kind": "add_evidence | add_alias | add_proposition | update_summary",
-  "target_type": "proposition | card | none",
+  "schema_version": 2,
+  "proposal_id": "p_2026-10-21_card_hmbs_01_01",
+  "push_id": "2026-10-21_card_hmbs_01",
+  "op": "add_proposition_evidence",
+  "target_type": "proposition",
   "target_id": "prop_hmbs_aip",
-  "diff": { "op": "add", "path": "evidence", "value": { "paper_id": "…", "note": "…" } },
-  "before": "…",
-  "after": "…",
-  "rationale": "…",
+  "diff": {
+    "op": "add",
+    "path": "evidence",
+    "value": { "paper_id": "europepmc_42830441", "page": 3, "quote": "…", "section": "results" }
+  },
+  "before": 0,
+  "after": 1,
+  "rationale": "为什么这条更新成立",
   "confidence": 0.7,
-  "status": "draft | pending_approval | approved | rejected | historical"
+  "evidence": { "paper_id": "europepmc_42830441", "page": 3, "quote": "…", "section": "results" },
+  "status": "draft"
 }
 ```
 
-v2 落点：`add_alias` → 卡片 `ontology`；`update_summary`（target_type=card）→ `annotation`；
-`update_summary`（proposition）→ `content` + history；`add_proposition` 的 value 用
-`title + content + related_knowledge`。v1 迁移来的旧提议标 `status: historical`，不补问。
-正式的新提议契约（卡片/命题更新组、每题同意全部/拒绝全部）由后续票定稿。
+### 9.1 操作表
+
+| `op` | `target_type` | `target_id` | `diff.path` | `diff.value` | `before` / `after` |
+|---|---|---|---|---|---|
+| `add_card_ontology` | `card` | 已有卡片 id | `ontology` | 新词（string）或词列表 | 当前 ontology / 追加后的 ontology |
+| `update_card_annotation` | `card` | 已有卡片 id | `annotation` | 新 annotation | 当前 annotation / 新 annotation |
+| `create_card` | `none` | `null` | `card` | `{id?, label, ontology, annotation}` | `null` / 新卡片对象 |
+| `create_proposition` | `none` | `null` | `proposition` | `{id?, title, content, related_knowledge}` | `null` / 新命题对象 |
+| `update_proposition_title` | `proposition` | 已有命题 id | `title` | 新标题 | 当前标题 / 新标题 |
+| `update_proposition_content` | `proposition` | 已有命题 id | `content` | 新内容 | 当前内容 / 新内容 |
+| `add_proposition_evidence` | `proposition` | 已有命题 id | `evidence` | 与顶层 `evidence` 相同 | 当前证据条数 / +1 |
+| `update_proposition_related_knowledge` | `proposition` | 已有命题 id | `related_knowledge` | ≥2 张已有卡片 id | 当前列表 / 新列表 |
+
+### 9.2 约束
+
+- `evidence` 每条必填：`paper_id` 必须是本次 `push.paper_ids` 之一；`page` 是 ≥1 的整数，摘要引文可为 `null`；`quote` 是 8–500 字的原文片段。证据必须可追溯到该论文，不得编造。
+- `before` 必须与 writer task 快照一致（防陈旧 diff）；`after` 必须等于 `diff.value`（或按操作表推导），且不得与 `before` 相同。
+- `create_proposition.related_knowledge` 至少 2 张**已存在**卡片；同一次推送新建的卡片不能立刻被新命题引用。
+- `proposal_id` 形如 `p_<push_id>_<NN>`；同一 push 内唯一；`status` 只能是 `draft`。
+- writer **不写 archive**；同意后由 archive 按操作表落盘（`archive.cli apply-proposal` / 队列的 `apply-group`）。
+- v1 迁移来的旧提议标 `status: historical`，不补问；archive 仍能识别旧 `kind`，但新 writer 只产出上表操作。
 
 ## 10. publisher 内部
 
