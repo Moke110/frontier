@@ -1,0 +1,97 @@
+{
+  "_index": 2,
+  "_total": 4,
+  "id": "q_2026-10-21_card_hmbs_01_prop_prop_hmbs_aip",
+  "kind": "proposition_update",
+  "push_id": "2026-10-21_card_hmbs_01",
+  "card_id": "card_hmbs",
+  "payload": {
+    "target_type": "proposition",
+    "target_id": "prop_hmbs_aip",
+    "target_label": "HMBS 功能缺失导致急性间歇性卟啉症（AIP）",
+    "proposal_ids": [
+      "p_2026-10-21_card_hmbs_01_03",
+      "p_2026-10-21_card_hmbs_01_04",
+      "p_2026-10-21_card_hmbs_01_05"
+    ],
+    "proposals": [
+      {
+        "schema_version": 2,
+        "proposal_id": "p_2026-10-21_card_hmbs_01_03",
+        "push_id": "2026-10-21_card_hmbs_01",
+        "op": "update_proposition_title",
+        "target_type": "proposition",
+        "target_id": "prop_hmbs_aip",
+        "diff": {
+          "op": "replace",
+          "path": "title",
+          "value": "HMBS 缺失通过血红素合成障碍导致 AIP"
+        },
+        "before": "HMBS 功能缺失导致急性间歇性卟啉症（AIP）",
+        "after": "HMBS 缺失通过血红素合成障碍导致 AIP",
+        "rationale": "把中间机制写进标题，和卡片 annotation 的新证据对齐。",
+        "confidence": 0.7,
+        "evidence": {
+          "paper_id": "europepmc_42900001",
+          "page": 3,
+          "quote": "Knockout of HMBS (hydroxymethylbilane synthase) reduced heme biosynthesis and caused porphyrin precursor accumulation.",
+          "section": "results"
+        },
+        "status": "draft"
+      },
+      {
+        "schema_version": 2,
+        "proposal_id": "p_2026-10-21_card_hmbs_01_04",
+        "push_id": "2026-10-21_card_hmbs_01",
+        "op": "update_proposition_content",
+        "target_type": "proposition",
+        "target_id": "prop_hmbs_aip",
+        "diff": {
+          "op": "replace",
+          "path": "content",
+          "value": "HMBS 功能缺失使血红素合成受阻，ALA 与卟啉前体在肝细胞中积聚，进而造成线粒体功能障碍并表现为急性间歇性卟啉症（AIP）。"
+        },
+        "before": "HMBS 功能缺失导致急性间歇性卟啉症（AIP）。",
+        "after": "HMBS 功能缺失使血红素合成受阻，ALA 与卟啉前体在肝细胞中积聚，进而造成线粒体功能障碍并表现为急性间歇性卟啉症（AIP）。",
+        "rationale": "原命题只有终点，补上血红素合成受阻与线粒体损伤这条中间链路。",
+        "confidence": 0.6,
+        "evidence": {
+          "paper_id": "europepmc_42900001",
+          "page": 6,
+          "quote": "We show that HMBS loss increases delta-aminolevulinic acid and impairs mitochondrial function.",
+          "section": "results"
+        },
+        "status": "draft"
+      },
+      {
+        "schema_version": 2,
+        "proposal_id": "p_2026-10-21_card_hmbs_01_05",
+        "push_id": "2026-10-21_card_hmbs_01",
+        "op": "add_proposition_evidence",
+        "target_type": "proposition",
+        "target_id": "prop_hmbs_aip",
+        "diff": {
+          "op": "add",
+          "path": "evidence",
+          "value": {
+            "paper_id": "europepmc_42900001",
+            "page": 6,
+            "quote": "We show that HMBS loss increases delta-aminolevulinic acid and impairs mitochondrial function.",
+            "section": "results"
+          }
+        },
+        "before": 0,
+        "after": 1,
+        "rationale": "把这次肝细胞模型的直接证据挂到命题 history 上。",
+        "confidence": 0.9,
+        "evidence": {
+          "paper_id": "europepmc_42900001",
+          "page": 6,
+          "quote": "We show that HMBS loss increases delta-aminolevulinic acid and impairs mitochondrial function.",
+          "section": "results"
+        },
+        "status": "draft"
+      }
+    ]
+  }
+}

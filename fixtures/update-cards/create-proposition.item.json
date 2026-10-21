@@ -1,0 +1,48 @@
+{
+  "_index": 3,
+  "_total": 4,
+  "id": "q_2026-10-21_card_hmbs_01_new_prop_hmbs_mitochondria",
+  "kind": "proposition_update",
+  "push_id": "2026-10-21_card_hmbs_01",
+  "card_id": "card_hmbs",
+  "payload": {
+    "target_type": "proposition",
+    "target_id": null,
+    "target_label": "新建命题",
+    "proposal_ids": ["p_2026-10-21_card_hmbs_01_06"],
+    "proposals": [
+      {
+        "schema_version": 2,
+        "proposal_id": "p_2026-10-21_card_hmbs_01_06",
+        "push_id": "2026-10-21_card_hmbs_01",
+        "op": "create_proposition",
+        "target_type": "none",
+        "target_id": null,
+        "diff": {
+          "op": "add",
+          "path": "proposition",
+          "value": {
+            "id": "prop_hmbs_mitochondrial_dysfunction",
+            "title": "HMBS 缺失通过线粒体功能障碍放大卟啉前体毒性",
+            "content": "HMBS 缺失不仅阻断血红素合成，还直接损害线粒体功能，使 ALA 与卟啉前体的毒性放大，形成比单纯酶活下降更严重的细胞表型。",
+            "related_knowledge": ["card_hmbs", "card_heme_biosynthesis", "card_aip"]
+          }
+        },
+        "before": null,
+        "after": {
+          "title": "HMBS 缺失通过线粒体功能障碍放大卟啉前体毒性",
+          "related_knowledge": ["card_hmbs", "card_heme_biosynthesis", "card_aip"]
+        },
+        "rationale": "现有命题只连接 HMBS 与 AIP；这篇论文把血红素合成通路与线粒体损伤也拉进来，值得单独成题。",
+        "confidence": 0.5,
+        "evidence": {
+          "paper_id": "europepmc_42900001",
+          "page": 4,
+          "quote": "These findings suggest that restoring heme biosynthesis may rescue the phenotype.",
+          "section": "discussion"
+        },
+        "status": "draft"
+      }
+    ]
+  }
+}

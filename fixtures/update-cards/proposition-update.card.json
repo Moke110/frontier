@@ -1,0 +1,121 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default",
+    "summary": {
+      "content": "知识更新 2/4：命题 `prop_hmbs_aip` · HMBS 功能缺失导致急性间歇性卟啉症（AIP）"
+    }
+  },
+  "header": {
+    "title": {
+      "tag": "plain_text",
+      "content": "知识更新 · 第 2 / 4 题"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "命题 `prop_hmbs_aip` · HMBS 功能缺失导致急性间歇性卟啉症（AIP）"
+    },
+    "template": "violet",
+    "icon": {
+      "tag": "standard_icon",
+      "token": "wiki-bitable_colorful"
+    }
+  },
+  "body": {
+    "direction": "vertical",
+    "padding": "12px 12px 20px 12px",
+    "vertical_spacing": "10px",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "来源：**HMBS loss impairs heme biosynthesis and drives porphyrin accumulation in hepatocytes** · Journal of Inherited Metabolic Disease · 2026-10-16"
+      },
+      {
+        "tag": "markdown",
+        "content": "**改写命题标题**\n<font color='grey'>原</font> HMBS 功能缺失导致急性间歇性卟啉症（AIP）\n**新** HMBS 缺失通过血红素合成障碍导致 AIP\n\n**改写命题内容**\n<font color='red'>- HMBS 功能缺失导致急性间歇性卟啉症（AIP）。</font>\n<font color='green'>+ HMBS 功能缺失使血红素合成受阻，ALA 与卟啉前体在肝细胞中积聚，进而造成线粒体功能障碍并表现为急性间歇性卟啉症（AIP）。</font>\n\n**补充证据**\n> We show that HMBS loss increases delta-aminolevulinic acid and impairs mitochondrial function.\n<font color='grey'>第 6 页</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "**依据**\n> Knockout of HMBS (hydroxymethylbilane synthase) reduced heme biosynthesis and caused porphyrin precursor accumulation.\n<font color='grey'>《HMBS loss impairs heme biosynthesis and drives porphyrin accumulation…》 · 第 3 页</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>理由：把这次肝细胞模型的直接证据挂到命题 history 上。 · 置信度 0.9</font>"
+      },
+      {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "elements": [
+              {
+                "tag": "button",
+                "name": "agree_all",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "同意全部"
+                },
+                "type": "primary_filled",
+                "width": "fill",
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "queue_item_id": "q_2026-10-21_card_hmbs_01_prop_prop_hmbs_aip",
+                      "proposal_ids": [
+                        "p_2026-10-21_card_hmbs_01_03",
+                        "p_2026-10-21_card_hmbs_01_04",
+                        "p_2026-10-21_card_hmbs_01_05"
+                      ],
+                      "decision": "agree_all"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "elements": [
+              {
+                "tag": "button",
+                "name": "reject_all",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "拒绝全部"
+                },
+                "type": "danger",
+                "width": "fill",
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "queue_item_id": "q_2026-10-21_card_hmbs_01_prop_prop_hmbs_aip",
+                      "proposal_ids": [
+                        "p_2026-10-21_card_hmbs_01_03",
+                        "p_2026-10-21_card_hmbs_01_04",
+                        "p_2026-10-21_card_hmbs_01_05"
+                      ],
+                      "decision": "reject_all"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>只处理这一项。同意后立即写入知识库；拒绝则保持原样。答完这一题才会发下一题。</font>"
+      }
+    ]
+  }
+}

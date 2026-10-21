@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "format": "pdf",
+  "push_id": "2026-10-21_card_hmbs_01",
+  "date": "2026-10-21",
+  "checkpoint_id": "card_hmbs",
+  "card_id": "card_hmbs",
+  "paper_ids": ["europepmc_42900001"],
+  "paper": {
+    "paper_id": "europepmc_42900001",
+    "source": "europepmc",
+    "title": "HMBS loss impairs heme biosynthesis and drives porphyrin accumulation in hepatocytes",
+    "authors": ["Li Zhang", "Marta Ruiz", "John Bell"],
+    "journal": "Journal of Inherited Metabolic Disease",
+    "published": "2026-10-16",
+    "url": "https://europepmc.org/article/MED/42900001",
+    "is_preprint": false
+  },
+  "title": "HMBS：缺失如何推动卟啉前体积累",
+  "sections": {
+    "takeaway": "HMBS 缺失同时打击血红素合成与线粒体功能。",
+    "background": "……",
+    "methods": "……",
+    "results": "……",
+    "why": "……",
+    "limits": "……",
+    "sources": "https://europepmc.org/article/MED/42900001"
+  }
+}

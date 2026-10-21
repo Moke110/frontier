@@ -1,0 +1,60 @@
+{
+  "_index": 1,
+  "_total": 4,
+  "id": "q_2026-10-21_card_hmbs_01_card_card_hmbs",
+  "kind": "card_update",
+  "push_id": "2026-10-21_card_hmbs_01",
+  "card_id": "card_hmbs",
+  "payload": {
+    "target_type": "card",
+    "target_id": "card_hmbs",
+    "target_label": "HMBS",
+    "proposal_ids": ["p_2026-10-21_card_hmbs_01_01", "p_2026-10-21_card_hmbs_01_02"],
+    "proposals": [
+      {
+        "schema_version": 2,
+        "proposal_id": "p_2026-10-21_card_hmbs_01_01",
+        "push_id": "2026-10-21_card_hmbs_01",
+        "op": "add_card_ontology",
+        "target_type": "card",
+        "target_id": "card_hmbs",
+        "diff": {"op": "add", "path": "ontology", "value": "PBG deaminase"},
+        "before": ["HMBS", "PBGD", "hydroxymethylbilane synthase", "HMBS enzyme"],
+        "after": ["HMBS", "PBGD", "hydroxymethylbilane synthase", "HMBS enzyme", "PBG deaminase"],
+        "rationale": "论文用 PBG deaminase 指代同一酶，补进 ontology 可提高召回。",
+        "confidence": 0.8,
+        "evidence": {
+          "paper_id": "europepmc_42900001",
+          "page": 3,
+          "quote": "Knockout of HMBS (hydroxymethylbilane synthase) reduced heme biosynthesis and caused porphyrin precursor accumulation.",
+          "section": "results"
+        },
+        "status": "draft"
+      },
+      {
+        "schema_version": 2,
+        "proposal_id": "p_2026-10-21_card_hmbs_01_02",
+        "push_id": "2026-10-21_card_hmbs_01",
+        "op": "update_card_annotation",
+        "target_type": "card",
+        "target_id": "card_hmbs",
+        "diff": {
+          "op": "replace",
+          "path": "annotation",
+          "value": "血红素合成第三步的胞质酶（EC 4.3.1.8）。功能缺失导致急性间歇性卟啉症（AIP）。\n⛔ 不含：与 HMBS 分子本身无关的卟啉症综述；ALAD / UROS 的论文\n⚠️ 易混：PBG 单独出现时是底物，PBGD 才是酶\n📌 新证据：CRISPR 肝细胞模型显示 HMBS 缺失导致 ALA 与卟啉前体积聚，并损害线粒体功能（2026）。"
+        },
+        "before": "血红素合成第三步的胞质酶（EC 4.3.1.8）。功能缺失导致急性间歇性卟啉症（AIP）。\n⛔ 不含：与 HMBS 分子本身无关的卟啉症综述；ALAD / UROS 的论文\n⚠️ 易混：PBG 单独出现时是底物，PBGD 才是酶",
+        "after": "血红素合成第三步的胞质酶（EC 4.3.1.8）。功能缺失导致急性间歇性卟啉症（AIP）。\n⛔ 不含：与 HMBS 分子本身无关的卟啉症综述；ALAD / UROS 的论文\n⚠️ 易混：PBG 单独出现时是底物，PBGD 才是酶\n📌 新证据：CRISPR 肝细胞模型显示 HMBS 缺失导致 ALA 与卟啉前体积聚，并损害线粒体功能（2026）。",
+        "rationale": "把新的肝细胞表型写进 annotation，避免下次只按旧定义理解 HMBS。",
+        "confidence": 0.6,
+        "evidence": {
+          "paper_id": "europepmc_42900001",
+          "page": 3,
+          "quote": "Knockout of HMBS (hydroxymethylbilane synthase) reduced heme biosynthesis and caused porphyrin precursor accumulation.",
+          "section": "results"
+        },
+        "status": "draft"
+      }
+    ]
+  }
+}

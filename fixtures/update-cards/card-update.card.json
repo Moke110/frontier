@@ -1,0 +1,119 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default",
+    "summary": {
+      "content": "知识更新 1/4：知识卡片 `card_hmbs` · HMBS"
+    }
+  },
+  "header": {
+    "title": {
+      "tag": "plain_text",
+      "content": "知识更新 · 第 1 / 4 题"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "知识卡片 `card_hmbs` · HMBS"
+    },
+    "template": "blue",
+    "icon": {
+      "tag": "standard_icon",
+      "token": "wiki-bitable_colorful"
+    }
+  },
+  "body": {
+    "direction": "vertical",
+    "padding": "12px 12px 20px 12px",
+    "vertical_spacing": "10px",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "来源：**HMBS loss impairs heme biosynthesis and drives porphyrin accumulation in hepatocytes** · Journal of Inherited Metabolic Disease · 2026-10-16"
+      },
+      {
+        "tag": "markdown",
+        "content": "**补充 ontology**\n新增：`PBG deaminase`\n<font color='grey'>现有：`HMBS`、`PBGD`、`hydroxymethylbilane synthase`、`HMBS enzyme`</font>\n\n**改写 annotation**\n<font color='green'>+ 📌 新证据：CRISPR 肝细胞模型显示 HMBS 缺失导致 ALA 与卟啉前体积聚，并损害线粒体功能（2026）。</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "**依据**\n> Knockout of HMBS (hydroxymethylbilane synthase) reduced heme biosynthesis and caused porphyrin precursor accumulation.\n<font color='grey'>《HMBS loss impairs heme biosynthesis and drives porphyrin accumulation…》 · 第 3 页</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>理由：论文用 PBG deaminase 指代同一酶，补进 ontology 可提高召回。 · 置信度 0.8</font>"
+      },
+      {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "elements": [
+              {
+                "tag": "button",
+                "name": "agree_all",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "同意全部"
+                },
+                "type": "primary_filled",
+                "width": "fill",
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "queue_item_id": "q_2026-10-21_card_hmbs_01_card_card_hmbs",
+                      "proposal_ids": [
+                        "p_2026-10-21_card_hmbs_01_01",
+                        "p_2026-10-21_card_hmbs_01_02"
+                      ],
+                      "decision": "agree_all"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "elements": [
+              {
+                "tag": "button",
+                "name": "reject_all",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "拒绝全部"
+                },
+                "type": "danger",
+                "width": "fill",
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "queue_item_id": "q_2026-10-21_card_hmbs_01_card_card_hmbs",
+                      "proposal_ids": [
+                        "p_2026-10-21_card_hmbs_01_01",
+                        "p_2026-10-21_card_hmbs_01_02"
+                      ],
+                      "decision": "reject_all"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>只处理这一项。同意后立即写入知识库；拒绝则保持原样。答完这一题才会发下一题。</font>"
+      }
+    ]
+  }
+}

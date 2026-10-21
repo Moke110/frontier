@@ -1,0 +1,117 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default",
+    "summary": {
+      "content": "知识更新 3/4：新建命题"
+    }
+  },
+  "header": {
+    "title": {
+      "tag": "plain_text",
+      "content": "知识更新 · 第 3 / 4 题"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "新建命题"
+    },
+    "template": "violet",
+    "icon": {
+      "tag": "standard_icon",
+      "token": "wiki-bitable_colorful"
+    }
+  },
+  "body": {
+    "direction": "vertical",
+    "padding": "12px 12px 20px 12px",
+    "vertical_spacing": "10px",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "来源：**HMBS loss impairs heme biosynthesis and drives porphyrin accumulation in hepatocytes** · Journal of Inherited Metabolic Disease · 2026-10-16"
+      },
+      {
+        "tag": "markdown",
+        "content": "**新建命题**\n**HMBS 缺失通过线粒体功能障碍放大卟啉前体毒性**\nHMBS 缺失不仅阻断血红素合成，还直接损害线粒体功能，使 ALA 与卟啉前体的毒性放大，形成比单纯酶活下降更严重的细胞表型。\n关联：`card_hmbs`、`card_heme_biosynthesis`、`card_aip`"
+      },
+      {
+        "tag": "markdown",
+        "content": "**依据**\n> These findings suggest that restoring heme biosynthesis may rescue the phenotype.\n<font color='grey'>《HMBS loss impairs heme biosynthesis and drives porphyrin accumulation…》 · 第 4 页</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>理由：现有命题只连接 HMBS 与 AIP；这篇论文把血红素合成通路与线粒体损伤也拉进来，值得单独成题。 · 置信度 0.5</font>"
+      },
+      {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "elements": [
+              {
+                "tag": "button",
+                "name": "agree_all",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "同意全部"
+                },
+                "type": "primary_filled",
+                "width": "fill",
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "queue_item_id": "q_2026-10-21_card_hmbs_01_new_prop_hmbs_mitochondria",
+                      "proposal_ids": [
+                        "p_2026-10-21_card_hmbs_01_06"
+                      ],
+                      "decision": "agree_all"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "elements": [
+              {
+                "tag": "button",
+                "name": "reject_all",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "拒绝全部"
+                },
+                "type": "danger",
+                "width": "fill",
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "queue_item_id": "q_2026-10-21_card_hmbs_01_new_prop_hmbs_mitochondria",
+                      "proposal_ids": [
+                        "p_2026-10-21_card_hmbs_01_06"
+                      ],
+                      "decision": "reject_all"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>只处理这一项。同意后立即写入知识库；拒绝则保持原样。答完这一题才会发下一题。</font>"
+      }
+    ]
+  }
+}
