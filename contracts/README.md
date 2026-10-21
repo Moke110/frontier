@@ -15,6 +15,8 @@ $KL_HOME/
 ├── archive/                      # 只有 archive 模块写
 │   ├── raw/<paper_id>.json       # ① 原文（元数据）
 │   ├── raw/text/<paper_id>.txt   # ① 原文（正文/摘要文本）
+│   ├── raw/pages/<paper_id>.json # ① PDF 页码锚点（正文页码 → 字符区间）
+│   ├── reports/pdf-ingest-*.json # PDF 入库运行报告
 │   ├── pushes/<push_id>.json     # ② 推送
 │   ├── pushes/assets/<push_id>/  # ② 推送图片（原文图 / 生成图）
 │   ├── cards/<card_id>.json      # ③ 知识卡片（取代 checkpoint + kg node）
@@ -101,6 +103,44 @@ checkpoints:
 
 去重键 `source:source_id`；`paper_id = <source>_<sanitized source_id>`。
 `checkpoint_id` 是历史字段名，值是知识卡片 id（如 `card_hmbs`）；新代码也接受 `card_id`。
+
+### 2.1 PDF 入库（`pdf_ingest`）
+
+`python -m pdf_ingest.cli run --manifest fixtures/pdf-manifest.jsonl [--limit N] [--dry-run]`
+
+- `source = "pdf"`；`paper_id` 由 PDF 文件主名生成并与初始主题清单一致：
+  `2025_Anders_Bench-LinBaseline.pdf` → `pdf_2025_anders_bench_linbaseline`。
+- `source_id` 回退顺序：manifest 的 `doi`（小写）→ `pmid:<pmid>` → `arxiv:<id>`（去 `arXiv:` 前缀、小写）→ `md5:<md5>`。
+- manifest 是书目与身份的唯一来源（PDF ` /Title`、印刷 DOI 不可信）；raw 记录额外保留
+  `doi / pmid / pmcid / arxiv / md5 / category / pdf_path / pdf_pages / pages / year / notes`。
+- 正文：PyMuPDF `page.get_text("text")`，各页文本按 `"\n\n"` 连接写入 `raw/text/<paper_id>.txt`。
+- 页码锚点 `archive/raw/pages/<paper_id>.json`：
+
+```json
+{
+  "schema_version": 1,
+  "kind": "page-anchors",
+  "paper_id": "pdf_2025_anders_bench_linbaseline",
+  "text_path": "raw/text/pdf_2025_anders_bench_linbaseline.txt",
+  "md5": "…",
+  "page_sep": "\n\n",
+  "pdf_pages": 21,
+  "text_chars": 61000,
+  "extracted_at": "2026-10-21T15:00:00+08:00",
+  "page_anchors": [
+    {"page": 1, "start": 0, "end": 2980, "chars": 2980, "text_empty": false}
+  ]
+}
+```
+
+`page` 是 **PDF 页序（1 起）**，不是印刷页码；`[start, end)` 是全文 `.txt` 的字符区间。
+`text_empty: true` 表示整页是图（应标为 `figure_page`，不参与检索）。
+引文定位用 `pdf_ingest.anchors.locate_quote(text, page_anchors, page, quote)`：
+匹配忽略 PDF 换行造成的空白差异，不忽略用词。
+
+入库幂等：完整论文重跑记 `skipped`；缺 text 或 pages 的已存在论文就地补写并记 `repaired`；
+单篇失败只记入 `archive/reports/pdf-ingest-<ts>.json` 的 `failures`，不中断整批。
+
 
 ## 3. 候选 `candidates.jsonl`（retriever → editor）
 

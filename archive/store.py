@@ -1,7 +1,7 @@
 """archive: the only writer of the knowledge store.
 
 Layers (all under $KL_HOME/archive):
-  1. raw/          original papers (metadata + text)
+  1. raw/          original papers (metadata + text + PDF page anchors)
   2. pushes/       generated pushes (long-form PDF payload + proposals)
   3. cards/        knowledge cards (id / label / ontology / annotation)
   4. propositions/ cross-paper claims with history and related cards
@@ -150,6 +150,7 @@ class Archive:
         self.root = self.home / "archive"
         self.raw = self.root / "raw"
         self.raw_text = self.raw / "text"
+        self.pages = self.raw / "pages"
         self.pushes = self.root / "pushes"
         self.cards = self.root / "cards"
         self.props = self.root / "propositions"
@@ -162,6 +163,7 @@ class Archive:
         for path in (
             self.raw,
             self.raw_text,
+            self.pages,
             self.pushes,
             self.cards,
             self.props,
@@ -201,17 +203,48 @@ class Archive:
         }
 
     # ------------------------------------------------------------ layer 1
+    def _text_path(self, pid: str) -> Path:
+        return self.raw_text / f"{pid}.txt"
+
+    def find_paper(self, source: str, source_id: str) -> dict | None:
+        """Look up the dedupe key ``source:source_id`` across raw records."""
+        for path in sorted(self.raw.glob("*.json")):
+            rec = read_json(path)
+            if rec and rec.get("source") == source and rec.get("source_id") == source_id:
+                return rec
+        return None
+
     def add_paper(self, rec: dict) -> dict:
         source = rec.get("source")
         source_id = rec.get("source_id")
         if not source or not source_id:
             raise ArchiveError("paper needs source and source_id")
         pid = rec.get("paper_id") or make_paper_id(source, source_id)
+        text = rec.pop("text", None)
+        text_path = self._text_path(pid)
         target = self.raw / f"{pid}.json"
+        existing = self.find_paper(source, source_id)
+        if existing and existing["paper_id"] != pid:
+            return {
+                "paper_id": existing["paper_id"],
+                "deduped": True,
+                "repaired": False,
+                "path": str(self.raw / f"{existing['paper_id']}.json"),
+            }
         if target.exists():
-            return {"paper_id": pid, "deduped": True, "path": str(target)}
+            # Repair a missing/empty text file, never overwrite a good one.
+            repaired = False
+            if text and (not text_path.exists() or not text_path.read_text(encoding="utf-8").strip()):
+                ensure_dir(self.raw_text)
+                text_path.write_text(text, encoding="utf-8")
+                repaired = True
+            return {
+                "paper_id": pid,
+                "deduped": True,
+                "repaired": repaired,
+                "path": str(target),
+            }
 
-        text = rec.pop("text", None) or rec.get("abstract", "")
         record = {
             "schema_version": 1,
             "paper_id": pid,
@@ -221,9 +254,30 @@ class Archive:
         record["text_path"] = f"raw/text/{pid}.txt"
         write_json(target, record)
         ensure_dir(self.raw_text)
-        (self.raw_text / f"{pid}.txt").write_text(text or "", encoding="utf-8")
+        text_path.write_text(text or rec.get("abstract", ""), encoding="utf-8")
         append_jsonl(self.index / "papers.jsonl", record)
-        return {"paper_id": pid, "deduped": False, "path": str(target)}
+        return {"paper_id": pid, "deduped": False, "repaired": False, "path": str(target)}
+
+    def read_pages(self, pid: str) -> dict | None:
+        return read_json(self.pages / f"{pid}.json")
+
+    def put_pages(self, pid: str, payload: dict) -> dict:
+        """Write the page-anchor sidecar; identical reruns are reported as-is."""
+        target = self.pages / f"{pid}.json"
+        previous = read_json(target)
+        changed = True
+        if previous:
+            changed = {
+                k: v for k, v in previous.items() if k != "extracted_at"
+            } != {k: v for k, v in payload.items() if k != "extracted_at"}
+        if changed:
+            write_json(target, payload)
+        return {
+            "paper_id": pid,
+            "created": previous is None,
+            "changed": changed,
+            "path": str(target),
+        }
 
     def get_paper(self, pid: str) -> dict:
         rec = read_json(self.raw / f"{pid}.json")
