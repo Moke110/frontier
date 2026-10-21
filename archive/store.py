@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import tempfile
 from pathlib import Path
 
 from common import (
@@ -434,6 +435,57 @@ class Archive:
         if not proposal:
             raise ArchiveError(f"proposal {proposal_id} not found in push {push_id}")
         return self._apply(proposal)
+
+    def apply_group(self, proposals: list[dict], group_id: str) -> dict:
+        """Apply one update-question group atomically.
+
+        Snapshots cards/propositions/applied, then applies each proposal. On any
+        failure the snapshot is restored, so the queue never sees a partial
+        group. Re-applying the same ``group_id`` is a no-op.
+        """
+        safe = re.sub(r"[^a-z0-9_]+", "_", str(group_id).lower()).strip("_") or "group"
+        marker = self.applied / f"group_{safe}.json"
+        previous = read_json(marker)
+        if previous:
+            return {**previous, "deduped": True}
+        ensure_dir(self.applied)
+        ensure_dir(self.root / ".tmp")
+        tmp = Path(tempfile.mkdtemp(prefix="group_", dir=str(self.root / ".tmp")))
+        backups = {}
+        try:
+            for name, path in (
+                ("cards", self.cards),
+                ("propositions", self.props),
+                ("applied", self.applied),
+            ):
+                if path.exists():
+                    dest = tmp / name
+                    shutil.copytree(path, dest)
+                    backups[name] = dest
+            results = [self._apply(proposal) for proposal in proposals]
+            record = {
+                "schema_version": 2,
+                "group_id": group_id,
+                "proposal_ids": [p.get("proposal_id") for p in proposals],
+                "applied_at": now(),
+                "status": "applied",
+                "results": results,
+            }
+            write_json(marker, record)
+            return record
+        except Exception as exc:  # noqa: BLE001 - restore then re-raise as ArchiveError
+            for name, path in (
+                ("cards", self.cards),
+                ("propositions", self.props),
+                ("applied", self.applied),
+            ):
+                if name in backups:
+                    if path.exists():
+                        shutil.rmtree(path)
+                    shutil.copytree(backups[name], path)
+            raise ArchiveError(f"group {group_id} failed, rolled back: {exc}") from exc
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def _apply(self, proposal: dict) -> dict:
         applied_path = self.applied / f"{proposal.get('proposal_id')}.json"

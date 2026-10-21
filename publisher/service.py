@@ -15,6 +15,8 @@ from publisher.cards import (
     build_rating_card,
 )
 from publisher.store import PublisherStore
+from publisher.update_cards import build_update_card
+from question_queue.store import QueueStore
 
 # The map deliberately stops at rating collection. Approval cards and KB writes
 # belong to the next phase; proposals stay as drafts inside the push.
@@ -23,6 +25,154 @@ ENABLE_APPROVALS = False
 
 def _push_path(home: Path, push_id: str) -> Path:
     return Path(home) / "archive" / "pushes" / f"{push_id}.json"
+
+
+def _queue(home: Path) -> QueueStore:
+    store = QueueStore(home)
+    store.init()
+    return store
+
+
+def _deliver_next(
+    home: Path,
+    store: PublisherStore,
+    target: str,
+    dry_run: bool,
+    identity: str,
+    push_override: dict | None = None,
+) -> dict | None:
+    """Send the active question (rating or one entity update), if any."""
+    queue = _queue(home)
+    item = queue.next_active()
+    if not item:
+        return None
+    push = push_override or read_json(_push_path(home, item["push_id"]))
+    if not push:
+        return None
+    if item["kind"] == "rating":
+        card = build_rating_card(push)
+    else:
+        siblings = queue.items(item["push_id"])
+        index = next(
+            (i for i, row in enumerate(siblings, start=1) if row["id"] == item["id"]), 1
+        )
+        card = build_update_card(push, item, index, len(siblings))
+    proposal_ids = item.get("payload", {}).get("proposal_ids") or []
+    kind = "rating" if item["kind"] == "rating" else "update"
+    if dry_run:
+        message_id = f"offline_{item['id']}"
+        path = store.save_outbox(f"{kind}_{item['id']}", card)
+    else:
+        sent = feishu.send_card(target, card, identity)
+        message_id = sent["message_id"]
+        path = None
+    store.record_message(
+        message_id,
+        kind,
+        item["push_id"],
+        proposal_ids,
+        target=target,
+        queue_item_id=item["id"],
+    )
+    queue.mark_sent(item["id"], message_id)
+    return {
+        "item_id": item["id"],
+        "kind": kind,
+        "message_id": message_id,
+        "card_path": str(path) if path else None,
+        "card": card,
+    }
+
+
+def _handle_queue_event(
+    home: Path,
+    store: PublisherStore,
+    event: dict,
+    mapping: dict,
+    offline: bool,
+    identity: str,
+) -> dict:
+    queue = _queue(home)
+    item_id = mapping.get("queue_item_id")
+    item = queue.get(item_id)
+    action_value = _parse_action_value(event)
+    action = event.get("action_name") or action_value.get("decision") or ""
+    operator = event.get("operator_id") or ""
+    token = event.get("token") or ""
+    target = mapping.get("target") or event.get("chat_id") or operator
+    push = read_json(_push_path(home, item["push_id"])) or {}
+
+    if item["kind"] == "rating":
+        verdict = ACTION_VERDICT.get(action)
+        if not verdict:
+            return {"ok": False, "reason": "unknown_action", "action": action}
+        answer = {
+            "verdict": verdict,
+            "comment": str(_parse_form(event).get("comment") or ""),
+            "operator_id": operator,
+            "message_id": event.get("message_id"),
+        }
+        result = queue.answer(item_id, answer)
+        if not result.get("ok"):
+            return result
+        if result.get("deduped"):
+            return {"ok": True, "deduped": True, "item_id": item_id}
+        rating = {
+            "schema_version": 1,
+            "rating_id": stable_id("r", event.get("message_id", ""), action, operator),
+            "push_id": item["push_id"],
+            "card_id": item.get("card_id"),
+            "message_id": event.get("message_id"),
+            "operator_id": operator,
+            "verdict": verdict,
+            "comment": answer["comment"],
+            "created_at": now(),
+        }
+        store.append_rating(rating)
+        confirmation = build_confirmation_card(push, verdict, answer["comment"])
+        if offline or not token:
+            store.save_outbox(f"confirmation_{item['push_id']}", confirmation)
+        else:
+            feishu.update_card(token, confirmation, identity)
+        delivered = _deliver_next(home, store, target, offline, identity)
+        return {
+            "ok": True,
+            "kind": "rating",
+            "push_id": item["push_id"],
+            "verdict": verdict,
+            "comment": answer["comment"],
+            "stored": True,
+            "queue_empty": result.get("queue_empty"),
+            "start": result.get("start"),
+            "next_message_id": delivered["message_id"] if delivered else None,
+        }
+
+    if action not in {"agree_all", "reject_all"}:
+        return {"ok": False, "reason": "unknown_action", "action": action}
+    result = queue.answer(item_id, {"decision": action, "operator_id": operator})
+    if not result.get("ok"):
+        return result
+    if result.get("deduped"):
+        return {"ok": True, "deduped": True, "item_id": item_id}
+    approved = action == "agree_all"
+    decision_card = build_decision_card("approve" if approved else "reject", len(
+        item.get("payload", {}).get("proposal_ids") or []
+    ))
+    if offline or not token:
+        store.save_outbox(f"decision_{item_id}", decision_card)
+    else:
+        feishu.update_card(token, decision_card, identity)
+    delivered = _deliver_next(home, store, target, offline, identity)
+    return {
+        "ok": True,
+        "kind": "update",
+        "push_id": item["push_id"],
+        "item_id": item_id,
+        "decision": action,
+        "queue_empty": result.get("queue_empty"),
+        "start": result.get("start"),
+        "next_message_id": delivered["message_id"] if delivered else None,
+    }
 
 
 def _duplicate_reason(home: Path, push: dict) -> dict | None:
@@ -56,23 +206,30 @@ def send_rating(
     dry_run: bool = False,
     identity: str = "bot",
 ) -> dict:
+    """Enqueue the push's questions and send whichever question is active."""
+    home = Path(home)
     store = PublisherStore(home)
     store.init()
-    card = build_rating_card(push)
-    if dry_run:
-        message_id = f"offline_rating_{push['push_id']}"
-        path = store.save_outbox(f"rating_{push['push_id']}", card)
-        store.record_message(message_id, "rating", push["push_id"], target=to_user)
+    queue = _queue(home)
+    queue.enqueue_push(push)
+    delivered = _deliver_next(home, store, to_user, dry_run, identity, push_override=push)
+    if not delivered:
         return {
             "ok": True,
-            "dry_run": True,
+            "dry_run": dry_run,
             "push_id": push["push_id"],
-            "message_id": message_id,
-            "card_path": str(path),
+            "message_id": None,
+            "reason": "no_active_question",
         }
-    sent = feishu.send_card(to_user, card, identity)
-    store.record_message(sent["message_id"], "rating", push["push_id"], target=to_user)
-    return {"ok": True, "dry_run": False, "push_id": push["push_id"], **sent}
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "push_id": push["push_id"],
+        "message_id": delivered["message_id"],
+        "item_id": delivered["item_id"],
+        "kind": delivered["kind"],
+        "card_path": delivered["card_path"],
+    }
 
 
 def send_push(
@@ -114,14 +271,17 @@ def send_push(
         pdf_message_id = sent["message_id"]
 
     store.record_message(pdf_message_id, "push_file", push["push_id"], target=to_user)
-    rating = send_rating(home, push, to_user, dry_run=dry_run, identity=identity)
+    queue = _queue(home)
+    queue.enqueue_push(push)
+    delivered = _deliver_next(home, store, to_user, dry_run, identity, push_override=push)
     return {
         "ok": True,
         "dry_run": dry_run,
         "push_id": push["push_id"],
         "pdf": str(pdf_path),
         "pdf_message_id": pdf_message_id,
-        "rating_message_id": rating["message_id"],
+        "rating_message_id": delivered["message_id"] if delivered else None,
+        "first_item_id": delivered["item_id"] if delivered else None,
     }
 
 
@@ -133,6 +293,20 @@ def _parse_form(event: dict) -> dict:
         return json.loads(raw)
     except json.JSONDecodeError:
         return {}
+
+
+def _parse_action_value(event: dict) -> dict:
+    """Card 2.0 callback buttons arrive as a JSON string in action_value."""
+    raw = event.get("action_value")
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def handle_event(
@@ -151,6 +325,15 @@ def handle_event(
     mapping = store.find_message(message_id)
     if not mapping:
         return {"ok": False, "reason": "unmapped_message", "message_id": message_id}
+    action_value = _parse_action_value(event)
+    if action_value.get("queue_item_id") and not mapping.get("queue_item_id"):
+        mapping = {
+            **mapping,
+            "queue_item_id": action_value["queue_item_id"],
+            "proposal_ids": action_value.get("proposal_ids") or mapping.get("proposal_ids"),
+        }
+    if mapping.get("queue_item_id"):
+        return _handle_queue_event(home, store, event, mapping, offline, identity)
     push = read_json(_push_path(home, mapping["push_id"]))
     if not push:
         return {"ok": False, "reason": "unknown_push", "push_id": mapping["push_id"]}

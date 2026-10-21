@@ -23,9 +23,15 @@ $KL_HOME/
 │   ├── applied/<proposal_id>.json# 已应用的更新记录
 │   └── legacy/v1-<ts>/           # v1 迁移备份（可 rollback）
 ├── ratings.jsonl                 # publisher 写，editor/frontier 读
+├── queue/                        # 统一问题队列（docs/specs/unified-question-queue.md）
+│   ├── state.json                # 队列表 + 单 active
+│   ├── events.jsonl              # 只追加的审计/重建日志
+│   ├── request.json              # 合并后的待推请求
+│   ├── lock                      # 队列状态排他锁
+│   └── start.lock                # 检索启动租约（预留）
 └── publisher/
-    ├── messages.jsonl            # message_id → push/proposal，用于回调路由
-    ├── pending/<proposal_id>.json# 待审批提议副本
+    ├── messages.jsonl            # message_id → push/queue item，用于回调路由
+    ├── pending/<proposal_id>.json# 旧审批链路的待审批副本（v2 不再新增）
     ├── decisions.jsonl           # 用户同意/拒绝
     ├── trigger.lock              # 手动补推串行锁
     ├── trigger.log               # 手动补推事件日志
@@ -323,11 +329,28 @@ python -m archive.cli prop-list --card card_hmbs
 `messages.jsonl`：回调路由表。
 
 ```json
-{ "message_id": "om_xxx", "kind": "push_file | rating | approval", "push_id": "…", "proposal_ids": ["…"], "target": "ou_xxx" }
+{ "message_id": "om_xxx", "kind": "push_file | rating | update", "push_id": "…", "proposal_ids": ["…"], "queue_item_id": "q_…", "target": "ou_xxx" }
 ```
 
 `decisions.jsonl`：
 
 ```json
-{ "proposal_id": "p_…", "decision": "approve | reject", "operator_id": "ou_…", "message_id": "om_…", "created_at": "…" }
+{ "item_id": "q_…", "push_id": "…", "proposal_ids": ["…"], "decision": "agree_all | reject_all", "operator_id": "ou_…", "created_at": "…" }
 ```
+
+## 11. 统一问题队列
+
+状态机、边界用例与恢复策略见 [`docs/specs/unified-question-queue.md`](../docs/specs/unified-question-queue.md)；实现在 `question_queue/`。
+
+```bash
+python -m question_queue.cli status
+python -m question_queue.cli enqueue --push archive/pushes/<push_id>.json
+python -m question_queue.cli next
+python -m question_queue.cli answer --item <item_id> --verdict great
+python -m question_queue.cli answer --item <item_id> --decision agree_all
+python -m question_queue.cli retry --item <item_id>
+python -m question_queue.cli request-push --source manual
+python -m question_queue.cli try-start
+```
+
+`publisher send` 会把 push 入队并只发送当前 active 题；回调经 `messages.jsonl` 的 `queue_item_id` 路由回队列。同意更新时 archive 以 `group_id=<item_id>` 原子应用并幂等；拒绝只写 `decisions.jsonl`。

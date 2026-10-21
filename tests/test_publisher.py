@@ -87,7 +87,7 @@ def test_send_pdf_dry_run_sends_file_then_rating(kl_home, tmp_path):
     result = send_push(kl_home, PUSH_PDF, pdf, "ou_demo", dry_run=True)
     assert result["ok"] is True
     assert result["pdf_message_id"] == f"offline_file_{PUSH_PDF['push_id']}"
-    assert result["rating_message_id"] == f"offline_rating_{PUSH_PDF['push_id']}"
+    assert result["rating_message_id"] == f"offline_q_2026_10_20_hmbs_02_rating"
     rows = [json.loads(x) for x in (kl_home / "publisher" / "messages.jsonl").read_text().splitlines()]
     assert [r["kind"] for r in rows] == ["push_file", "rating"]
     assert (kl_home / "publisher" / "outbox" / f"file_{PUSH_PDF['push_id']}.json").exists()
@@ -113,7 +113,7 @@ def test_dry_run_then_rating_without_approval(kl_home, tmp_path):
         json.dumps(PUSH, ensure_ascii=False), encoding="utf-8"
     )
     sent = send_rating(kl_home, PUSH, "ou_demo", dry_run=True)
-    assert sent["message_id"] == f"offline_rating_{PUSH['push_id']}"
+    assert sent["message_id"] == "offline_q_2026_10_20_hmbs_01_rating"
 
     rating = handle_event(
         kl_home,

@@ -32,6 +32,7 @@ class PublisherStore:
         push_id: str,
         proposal_ids: list[str] | None = None,
         target: str = "",
+        queue_item_id: str | None = None,
     ) -> None:
         append_jsonl(
             self.messages,
@@ -41,6 +42,7 @@ class PublisherStore:
                 "kind": kind,
                 "push_id": push_id,
                 "proposal_ids": proposal_ids or [],
+                "queue_item_id": queue_item_id,
                 "target": target,
             },
         )

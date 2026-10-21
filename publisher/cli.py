@@ -33,8 +33,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--as", dest="identity", default="bot", choices=["bot", "user"])
 
-    p = sub.add_parser("preview", help="print the card JSON, send nothing")
+    p = sub.add_parser("preview", help="print the rating card JSON, send nothing")
     p.add_argument("--push", required=True)
+
+    p = sub.add_parser("preview-update", help="print one update-question card JSON")
+    p.add_argument("--push", required=True)
+    p.add_argument("--item", required=True)
+    p.add_argument("--index", type=int, required=True)
+    p.add_argument("--total", type=int, required=True)
 
     p = sub.add_parser("ingest", help="replay card.action.trigger NDJSON offline")
     p.add_argument("--events", required=True)
@@ -84,6 +90,14 @@ def main(argv: list[str] | None = None) -> int:
             if not push:
                 raise ValueError(f"no push at {args.push}")
             emit(build_rating_card(push))
+        elif args.cmd == "preview-update":
+            from publisher.update_cards import build_update_card
+
+            push = read_json(Path(args.push))
+            item = read_json(Path(args.item))
+            if not push or not item:
+                raise ValueError("provide both --push and --item JSON files")
+            emit(build_update_card(push, item, args.index, args.total))
         elif args.cmd == "ingest":
             for result in replay(root, Path(args.events), args.offline, args.identity):
                 result.pop("approval_card", None)
