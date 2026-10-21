@@ -141,6 +141,19 @@ checkpoints:
 入库幂等：完整论文重跑记 `skipped`；缺 text 或 pages 的已存在论文就地补写并记 `repaired`；
 单篇失败只记入 `archive/reports/pdf-ingest-<ts>.json` 的 `failures`，不中断整批。
 
+### 2.2 初始构建导入（`initial_build`）
+
+`python -m initial_build.cli apply --draft drafts/initial-build/<theme> [--dry-run]`
+
+- draft 目录含 `cards.jsonl`、`propositions.jsonl`、`sources.jsonl`（与 #12 样张一致）。
+- 写库前先做完整校验：卡片四字段 / `ontology` ≥3 / `annotation` 含 ⛔ 与 ⚠️；
+  命题 `related_knowledge` ≥2 张已知卡、`history[0].action=created` 且有 rationale、
+  每条证据 `paper_id/page/quote` 可在 `archive/raw/pages/` 锚点中定位。
+- 单篇证据命题（证据不足 2 篇独立论文）不阻断整批：记入报告的 `held`，不写 archive，留作后续批次。
+- 硬校验失败则整批不写；写库失败会回滚 `cards/` 与 `propositions/`。
+- 幂等：内容相同的卡片/命题记 `skipped`；报告在 `archive/reports/initial-build-<theme>-<ts>.json`。
+
+
 
 ## 3. 候选 `candidates.jsonl`（retriever → editor）
 

@@ -1,7 +1,8 @@
 # 初始构建样张：扰动预测的评测、基线与可信度
 
-- 票：[初始主题清单与单主题样张 #12](https://github.com/Moke110/frontier/issues/12)
-- 状态：**draft，未写入 archive**
+- 票：[初始主题清单与单主题样张 #12](https://github.com/Moke110/frontier/issues/12)、[初始构建：首批主题写入知识库 #15](https://github.com/Moke110/frontier/issues/15)
+- 状态：**首批已入库**（2026-10-21，`initial_build` CLI）：5 卡 / 4 命题写入 `~/knowledge-loop/archive`
+- 门槛 hold：`prop_systematic_variation_inflates_scores` 的 2 条证据均来自 Systema（page 5/6），不满足「≥2 篇独立论文」，首批暂不入库，留作候选
 - 用户确认：**2026-10-21，用户确认样张与质量门槛可用，按此进入首批构建（#15）**
 - 产物：`cards.jsonl`（5 张卡）、`propositions.jsonl`（5 条命题）、`sources.jsonl`（8 篇来源）
 - 生成：`python scripts/build_initial_theme_sample.py`
