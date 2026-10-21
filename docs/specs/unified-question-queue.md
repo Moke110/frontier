@@ -275,3 +275,13 @@ writer 的同一批 proposals 按目标归组：
 - 不做多用户/多人同时答题；owner 单人。
 - 不做队列 UI；飞书卡片就是界面。
 - 评分不反哺排序或权重（本阶段）。
+
+## 12. 实现状态
+
+- 代码：`question_queue/`（`store.py` / `cli.py`）；publisher 接入见 `publisher/service.py`；
+  archive 原子应用见 `Archive.apply_group`。
+- 飞书 Card 2.0 的 callback 按钮把数据放在 `action_value`（JSON 字符串），不是 `action_name`；
+  publisher 两处都解析，`message_id` 仍用于路由。
+- 2026-10-21 真实验证：评分卡 → 更新卡（`reject_all`）→ 队列清空；拒绝未写 archive。
+  测试数据已从 `~/knowledge-loop` 清理。
+
