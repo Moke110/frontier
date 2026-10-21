@@ -432,6 +432,30 @@ def test_writer_push_enters_queue_and_approval_applies(kl_home, fixtures_dir, tm
     assert grew or created
 
 
+def test_empty_queue_spawns_pending_runner(kl_home, monkeypatch):
+    push = _push(kl_home)
+    push["proposals"] = []
+    _enqueue(kl_home, push)
+    QueueStore(kl_home).request_push("scheduled")
+    sent = send_rating(kl_home, push, "ou_demo", dry_run=True)
+    calls = []
+
+    def fake_popen(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+
+    monkeypatch.setattr("publisher.service.subprocess.Popen", fake_popen)
+    result = handle_event(
+        kl_home, _event(sent["message_id"], "score_low"), offline=False
+    )
+    assert result["queue_empty"] is True
+    assert result["start"]["requested"] is True
+    assert calls
+    cmd = calls[0][0]
+    assert "trigger.cli" in cmd
+    assert cmd[-1] == "run-request"
+    assert "--home" in cmd
+
+
 def test_pending_request_coalesces_and_waits_for_empty_queue(kl_home):
     push = _push(kl_home)
     queue = _enqueue(kl_home, push)
@@ -446,7 +470,9 @@ def test_pending_request_coalesces_and_waits_for_empty_queue(kl_home):
     sent = send_rating(kl_home, push, "ou_demo", dry_run=True)
     result = handle_event(kl_home, _event(sent["message_id"], "score_low"), offline=True)
     assert result["queue_empty"] is True
-    assert result["start"]["start"] is True
+    assert result["start"]["requested"] is True
     assert queue.request_push("manual")["request"]["count"] == 3
-    started = json.loads((kl_home / "queue" / "request.json").read_text())
-    assert started["lease_until"]
+    started = queue.try_start()
+    assert started["start"] is True
+    request = json.loads((kl_home / "queue" / "request.json").read_text())
+    assert request["lease_until"]

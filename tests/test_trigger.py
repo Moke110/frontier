@@ -1,7 +1,8 @@
 import subprocess
 
+from question_queue.store import QueueStore
 from trigger.keywords import parse, resolve_checkpoint
-from trigger.service import Config, handle_event
+from trigger.service import Config, handle_event, run_pending, scheduled_pull
 
 
 def test_parse_keywords_with_optional_checkpoint():
@@ -78,3 +79,95 @@ def test_handle_event_unknown_checkpoint(kl_home):
     )
     assert result == {"ok": False, "reason": "unknown_checkpoint"}
     assert "未知 checkpoint" in replies[0]
+
+
+def _busy_queue(kl_home):
+    queue = QueueStore(kl_home)
+    queue.init()
+    queue.enqueue_push({"push_id": "push_busy", "proposals": []})
+    return queue
+
+
+def test_manual_request_is_queued_when_queue_busy(kl_home):
+    _busy_queue(kl_home)
+    called = []
+    replies = []
+
+    def runner(config, prompt):
+        called.append(prompt)
+        return subprocess.CompletedProcess([], 0, "已推送 x", "")
+
+    def replier(event, text, config, identity="bot"):
+        replies.append(text)
+        return {"ok": True}
+
+    result = handle_event(
+        _event("再推一篇 card_hmbs"), _config(kl_home), runner=runner, replier=replier
+    )
+    assert result["queued"] is True
+    assert result["reason"] == "queue_busy"
+    assert called == []
+    assert "已记下" in replies[-1]
+    request = QueueStore(kl_home).status()["request"]
+    assert request["sources"] == ["manual"]
+    assert request["card_id"] == "card_hmbs"
+
+
+def test_scheduled_records_only_when_queue_busy(kl_home):
+    _busy_queue(kl_home)
+    called = []
+
+    def runner(config, prompt):
+        called.append(prompt)
+        return subprocess.CompletedProcess([], 0, "已推送 x", "")
+
+    result = scheduled_pull(_config(kl_home), runner=runner)
+    assert result["queued"] is True
+    assert result["reason"] == "queue_busy"
+    assert called == []
+    request = QueueStore(kl_home).status()["request"]
+    assert request["sources"] == ["scheduled"]
+
+
+def test_scheduled_starts_and_clears_request_when_queue_empty(kl_home):
+    called = []
+
+    def runner(config, prompt):
+        called.append(prompt)
+        return subprocess.CompletedProcess([], 0, "已推送 2026-10-21_card_hmbs_01", "")
+
+    result = scheduled_pull(_config(kl_home), runner=runner)
+    assert result["ok"] is True
+    assert len(called) == 1
+    assert QueueStore(kl_home).status()["request"] is None
+
+
+def test_manual_and_scheduled_coalesce_into_one_start(kl_home):
+    queue = QueueStore(kl_home)
+    queue.init()
+    queue.request_push("manual", "card_hmbs")
+    queue.request_push("scheduled")
+    first = queue.try_start()
+    second = queue.try_start()
+    assert first["start"] is True
+    assert second["reason"] == "starting"
+    request = queue.status()["request"]
+    assert request["sources"] == ["manual", "scheduled"]
+    assert request["count"] == 2
+
+
+def test_run_pending_executes_the_merged_request(kl_home):
+    queue = QueueStore(kl_home)
+    queue.init()
+    queue.request_push("manual", "card_hmbs")
+    called = []
+
+    def runner(config, prompt):
+        called.append(prompt)
+        assert "本次只处理知识卡片：card_hmbs" in prompt
+        return subprocess.CompletedProcess([], 0, "已推送 x", "")
+
+    result = run_pending(_config(kl_home), runner=runner)
+    assert result["ok"] is True
+    assert len(called) == 1
+    assert queue.status()["request"] is None

@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from common import emit, home
 from trigger.keywords import parse, resolve_checkpoint
-from trigger.service import Config, handle_event, listen, load_owner
+from trigger.service import (
+    Config,
+    handle_event,
+    listen,
+    load_owner,
+    run_pending,
+    scheduled_pull,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,6 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("once", help="handle one NDJSON event from stdin or a file")
     p.add_argument("--event", help="JSON file; default stdin")
+
+    sub.add_parser("scheduled", help="08:00 timer entry: request or start one push")
+    sub.add_parser("run-request", help="start the merged pending request if allowed")
     return parser
 
 
@@ -38,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         home=home(args.home),
         owner=load_owner(args.owner),
         timeout=args.timeout,
-        dry_run=args.dry_run,
+        dry_run=args.dry_run or os.environ.get("FRONTIER_DRY_RUN") == "1",
     )
     if args.cmd == "listen":
         if not config.owner and not config.dry_run:
@@ -52,6 +63,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             event = json.load(sys.stdin)
         emit(handle_event(event, config))
+        return 0
+    if args.cmd == "scheduled":
+        emit(scheduled_pull(config))
+        return 0
+    if args.cmd == "run-request":
+        emit(run_pending(config))
         return 0
     return 1
 

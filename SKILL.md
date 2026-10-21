@@ -146,6 +146,20 @@ journalctl --user -u frontier-listener -f         # 看触发日志
 listener 只做关键词识别、owner 校验、串行排队，然后调用
 `opencode run --auto` 执行一次正向补推；它不排序、不写作、不改知识库。
 
+### 5.6 每日 08:00 定时
+
+`frontier-daily.timer`（Asia/Shanghai）调用 `trigger.cli scheduled`：
+
+- 队列非空 → 只合并待推请求，不发推送；
+- 队列清空 → 评分回调自动拉起 `trigger.cli run-request`，执行一次检索→写作→推送；
+- 手动「再推一篇」与定时共用同一个 `queue/request.json`，并发时只启动一次。
+
+```bash
+systemctl --user list-timers frontier-daily.timer
+journalctl --user -u frontier-daily.service -f
+python -m question_queue.cli status
+```
+
 ### 6. 评分与更新题
 
 - 评分写入 `ratings.jsonl`；本阶段**不**运行 `frontier record` / `editor fit`，评分不反哺排序。

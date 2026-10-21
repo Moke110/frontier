@@ -284,4 +284,7 @@ writer 的同一批 proposals 按目标归组：
   publisher 两处都解析，`message_id` 仍用于路由。
 - 2026-10-21 真实验证：评分卡 → 更新卡（`reject_all`）→ 队列清空；拒绝未写 archive。
   测试数据已从 `~/knowledge-loop` 清理。
+- 每日 08:00：`frontier-daily.timer` → `trigger.cli scheduled`；队列非空只写 `request.json`，
+  队列清空后评分回调拉起 `trigger.cli run-request`。定时器不要加 `Requires=frontier-daily.service`
+  （启动 timer 会立刻拉起 service），`Persistent=false` 避免安装/重启时补跑。
 

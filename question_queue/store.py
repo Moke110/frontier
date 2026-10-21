@@ -364,12 +364,20 @@ class QueueStore:
             self._save(state)
             self.event("answered", item_id=item_id, answer=answer)
             queue_empty = not any(r["status"] not in TERMINAL for r in state["items"])
+            request = read_json(self.request_path)
+            start_signal = None
+            if queue_empty and request and not any(r["status"] == "failed" for r in state["items"]):
+                start_signal = {
+                    "ok": True,
+                    "requested": True,
+                    "card_id": request.get("card_id"),
+                }
             result = {
                 "ok": True,
                 "item": item,
                 "next": nxt,
                 "queue_empty": queue_empty,
-                "start": self.try_start_locked() if queue_empty else None,
+                "start": start_signal,
             }
             return result
 
@@ -430,12 +438,23 @@ class QueueStore:
     def request_push(self, source: str, card_id: str | None = None) -> dict:
         with self.locked():
             request = read_json(self.request_path)
+            active_lease = False
+            if request and request.get("lease_until"):
+                try:
+                    active_lease = (
+                        datetime.fromisoformat(request["lease_until"])
+                        > datetime.now().astimezone()
+                    )
+                except ValueError:
+                    active_lease = False
             if request:
                 request["sources"] = sorted(set(request.get("sources", []) + [source]))
                 request["count"] = int(request.get("count") or 0) + 1
                 request["requested_at"] = min(
                     request.get("requested_at") or now(), now()
                 )
+                if active_lease:
+                    request["after_start"] = True
                 if card_id and not request.get("card_id"):
                     request["card_id"] = card_id
             else:

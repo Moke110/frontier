@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from common import emit, now, read_json, read_jsonl, stable_id
@@ -31,6 +34,24 @@ def _queue(home: Path) -> QueueStore:
     store = QueueStore(home)
     store.init()
     return store
+
+
+def _spawn_pending(home: Path, owner: str) -> None:
+    """Start the pending retrieval request in a detached process."""
+    repo = Path(__file__).resolve().parents[1]
+    cmd = [sys.executable, "-m", "trigger.cli", "--home", str(home)]
+    if owner:
+        cmd += ["--owner", owner]
+    cmd.append("run-request")
+    env = {**os.environ, "KL_HOME": str(home)}
+    subprocess.Popen(
+        cmd,
+        cwd=str(repo),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def _deliver_next(
@@ -135,6 +156,8 @@ def _handle_queue_event(
         else:
             feishu.update_card(token, confirmation, identity)
         delivered = _deliver_next(home, store, target, offline, identity)
+        if result.get("start") and not offline:
+            _spawn_pending(home, operator or mapping.get("target") or "")
         return {
             "ok": True,
             "kind": "rating",
@@ -163,6 +186,8 @@ def _handle_queue_event(
     else:
         feishu.update_card(token, decision_card, identity)
     delivered = _deliver_next(home, store, target, offline, identity)
+    if result.get("start") and not offline:
+        _spawn_pending(home, operator or mapping.get("target") or "")
     return {
         "ok": True,
         "kind": "update",

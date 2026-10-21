@@ -16,14 +16,15 @@ from pathlib import Path
 
 from common import append_jsonl, now, read_json
 from publisher import feishu
+from question_queue.store import QueueStore
 from trigger.keywords import parse, resolve_checkpoint
 
-PROMPT = """使用 frontier skill（{repo}/SKILL.md）执行一次手动补推，只处理一篇论文。
+PROMPT = """使用 frontier skill（{repo}/SKILL.md）执行一次检索推送，只处理一篇论文。
 
 硬约束：
 - 工作目录 {repo}；数据根 KL_HOME={home}；
-- 只允许执行「检索 → 排序 → 写作 → 渲染 → 推送 → 评分卡」这一条正向链路；
-- 不要运行 frontier record / editor fit，不要修改知识图或命题，不要发审批卡；
+- 只允许执行「检索 → 排序 → 写作 → 渲染 → 推送」这一条正向链路；
+- 评分题与更新题由统一队列发送，不要手写审批卡；不要运行 frontier record / editor fit；
 - 收件人固定为 $FRONTIER_OWNER_ID，推送前不用再次询问；
 - 论文必须来自本次检索候选，不得编造；没有新候选就直接结束并输出「今天没有新的」。
 
@@ -42,7 +43,7 @@ PROMPT = """使用 frontier skill（{repo}/SKILL.md）执行一次手动补推�
 {checkpoint_line}
 完成后输出一句：已推送 <push_id>，或 今天没有新的。"""
 
-CHECKPOINT_LINE = "- 本次只处理 checkpoint：{checkpoint}"
+CHECKPOINT_LINE = "- 本次只处理知识卡片：{checkpoint}"
 
 
 @dataclass
@@ -126,6 +127,96 @@ def _log(config: Config, row: dict) -> None:
     )
 
 
+def _queue(config: Config) -> QueueStore:
+    queue = QueueStore(config.home)
+    queue.init()
+    return queue
+
+
+def _notify(config: Config, text: str) -> None:
+    if config.dry_run or not config.owner:
+        return
+    try:
+        feishu.send_text(config.owner, text)
+    except feishu.FeishuError as exc:
+        _log(config, {"kind": "notify_failed", "error": str(exc)})
+
+
+def _run_job(config: Config, queue: QueueStore, checkpoint: str | None, runner) -> dict:
+    """Run one forward pipeline while holding the process job lock."""
+    with job_lock(config.home) as acquired:
+        if not acquired:
+            queue.finish_start(False, "job lock busy")
+            _log(config, {"kind": "blocked", "reason": "job_lock"})
+            return {"ok": False, "reason": "busy"}
+        try:
+            proc = runner(config, build_prompt(config, checkpoint))
+            output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+            ok = proc.returncode == 0
+            no_new = "今天没有新的" in output
+            if ok and no_new:
+                text = "今天没有新的。"
+            elif ok:
+                text = "补推完成。" if "已推送" in output else "补推完成。"
+            else:
+                text = f"补推失败（exit {proc.returncode}），请查看日志。"
+            queue.finish_start(ok, None if ok else f"exit {proc.returncode}")
+            _log(
+                config,
+                {
+                    "kind": "finish",
+                    "checkpoint": checkpoint,
+                    "ok": ok,
+                    "text": text,
+                    "stdout_tail": output[-1500:],
+                },
+            )
+            return {
+                "ok": ok,
+                "checkpoint": checkpoint,
+                "text": text,
+                "exit": proc.returncode,
+                "queued_request": queue.status().get("request"),
+            }
+        except subprocess.TimeoutExpired:
+            queue.finish_start(False, "timeout")
+            _log(config, {"kind": "timeout", "checkpoint": checkpoint})
+            return {"ok": False, "reason": "timeout", "text": "补推超时，请查看日志。"}
+        except Exception as exc:  # noqa: BLE001 - keep listener alive
+            queue.finish_start(False, str(exc))
+            _log(config, {"kind": "error", "checkpoint": checkpoint, "error": str(exc)})
+            return {"ok": False, "reason": "error", "error": str(exc), "text": "补推失败，请查看日志。"}
+
+
+def scheduled_pull(config: Config, runner=run_agent) -> dict:
+    """08:00 timer entry: request one push, or merge into the pending request."""
+    queue = _queue(config)
+    queue.request_push("scheduled")
+    start = queue.try_start()
+    if not start or not start.get("ok"):
+        reason = (start or {}).get("reason", "no_request")
+        _log(config, {"kind": "queued", "source": "scheduled", "reason": reason})
+        return {"ok": True, "queued": True, "reason": reason}
+    _log(config, {"kind": "start", "source": "scheduled", "checkpoint": start.get("card_id")})
+    result = _run_job(config, queue, start.get("card_id"), runner)
+    _notify(config, result.get("text") or "定时推送完成。")
+    return result
+
+
+def run_pending(config: Config, runner=run_agent) -> dict:
+    """Started after a queue drains: execute the merged pending request once."""
+    queue = _queue(config)
+    start = queue.try_start()
+    if not start or not start.get("ok"):
+        reason = (start or {}).get("reason", "no_request")
+        _log(config, {"kind": "queued", "source": "pending", "reason": reason})
+        return {"ok": True, "queued": True, "reason": reason}
+    _log(config, {"kind": "start", "source": "pending", "checkpoint": start.get("card_id")})
+    result = _run_job(config, queue, start.get("card_id"), runner)
+    _notify(config, result.get("text") or "补推完成。")
+    return result
+
+
 def handle_event(
     event: dict,
     config: Config,
@@ -155,43 +246,20 @@ def handle_event(
         replier(event, f"未知 checkpoint：{request.checkpoint}", config)
         return {"ok": False, "reason": "unknown_checkpoint"}
 
-    with job_lock(config.home) as acquired:
-        if not acquired:
-            replier(event, "正在推送，请等这一篇完成。", config)
-            return {"ok": False, "reason": "busy"}
-        replier(event, "收到，开始检索。", config)
-        _log(config, {"kind": "start", "checkpoint": checkpoint})
-        try:
-            proc = runner(config, build_prompt(config, checkpoint))
-            output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-            ok = proc.returncode == 0
-            no_new = "今天没有新的" in output
-            if ok and no_new:
-                text = "今天没有新的。"
-            elif ok:
-                text = "补推完成。" if "已推送" in output else "补推完成。"
-            else:
-                text = f"补推失败（exit {proc.returncode}），请查看日志。"
-            _log(
-                config,
-                {
-                    "kind": "finish",
-                    "checkpoint": checkpoint,
-                    "ok": ok,
-                    "text": text,
-                    "stdout_tail": output[-1500:],
-                },
-            )
-            replier(event, text, config)
-            return {"ok": ok, "checkpoint": checkpoint, "text": text, "exit": proc.returncode}
-        except subprocess.TimeoutExpired:
-            _log(config, {"kind": "timeout", "checkpoint": checkpoint})
-            replier(event, "补推超时，请查看日志。", config)
-            return {"ok": False, "reason": "timeout"}
-        except Exception as exc:  # noqa: BLE001 - keep listener alive
-            _log(config, {"kind": "error", "checkpoint": checkpoint, "error": str(exc)})
-            replier(event, "补推失败，请查看日志。", config)
-            return {"ok": False, "reason": "error", "error": str(exc)}
+    queue = _queue(config)
+    queue.request_push("manual", checkpoint)
+    start = queue.try_start()
+    if not start or not start.get("ok"):
+        reason = (start or {}).get("reason", "no_request")
+        _log(config, {"kind": "queued", "source": "manual", "reason": reason})
+        replier(event, "队列还有题没答完，已记下；答完最后一题会自动开始下一次推送。", config)
+        return {"ok": True, "queued": True, "reason": reason, "checkpoint": checkpoint}
+
+    replier(event, "收到，开始检索。", config)
+    _log(config, {"kind": "start", "source": "manual", "checkpoint": checkpoint})
+    result = _run_job(config, queue, checkpoint, runner)
+    replier(event, result.get("text") or "补推失败，请查看日志。", config)
+    return result
 
 
 def listen(config: Config, max_events: int = 0, timeout: str = "0", identity: str = "bot") -> int:

@@ -137,16 +137,24 @@ sed "s|__PYTHON__|$(command -v python3)|" \
 sed "s|__PYTHON__|$(command -v python3)|" \
   "$HOME/frontier/deploy/frontier-rating-listener.service.in" \
   > "$HOME/.config/systemd/user/frontier-rating-listener.service"
+sed "s|__PYTHON__|$(command -v python3)|" \
+  "$HOME/frontier/deploy/frontier-daily.service.in" \
+  > "$HOME/.config/systemd/user/frontier-daily.service"
+cp "$HOME/frontier/deploy/frontier-daily.timer.in" \
+  "$HOME/.config/systemd/user/frontier-daily.timer"
 
 systemctl --user daemon-reload
 systemctl --user enable --now frontier-listener frontier-rating-listener
+systemctl --user enable --now frontier-daily.timer
 systemctl --user is-active frontier-listener frontier-rating-listener   # 都应输出 active
+systemctl --user list-timers frontier-daily.timer                       # 下一次 08:00
 ```
 
-两个服务缺一不可：
+三个服务/定时器缺一不可：
 
 - `frontier-listener`：收 `im.message.receive_v1`（手动补推关键词）；
-- `frontier-rating-listener`：收 `card.action.trigger`（评分卡按钮）。没有它，点击评分不会落库。
+- `frontier-rating-listener`：收 `card.action.trigger`（评分/更新题按钮）。没有它，点击不会推进队列；
+- `frontier-daily.timer`：每天 08:00 Asia/Shanghai 调 `trigger.cli scheduled`。队列非空时只合并待推请求；队列清空后由评分回调自动拉起 `run-request`。
 
 没有 systemd 时，用 tmux 常驻：
 
@@ -177,15 +185,19 @@ KL_HOME="$HOME/knowledge-loop" python3 -m frontier.cli plan --out /tmp/frontier-
 - 数据根：`KL_HOME=...`
 - Lark 登录身份：user / bot 是否 ready
 - 手动补推监听：`frontier-listener` 是否 active
+- 评分/更新题监听：`frontier-rating-listener` 是否 active
+- 每日定时：`frontier-daily.timer` 是否 active，下一次 08:00
 - 验证结果：测试通过数、`validate` 是否 ok
 - 下一步：**重启 agent**，然后说「跑一下 frontier 的今日循环」；或在飞书私聊发「再推一篇」
 
 ### 8. 卸载（用户要求时）
 
 ```bash
-systemctl --user disable --now frontier-listener frontier-rating-listener 2>/dev/null || true
+systemctl --user disable --now frontier-listener frontier-rating-listener frontier-daily.timer 2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/frontier-listener.service" \
-      "$HOME/.config/systemd/user/frontier-rating-listener.service"
+      "$HOME/.config/systemd/user/frontier-rating-listener.service" \
+      "$HOME/.config/systemd/user/frontier-daily.service" \
+      "$HOME/.config/systemd/user/frontier-daily.timer"
 systemctl --user daemon-reload
 rm "$HOME/.config/opencode/skills/frontier"   # 只删软链
 # 数据在 ~/knowledge-loop，默认保留；删除前必须再确认
