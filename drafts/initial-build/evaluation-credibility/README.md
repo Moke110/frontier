@@ -2,6 +2,7 @@
 
 - 票：[初始主题清单与单主题样张 #12](https://github.com/Moke110/frontier/issues/12)
 - 状态：**draft，未写入 archive**
+- 用户确认：**2026-10-21，用户确认样张与质量门槛可用，按此进入首批构建（#15）**
 - 产物：`cards.jsonl`（5 张卡）、`propositions.jsonl`（5 条命题）、`sources.jsonl`（8 篇来源）
 - 生成：`python scripts/build_initial_theme_sample.py`
 - 来源主题：`evaluation-credibility`（11 篇论文，见 `fixtures/theme-inventory.jsonl`）
