@@ -153,7 +153,7 @@ def main() -> int:
         env,
     )
 
-    step("9. publisher: 模拟点击「很好」+ 评语")
+    step("9. publisher: 模拟点击「质量优秀」+ 评语")
     rating_event = {
         "message_id": send["message_id"],
         "action_name": "score_high",

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from common import clip
 
-VERDICT_LABEL = {"irrelevant": "不相关", "ok": "一般", "great": "很好"}
+VERDICT_LABEL = {
+    "irrelevant": "质量差/不在关注领域",
+    "ok": "质量一般",
+    "great": "质量优秀",
+}
 ACTION_VERDICT = {"score_low": "irrelevant", "score_mid": "ok", "score_high": "great"}
 
 
@@ -76,31 +80,9 @@ def build_rating_card(push: dict) -> dict:
                             "max_length": 200,
                             "width": "fill",
                         },
-                        {
-                            "tag": "column_set",
-                            "flex_mode": "none",
-                            "horizontal_spacing": "8px",
-                            "columns": [
-                                {
-                                    "tag": "column",
-                                    "width": "weighted",
-                                    "weight": 1,
-                                    "elements": [_button("score_low", "不相关")],
-                                },
-                                {
-                                    "tag": "column",
-                                    "width": "weighted",
-                                    "weight": 1,
-                                    "elements": [_button("score_mid", "一般")],
-                                },
-                                {
-                                    "tag": "column",
-                                    "width": "weighted",
-                                    "weight": 1,
-                                    "elements": [_button("score_high", "很好")],
-                                },
-                            ],
-                        },
+                        _button("score_low", "质量差/不在关注领域"),
+                        _button("score_mid", "质量一般"),
+                        _button("score_high", "质量优秀"),
                     ],
                 },
                 {

@@ -477,11 +477,11 @@ class QueueStore:
     def _save_request(self, request: dict) -> None:
         write_json(self.request_path, request)
 
-    def try_start(self) -> dict:
+    def try_start(self, lease_minutes: int = LEASE_MINUTES) -> dict:
         with self.locked():
-            return self.try_start_locked()
+            return self.try_start_locked(lease_minutes)
 
-    def try_start_locked(self) -> dict | None:
+    def try_start_locked(self, lease_minutes: int = LEASE_MINUTES) -> dict | None:
         request = read_json(self.request_path)
         if not request:
             return None
@@ -496,18 +496,20 @@ class QueueStore:
                     return {"ok": False, "reason": "starting"}
             except ValueError:
                 pass
+        lease_minutes = max(LEASE_MINUTES, int(lease_minutes or LEASE_MINUTES))
         started = datetime.now().astimezone()
         request["started_at"] = started.isoformat(timespec="seconds")
-        request["lease_until"] = (started + timedelta(minutes=LEASE_MINUTES)).isoformat(
+        request["lease_until"] = (started + timedelta(minutes=lease_minutes)).isoformat(
             timespec="seconds"
         )
         self._save_request(request)
-        self.event("started", request=request)
+        self.event("started", request=request, lease_minutes=lease_minutes)
         return {
             "ok": True,
             "start": True,
             "card_id": request.get("card_id"),
             "requested_at": request.get("requested_at"),
+            "lease_minutes": lease_minutes,
         }
 
     def finish_start(self, success: bool, error: str | None = None) -> dict:

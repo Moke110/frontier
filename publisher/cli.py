@@ -56,6 +56,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _emit_result(result: dict) -> int:
+    """Print the result and turn a refusal into a non-zero exit code.
+
+    A silent exit 0 on `duplicate_paper` is what let a headless run keep
+    retrying and then time out with nothing delivered.
+    """
+    emit(result)
+    if result.get("ok") is False:
+        reason = result.get("reason") or result.get("error") or "failed"
+        print(json.dumps({"ok": False, "reason": reason}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = home(args.home)
@@ -67,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.pdf or push.get("format") == "pdf":
                 if not args.pdf:
                     raise ValueError("--pdf is required for a pdf-format push")
-                emit(
+                return _emit_result(
                     send_push(
                         root,
                         push,
@@ -78,13 +92,12 @@ def main(argv: list[str] | None = None) -> int:
                         force=args.force,
                     )
                 )
-            else:
-                emit(send_rating(root, push, args.to, args.dry_run, args.identity))
+            return _emit_result(send_rating(root, push, args.to, args.dry_run, args.identity))
         elif args.cmd == "rating":
             push = read_json(Path(args.push))
             if not push:
                 raise ValueError(f"no push at {args.push}")
-            emit(send_rating(root, push, args.to, args.dry_run, args.identity))
+            return _emit_result(send_rating(root, push, args.to, args.dry_run, args.identity))
         elif args.cmd == "preview":
             push = read_json(Path(args.push))
             if not push:

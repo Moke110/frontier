@@ -47,8 +47,7 @@ PUSH_PDF = {
 
 def _buttons(card):
     form = card["body"]["elements"][1]
-    columns = form["elements"][1]["columns"]
-    return [c["elements"][0] for c in columns]
+    return [e for e in form["elements"] if e["tag"] == "button"]
 
 
 def test_rating_card_has_three_submit_buttons_and_comment():
@@ -58,9 +57,15 @@ def test_rating_card_has_three_submit_buttons_and_comment():
     assert form["tag"] == "form"
     assert form["elements"][0]["tag"] == "input"
     buttons = _buttons(card)
-    assert [b["text"]["content"] for b in buttons] == ["不相关", "一般", "很好"]
+    assert [b["text"]["content"] for b in buttons] == [
+        "质量差/不在关注领域",
+        "质量一般",
+        "质量优秀",
+    ]
     assert [b["name"] for b in buttons] == ["score_low", "score_mid", "score_high"]
     assert all(b["form_action_type"] == "submit" for b in buttons)
+    # 每行一个按钮：按钮直接排在 form 的纵向流里，不再用 column_set 并排
+    assert [e["tag"] for e in form["elements"][1:]] == ["button", "button", "button"]
 
 
 def test_confirmation_and_approval_cards():
@@ -153,3 +158,33 @@ def test_irrelevant_rating_skips_approval(kl_home):
     assert result["verdict"] == "irrelevant"
     assert "approval_message_id" not in result
     assert not list((kl_home / "publisher" / "pending").glob("*.json"))
+
+
+def test_send_cli_exits_non_zero_on_duplicate(kl_home, tmp_path):
+    from publisher.cli import main
+
+    (kl_home / "archive" / "pushes").mkdir(parents=True, exist_ok=True)
+    other = {**PUSH_PDF, "push_id": "2026-10-19_hmbs_01"}
+    (kl_home / "archive" / "pushes" / f"{other['push_id']}.json").write_text(
+        json.dumps(other, ensure_ascii=False), encoding="utf-8"
+    )
+    push_path = tmp_path / "push.json"
+    push_path.write_text(json.dumps(PUSH_PDF, ensure_ascii=False), encoding="utf-8")
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4 test")
+
+    code = main(
+        [
+            "--home",
+            str(kl_home),
+            "send",
+            "--push",
+            str(push_path),
+            "--pdf",
+            str(pdf),
+            "--to",
+            "ou_demo",
+            "--dry-run",
+        ]
+    )
+    assert code == 1

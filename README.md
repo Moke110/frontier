@@ -131,7 +131,7 @@ listener 只负责关键词、owner 校验与串行排队，实际排序/写作�
 ## 设计要点（原型版）
 
 - **长文 PDF**：agent 写七段 HTML 片段与图片资产，固定模板 + WeasyPrint 渲染；原文图优先，取不到时用生成图并在图注标源。
-- **评分卡**：PDF 后紧跟一张小卡（不相关 / 一般 / 很好 + 可选评语）。评分与评语在同一次 `form` 提交里返回；按钮 `name` 决定 verdict。
+- **评分卡**：PDF 后紧跟一张小卡（质量差/不在关注领域 / 质量一般 / 质量优秀，每行一个按钮 + 可选评语）。评分与评语在同一次 `form` 提交里返回；按钮 `name` 决定 verdict。
 - **知识更新**：writer 仍会生成 `proposals`（全部 `draft`），但本阶段不发审批卡、不写知识图 / 命题；审批链路保留到下一阶段。
 - **更新提议**：`add_evidence` / `add_alias` / `add_proposition` / `update_summary`。正式流程由 agent 生成，全部标 `draft`，agent 永不直接改知识库；`writer write` 的术语共现启发式只作为离线 fallback。
 - **反哺（本阶段不运行）**：`frontier` 维护 `ema` 与 `weight`（1–10）；`editor.fit` 维护 checkpoint / 来源偏好（Beta 平滑），`rank` 用四项加权：相关性 0.40、时效 0.15、偏好 0.30、权重 0.15。评分目前只落库。

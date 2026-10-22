@@ -69,6 +69,16 @@ def _card_context(home: Path, card: dict, weight: int) -> dict:
     }
 
 
+def _pushed_paper_ids(home: Path) -> set[str]:
+    push_dir = Path(home) / "archive" / "pushes"
+    pushed: set[str] = set()
+    if push_dir.exists():
+        for path in sorted(push_dir.glob("*.json")):
+            row = read_json(path) or {}
+            pushed.update(row.get("paper_ids") or [])
+    return pushed
+
+
 def build_task(
     home: Path,
     candidates: list[dict],
@@ -84,11 +94,12 @@ def build_task(
         st = state.get("checkpoints", {}).get(card["id"], {})
         checkpoints[card["id"]] = _card_context(home, card, st.get("weight", 5))
 
+    pushed = _pushed_paper_ids(home)
     papers = []
     seen = set()
     for cand in candidates:
         pid = cand.get("paper_id")
-        if not pid or pid in seen:
+        if not pid or pid in seen or pid in pushed:
             continue
         seen.add(pid)
         papers.append(
@@ -105,6 +116,8 @@ def build_task(
                 "published": cand.get("published"),
                 "is_preprint": cand.get("is_preprint", False),
                 "url": cand.get("url"),
+                "pmcid": cand.get("pmcid"),
+                "doi": cand.get("doi"),
                 "retrieval": cand.get("retrieval", {}),
             }
         )

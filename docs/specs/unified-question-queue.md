@@ -37,7 +37,8 @@ $KL_HOME/
 
 - **queue 模块是 `state.json` / `request.json` 的唯一写者**。publisher、trigger、定时器都通过 `queue.cli`（或等价函数）读写。
 - `events.jsonl` 只追加，用于审计与重建；重建结果必须与 `state.json` 一致。
-- `start.lock` 里存 `{owner, started_at, lease_until}`；租约 10 分钟，崩溃后可被接管。
+- `start.lock` 里存 `{owner, started_at, lease_until}`；**租约 = `max(10 分钟, agent timeout + 5 分钟)`**（默认 `1800s` → 35 分钟）。租约必须覆盖整趟检索/写作，否则兜底重试会在同一个 job 还在跑时抢跑；只有进程组真正死掉、租约过期后才允许接管。
+- 兜底重试：`frontier-retry.timer` 每 2 分钟跑一次 `trigger.cli run-request --quiet`。没有 request / 租约有效 / job lock 被占 / 队列非空时立即返回，不写日志；租约过期且 job lock 空闲时接管。job lock 竞争**不得**释放别人的租约或累加 attempts。
 
 ## 3. 队列项 schema
 
@@ -224,17 +225,22 @@ writer 的同一批 proposals 按目标归组：
 2. 若存在 `failed` 题 → 拒绝（`reason=queue_blocked`）。
 3. 若无 request → 拒绝（`reason=no_request`）。
 4. 若 `start.lock.lease_until > now` → 拒绝（`reason=starting`）。
-5. 取租约（10 分钟），记录 `started_at`，返回 `{start: true, card_id, request_id}`。
+5. 取租约（`max(10 分钟, agent timeout + 5 分钟)`），记录 `started_at`，返回 `{start: true, card_id, request_id}`。
 6. worker 执行检索→写作→推送；新 push 入队时：
    - 若 request 的 `after_start=false` → 清除 request（本次请求已满足）；
    - 若 `after_start=true` → 保留一条新 request（`requested_at=now`，`sources` 沿用），等本轮队列清空后再启动。
-7. 检索失败 → 释放租约，`attempts+1`，保留 request；3 次后告警并停止自动重试。
+7. 检索失败 → 释放租约，`attempts+1`，保留 request；由 `frontier-retry.timer` 每 2 分钟重试（不设次数上限，但每次失败都写 `request_failed` 并告警）。
+8. **完成校验**：agent exit 0 不等于推送成功。worker 结束后比对 `archive/pushes` 与 `publisher/messages.jsonl`：
+   - 没有新 push → `reason=no_push_output`，按失败处理；
+   - 有新 push 但没有对应的 `push_file` 消息 → `reason=push_not_sent:<id>`（典型是 `duplicate_paper` 被拒），按失败处理并告警。
+   两种失败都释放租约、保留 request，交给兜底重试。
 
 ### 8.3 触发点
 
 - 评分/更新回调处理完后，若 `queue` 已空且没有 `failed`，自动调用 `try_start()`。
 - 手动监听器：先 `request_push("manual", card?)`，再 `try_start()`；若 `queue_busy` 回复「已排队，答完当前问题自动推送」。
 - 每日 08:00：`request_push("scheduled")` + `try_start()`，同一套合并与闸门。
+- 兜底重试：`frontier-retry.timer` 每 2 分钟 `run-request --quiet`；只在「有 request + 租约过期 + job lock 空闲 + 队列空」时真正启动。
 - 检索启动与队列写入使用同一把 `queue/lock` 的短临界区；实际检索在锁外执行。
 
 ## 9. 边界用例表
@@ -257,10 +263,15 @@ writer 的同一批 proposals 按目标归组：
 | 14 | 08:00 与手动同时到达 | 合并成 1 个 request（sources 并集），只推 1 篇 |
 | 15 | 检索进行中又来手动请求 | 记 `after_start=true`；当前推送完成后，新一轮队列清空再启动 |
 | 16 | 检索完成但没有新论文 | 清 request；不建队列；回复「今天没有新的」 |
-| 17 | 检索 worker 崩溃，租约过期 | 另一 worker 可接管；request 保留，attempts+1 |
+| 17 | 检索 worker 崩溃，租约过期 | 兜底 timer 接管；request 保留，attempts+1 |
 | 18 | 用户 24h 未答题 | 发一次提醒；不跳过、不超时丢弃 |
 | 19 | 队列为空且无 request | idle；不产生任何发送 |
 | 20 | `state.json` 与 events 不一致 | 以 events 重建；重建失败拒绝服务并告警 |
+| 21 | worker 还在跑（租约未过期），兜底 timer 触发 | 直接返回 `busy/starting`；不改 request、不累加 attempts |
+| 22 | agent 超时 | 杀整个进程组；`timeout` 日志带 stdout 尾部；Lark 告警；保留 request |
+| 23 | agent 选中已推送论文，`publisher send` 返回 `duplicate_paper` | CLI exit 1；agent 立即终止；worker 判 `push_not_sent`；告警＋重试 |
+| 24 | agent exit 0 但既没新 push 也没说「今天没有新的」 | 判 `no_push_output`；告警＋重试，不静默 |
+| 25 | 拉起子进程失败 / 立即非零退出 | 写 `trigger-spawn.log`，`spawn_failed` 事件，Lark 告警；租约照常过期后重试 |
 
 ## 10. 对下游实现的约束
 

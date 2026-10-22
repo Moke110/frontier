@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
+import signal
 import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from common import append_jsonl, now, read_json
+from common import append_jsonl, now, read_json, read_jsonl
 from publisher import feishu
-from question_queue.store import QueueStore
+from question_queue.store import LEASE_MINUTES, QueueStore
 from trigger.keywords import parse, resolve_checkpoint
 
 PROMPT = """使用 frontier skill（{repo}/SKILL.md）执行一次检索推送，只处理一篇论文。
@@ -40,6 +42,8 @@ PROMPT = """使用 frontier skill（{repo}/SKILL.md）执行一次检索推送�
 9. python -m writer.cli render --push ... --out /tmp/<push_id>.pdf
 10. python -m archive.cli add-push --file ...
 11. python -m publisher.cli send --push ... --pdf ... --to "$FRONTIER_OWNER_ID"
+
+如果 publisher send 返回非零（尤其 reason=duplicate_paper），立即停止，不要换论文重试、不要重复 add-push；输出「推送发送失败：<reason>」并结束。
 {checkpoint_line}
 完成后输出一句：已推送 <push_id>，或 今天没有新的。"""
 
@@ -88,6 +92,31 @@ def job_lock(home: Path):
         handle.close()
 
 
+def lease_minutes(config: Config) -> int:
+    """A start lease must outlive the agent run, or the retry timer would
+    start a second pipeline while the first one is still working."""
+    return max(LEASE_MINUTES, int(math.ceil(config.timeout / 60)) + 5)
+
+
+def _push_ids(home: Path) -> set[str]:
+    return {path.stem for path in (Path(home) / "archive" / "pushes").glob("*.json")}
+
+
+def _sent_push_ids(home: Path) -> set[str]:
+    rows = read_jsonl(Path(home) / "publisher" / "messages.jsonl")
+    return {row.get("push_id") for row in rows if row.get("kind") == "push_file"}
+
+
+def _output_tail(exc: subprocess.TimeoutExpired, limit: int = 1500) -> str:
+    def _text(value) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", "replace")
+        return value or ""
+
+    merged = (_text(exc.stdout) + "\n" + _text(exc.stderr)).strip()
+    return merged[-limit:]
+
+
 def build_prompt(config: Config, checkpoint: str | None) -> str:
     line = CHECKPOINT_LINE.format(checkpoint=checkpoint) if checkpoint else ""
     return PROMPT.format(
@@ -103,14 +132,29 @@ def run_agent(config: Config, prompt: str) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["KL_HOME"] = str(config.home)
     env["FRONTIER_OWNER_ID"] = config.owner
-    return subprocess.run(
+    proc = subprocess.Popen(
         ["opencode", "run", "--auto", prompt],
         cwd=str(config.repo),
         env=env,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=config.timeout,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = proc.communicate(timeout=config.timeout)
+    except subprocess.TimeoutExpired:
+        # Kill the whole process group, not just the direct child: a timed-out
+        # opencode run can leave grandchildren that keep writing pushes.
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        stdout, stderr = proc.communicate()
+        raise subprocess.TimeoutExpired(
+            proc.args, config.timeout, output=stdout, stderr=stderr
+        ) from None
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
 
 
 def _reply(event: dict, text: str, config: Config, identity: str = "bot") -> dict:
@@ -146,27 +190,42 @@ def _run_job(config: Config, queue: QueueStore, checkpoint: str | None, runner) 
     """Run one forward pipeline while holding the process job lock."""
     with job_lock(config.home) as acquired:
         if not acquired:
-            queue.finish_start(False, "job lock busy")
+            # Another job is already running. Do not touch the request or its
+            # lease: the running job owns them and will clear them on finish.
             _log(config, {"kind": "blocked", "reason": "job_lock"})
-            return {"ok": False, "reason": "busy"}
+            return {"ok": False, "reason": "busy", "text": None}
+        before = _push_ids(config.home)
         try:
             proc = runner(config, build_prompt(config, checkpoint))
             output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
             ok = proc.returncode == 0
             no_new = "今天没有新的" in output
+            failure = None
+            if ok and not no_new:
+                new_pushes = _push_ids(config.home) - before
+                unsent = sorted(new_pushes - _sent_push_ids(config.home))
+                if not new_pushes:
+                    ok, failure = False, "no_push_output"
+                elif unsent:
+                    ok, failure = False, "push_not_sent:" + ",".join(unsent)
             if ok and no_new:
                 text = "今天没有新的。"
             elif ok:
-                text = "补推完成。" if "已推送" in output else "补推完成。"
+                text = "补推完成。"
+            elif failure == "no_push_output":
+                text = "补推没有产出新推送，请查看日志。"
+            elif failure and failure.startswith("push_not_sent:"):
+                text = "推送已生成但没有发出（可能命中已推送论文），请查看日志。"
             else:
                 text = f"补推失败（exit {proc.returncode}），请查看日志。"
-            queue.finish_start(ok, None if ok else f"exit {proc.returncode}")
+            queue.finish_start(ok, failure or (None if ok else f"exit {proc.returncode}"))
             _log(
                 config,
                 {
                     "kind": "finish",
                     "checkpoint": checkpoint,
                     "ok": ok,
+                    "reason": failure,
                     "text": text,
                     "stdout_tail": output[-1500:],
                 },
@@ -176,23 +235,45 @@ def _run_job(config: Config, queue: QueueStore, checkpoint: str | None, runner) 
                 "checkpoint": checkpoint,
                 "text": text,
                 "exit": proc.returncode,
+                "reason": failure,
                 "queued_request": queue.status().get("request"),
             }
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             queue.finish_start(False, "timeout")
-            _log(config, {"kind": "timeout", "checkpoint": checkpoint})
-            return {"ok": False, "reason": "timeout", "text": "补推超时，请查看日志。"}
+            _log(
+                config,
+                {
+                    "kind": "timeout",
+                    "checkpoint": checkpoint,
+                    "timeout": config.timeout,
+                    "stdout_tail": _output_tail(exc),
+                },
+            )
+            return {
+                "ok": False,
+                "reason": "timeout",
+                "text": f"补推超时（{config.timeout}s），已终止进程组，请查看日志。",
+            }
         except Exception as exc:  # noqa: BLE001 - keep listener alive
             queue.finish_start(False, str(exc))
             _log(config, {"kind": "error", "checkpoint": checkpoint, "error": str(exc)})
             return {"ok": False, "reason": "error", "error": str(exc), "text": "补推失败，请查看日志。"}
 
 
+def _job_free(home: Path) -> bool:
+    """True when no other process is running the forward pipeline."""
+    with job_lock(home) as acquired:
+        return acquired
+
+
 def scheduled_pull(config: Config, runner=run_agent) -> dict:
     """08:00 timer entry: request one push, or merge into the pending request."""
     queue = _queue(config)
     queue.request_push("scheduled")
-    start = queue.try_start()
+    if not _job_free(config.home):
+        _log(config, {"kind": "blocked", "reason": "job_lock", "source": "scheduled"})
+        return {"ok": False, "reason": "busy", "text": None}
+    start = queue.try_start(lease_minutes(config))
     if not start or not start.get("ok"):
         reason = (start or {}).get("reason", "no_request")
         _log(config, {"kind": "queued", "source": "scheduled", "reason": reason})
@@ -203,17 +284,27 @@ def scheduled_pull(config: Config, runner=run_agent) -> dict:
     return result
 
 
-def run_pending(config: Config, runner=run_agent) -> dict:
-    """Started after a queue drains: execute the merged pending request once."""
+def run_pending(config: Config, runner=run_agent, quiet: bool = False) -> dict:
+    """Started after a queue drains: execute the merged pending request once.
+
+    `quiet` is used by the periodic retry timer: it runs every couple of
+    minutes, so normal "nothing to do" outcomes must not spam the log or Lark.
+    """
     queue = _queue(config)
-    start = queue.try_start()
+    if not _job_free(config.home):
+        if not quiet:
+            _log(config, {"kind": "blocked", "reason": "job_lock", "source": "pending"})
+        return {"ok": False, "reason": "busy", "text": None}
+    start = queue.try_start(lease_minutes(config))
     if not start or not start.get("ok"):
         reason = (start or {}).get("reason", "no_request")
-        _log(config, {"kind": "queued", "source": "pending", "reason": reason})
+        if not quiet:
+            _log(config, {"kind": "queued", "source": "pending", "reason": reason})
         return {"ok": True, "queued": True, "reason": reason}
     _log(config, {"kind": "start", "source": "pending", "checkpoint": start.get("card_id")})
     result = _run_job(config, queue, start.get("card_id"), runner)
-    _notify(config, result.get("text") or "补推完成。")
+    if result.get("text"):
+        _notify(config, result["text"])
     return result
 
 
@@ -248,7 +339,7 @@ def handle_event(
 
     queue = _queue(config)
     queue.request_push("manual", checkpoint)
-    start = queue.try_start()
+    start = queue.try_start(lease_minutes(config))
     if not start or not start.get("ok"):
         reason = (start or {}).get("reason", "no_request")
         _log(config, {"kind": "queued", "source": "manual", "reason": reason})

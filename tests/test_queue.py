@@ -440,8 +440,15 @@ def test_empty_queue_spawns_pending_runner(kl_home, monkeypatch):
     sent = send_rating(kl_home, push, "ou_demo", dry_run=True)
     calls = []
 
+    class FakeProc:
+        pid = 12345
+
+        def poll(self):
+            return None
+
     def fake_popen(cmd, **kwargs):
         calls.append((cmd, kwargs))
+        return FakeProc()
 
     monkeypatch.setattr("publisher.service.subprocess.Popen", fake_popen)
     result = handle_event(

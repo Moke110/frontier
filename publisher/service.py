@@ -6,9 +6,10 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-from common import emit, now, read_json, read_jsonl, stable_id
+from common import append_jsonl, emit, now, read_json, read_jsonl, stable_id
 from publisher import feishu
 from publisher.cards import (
     ACTION_VERDICT,
@@ -36,22 +37,66 @@ def _queue(home: Path) -> QueueStore:
     return store
 
 
-def _spawn_pending(home: Path, owner: str) -> None:
+def _spawn_log(home: Path, row: dict) -> None:
+    try:
+        append_jsonl(Path(home) / "publisher" / "trigger.log", row)
+    except OSError:
+        pass
+
+
+def _spawn_alert(owner: str, text: str) -> None:
+    if not owner:
+        return
+    try:
+        feishu.send_text(owner, text)
+    except feishu.FeishuError:
+        pass
+
+
+def _spawn_pending(home: Path, owner: str) -> dict:
     """Start the pending retrieval request in a detached process."""
     repo = Path(__file__).resolve().parents[1]
+    home = Path(home)
     cmd = [sys.executable, "-m", "trigger.cli", "--home", str(home)]
     if owner:
         cmd += ["--owner", owner]
     cmd.append("run-request")
     env = {**os.environ, "KL_HOME": str(home)}
-    subprocess.Popen(
-        cmd,
-        cwd=str(repo),
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
+    log_path = home / "publisher" / "trigger-spawn.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(f"\n--- {now()} spawn: {' '.join(cmd)}\n")
+            log.flush()
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(repo),
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+    except OSError as exc:
+        _spawn_log(home, {"schema_version": 1, "at": now(), "kind": "spawn_failed", "error": str(exc)})
+        _spawn_alert(owner, f"自动拉起下一次推送失败：{exc}")
+        return {"ok": False, "reason": "spawn_failed", "error": str(exc)}
+    pid = getattr(proc, "pid", None)
+    _spawn_log(
+        home,
+        {"schema_version": 1, "at": now(), "kind": "spawn", **({"pid": pid} if pid else {})},
     )
+    # run-request only exits immediately when it refuses to start; a non-zero
+    # exit here means the next push would silently never happen.
+    time.sleep(0.5)
+    code = proc.poll()
+    if code not in (None, 0):
+        _spawn_log(
+            home,
+            {"schema_version": 1, "at": now(), "kind": "spawn_exited", "pid": pid, "code": code},
+        )
+        _spawn_alert(owner, f"自动拉起下一次推送的进程异常退出（exit {code}），请查看 trigger-spawn.log。")
+        return {"ok": False, "reason": "spawn_exited", "code": code}
+    return {"ok": True, "pid": pid}
 
 
 def _deliver_next(

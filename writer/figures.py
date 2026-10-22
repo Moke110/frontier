@@ -10,10 +10,12 @@ state which kind it is.
 from __future__ import annotations
 
 import html
+import io
 import re
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 from common import clip
@@ -64,6 +66,57 @@ def _clean(text: str) -> str:
     return " ".join(html.unescape(text).split())
 
 
+def _figure_urls(pmcid: str, href: str) -> list[str]:
+    """Candidate URLs for one Europe PMC / PMC figure asset.
+
+    ``europepmc.org/articles/<pmcid>/bin/<file>`` currently answers 403 for
+    open-access articles, while the NCBI PMC ``instance`` path serves the same
+    asset. Both are listed so a host-side change cannot break figure retrieval.
+    """
+    return [
+        f"https://pmc.ncbi.nlm.nih.gov/articles/instance/{pmcid}/bin/{href}",
+        f"https://europepmc.org/articles/{pmcid}/bin/{href}",
+    ]
+
+
+IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".svg": "image/svg+xml",
+}
+
+
+def _europepmc_bundle(pmcid: str) -> dict[str, tuple[bytes, str]]:
+    """Fetch the open-access asset bundle and index the figure files in it.
+
+    ``/supplementaryFiles`` returns a zip holding every figure and supplement of
+    a PMC article. Pulling the images from there is far more reliable than
+    fetching each figure URL, because the per-image hosts answer 403 to
+    non-browser clients.
+    """
+    url = f"https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/supplementaryFiles"
+    try:
+        data, _ = _get(url, timeout=90)
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except Exception:  # noqa: BLE001 - bundle is optional, URL fallback remains
+        return {}
+    out: dict[str, tuple[bytes, str]] = {}
+    for name in archive.namelist():
+        suffix = Path(name).suffix.lower()
+        if suffix not in IMAGE_TYPES:
+            continue
+        try:
+            out[Path(name).name] = (archive.read(name), IMAGE_TYPES[suffix])
+        except Exception:  # noqa: BLE001 - skip an unreadable member
+            continue
+    return out
+
+
 def _europepmc(paper: dict, limit: int) -> list[dict]:
     pmcid = paper.get("pmcid")
     if not pmcid:
@@ -71,6 +124,7 @@ def _europepmc(paper: dict, limit: int) -> list[dict]:
     url = f"https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
     data, _ = _get(url)
     root = ET.fromstring(data)
+    bundle = _europepmc_bundle(pmcid)
     out = []
     for fig in root.iter("fig"):
         graphic = fig.find(".//graphic")
@@ -83,14 +137,19 @@ def _europepmc(paper: dict, limit: int) -> list[dict]:
         caption = _clean("".join(caption_node.itertext())) if caption_node is not None else ""
         label = _clean(fig.findtext("label") or "")
         caption = f"{label}. {caption}".strip(". ") if label else caption
-        image_url = f"https://europepmc.org/articles/{pmcid}/bin/{href}"
-        out.append(
-            {
-                "url": image_url,
-                "caption": clip(caption or f"{pmcid} figure", 400),
-                "origin": "paper",
-            }
-        )
+        urls = _figure_urls(pmcid, href)
+        candidate = {
+            "urls": urls,
+            "url": urls[0],
+            "caption": clip(caption or f"{pmcid} figure", 400),
+            "origin": "paper",
+        }
+        bundled = bundle.get(Path(href).name)
+        if bundled is not None:
+            candidate["data"] = bundled[0]
+            candidate["content_type"] = bundled[1]
+            candidate["origin_url"] = urls[0]
+        out.append(candidate)
         if len(out) >= limit:
             break
     return out
@@ -204,22 +263,33 @@ def _arxiv(paper: dict, limit: int) -> list[dict]:
     return out
 
 
-def _wrap(text: str, width: int = 24, max_lines: int = 4) -> list[str]:
+# Advance-width model for the visual-abstract title font (Noto Serif CJK SC):
+# CJK glyphs are full-width, Latin averages ~0.55em. Used so the generated
+# title never runs past the canvas edge.
+def _advance(char: str, font_px: float) -> float:
+    if ord(char) > 0x2E80:  # CJK ideographs and full-width punctuation
+        return font_px
+    if char == " ":
+        return font_px * 0.26
+    return font_px * 0.55
+
+
+def _wrap(text: str, max_px: float = 1056.0, font_px: float = 54.0, max_lines: int = 4) -> list[str]:
     text = " ".join((text or "").split())
-    lines, current, score = [], "", 0
+    lines, current, width = [], "", 0.0
     for char in text:
-        weight = 2 if ord(char) > 127 else 1
-        if score + weight > width * 2:
+        advance = _advance(char, font_px)
+        if current and width + advance > max_px:
             lines.append(current)
-            current, score = "", 0
+            current, width = "", 0.0
             if len(lines) >= max_lines:
                 break
         current += char
-        score += weight
+        width += advance
     if current and len(lines) < max_lines:
         lines.append(current)
-    if len(lines) == max_lines and len("".join(lines)) < len(text):
-        lines[-1] = lines[-1][: max(0, len(lines[-1]) - 1)] + "…"
+    if len(lines) == max_lines and len("".join(lines).strip()) < len(text.strip()):
+        lines[-1] = lines[-1][: max(0, len(lines[-1]) - 1)].rstrip() + "…"
     return lines or ["前沿论文"]
 
 
@@ -273,12 +343,22 @@ def fetch_for_paper(
         try:
             if candidate.get("data"):
                 data, content_type = candidate["data"], candidate["content_type"]
+                used_url = candidate.get("origin_url") or candidate.get("url", "")
             else:
-                data, content_type = _get(candidate["url"])
+                data, content_type, used_url = None, "", ""
+                for url in candidate.get("urls") or [candidate.get("url", "")]:
+                    try:
+                        data, content_type = _get(url)
+                        used_url = url
+                        break
+                    except Exception:  # noqa: BLE001 - try the next mirror
+                        continue
+                if data is None:
+                    continue
             path = _save(
                 data,
                 content_type,
-                candidate.get("origin_url") or candidate.get("url", ""),
+                used_url,
                 asset_dir / f"fig-{index}",
             )
         except Exception:  # noqa: BLE001 - skip a broken figure, try the next
@@ -289,7 +369,7 @@ def fetch_for_paper(
                 "path": str(path.relative_to(out_dir)),
                 "caption": candidate["caption"],
                 "source": "paper",
-                "origin_url": candidate.get("origin_url") or candidate.get("url", ""),
+                "origin_url": candidate.get("origin_url") or used_url,
             }
         )
 

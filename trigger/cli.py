@@ -38,7 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--event", help="JSON file; default stdin")
 
     sub.add_parser("scheduled", help="08:00 timer entry: request or start one push")
-    sub.add_parser("run-request", help="start the merged pending request if allowed")
+    p = sub.add_parser("run-request", help="start the merged pending request if allowed")
+    p.add_argument("--quiet", action="store_true", help="do not log no-op polls (retry timer)")
     return parser
 
 
@@ -68,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         emit(scheduled_pull(config))
         return 0
     if args.cmd == "run-request":
-        emit(run_pending(config))
+        emit(run_pending(config, quiet=args.quiet))
         return 0
     return 1
 

@@ -100,6 +100,13 @@ def fetch_europepmc(query: dict, limit: int, timeout: int = 30) -> list[dict]:
             continue
         src = item.get("source") or "MED"
         ident = item.get("pmid") or item.get("id")
+        journal_meta = ((item.get("journalInfo") or {}).get("journal") or {})
+        journal = (
+            item.get("journalTitle")
+            or journal_meta.get("title")
+            or journal_meta.get("medlineAbbreviation")
+            or src
+        )
         out.append(
             {
                 "source": "europepmc",
@@ -107,7 +114,7 @@ def fetch_europepmc(query: dict, limit: int, timeout: int = 30) -> list[dict]:
                 "title": title,
                 "abstract": item.get("abstractText") or "",
                 "authors": [a.strip() for a in (item.get("authorString") or "").split(",") if a.strip()],
-                "journal": item.get("journalTitle") or src,
+                "journal": journal,
                 "published": item.get("firstPublicationDate") or "",
                 "url": f"https://europepmc.org/article/{src}/{item.get('id')}",
                 "is_preprint": src == "PPR",

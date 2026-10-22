@@ -7,7 +7,6 @@ from retriever import cli as retriever_cli
 from writer import model as writer_model
 from writer import tasks as writer_tasks
 
-
 def _pipeline(kl_home, fixtures_dir):
     plan = frontier_model.plan(kl_home, day="2026-10-20", days=7)
     rows = retriever_cli.run(plan, "fixture", fixtures_dir, check_window=True)
@@ -120,3 +119,21 @@ def test_writer_rejects_unknown_proposal_target(kl_home, fixtures_dir, tmp_path)
     result = writer_tasks.validate(task, outbox)
     assert result["ok"] is False
     assert any("unknown card" in e for e in result["errors"])
+
+
+def test_editor_task_skips_already_pushed_papers(kl_home, fixtures_dir):
+    rows, _ = _pipeline(kl_home, fixtures_dir)
+    pushed_id = rows[0]["paper_id"]
+    push_dir = kl_home / "archive" / "pushes"
+    push_dir.mkdir(parents=True, exist_ok=True)
+    (push_dir / "2026-10-20_test_01.json").write_text(
+        json.dumps(
+            {"schema_version": 2, "push_id": "2026-10-20_test_01", "paper_ids": [pushed_id]}
+        ),
+        encoding="utf-8",
+    )
+
+    task = editor_tasks.build_task(kl_home, rows, "2026-10-20", limit=4, per_checkpoint=2)
+    candidate_ids = {row["paper_id"] for row in task["candidates"]}
+    assert pushed_id not in candidate_ids
+    assert len(candidate_ids) == len(rows) - 1
