@@ -138,6 +138,29 @@ def _spawn_review(home: Path, owner: str, item_id: str) -> dict:
     return {"ok": True, "pid": proc.pid}
 
 
+def _spawn_sync(home: Path, owner: str) -> dict:
+    """Mirror the freshly written local knowledge layer into Bitable."""
+    if not (Path(home) / "knowledge" / "base.json").exists():
+        return {"ok": True, "skipped": "no_config"}
+    repo = Path(__file__).resolve().parents[1]
+    cmd = [sys.executable, "-m", "knowledge.cli", "--home", str(home), "sync"]
+    env = {**os.environ, "KL_HOME": str(home)}
+    log_path = Path(home) / "publisher" / "trigger-spawn.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(f"\n--- {now()} spawn sync\n")
+            log.flush()
+            proc = subprocess.Popen(
+                cmd, cwd=str(repo), env=env, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+    except OSError as exc:
+        _spawn_log(home, {"schema_version": 1, "at": now(), "kind": "sync_spawn_failed", "error": str(exc)})
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "pid": proc.pid}
+
+
 def _deliver_next(
     home: Path,
     store: PublisherStore,
@@ -300,6 +323,8 @@ def _handle_queue_event(
         feishu.update_card(token, decision_card, identity)
     delivered = _deliver_next(home, store, target, offline, identity)
     if not offline:
+        if approved:
+            _spawn_sync(home, operator or mapping.get("target") or "")
         for review in result.get("reviews") or []:
             _spawn_review(home, operator or mapping.get("target") or "", review["id"])
     if result.get("start") and not offline:

@@ -17,7 +17,8 @@ metadata:
 > | 每篇推送 2 个实体名额；三类卡片顶栏/正文 | 已生效（Phase 1） |
 > | 命题 v3（evidence / review / changelog）、证据 add/merge、迁移 | 已生效（Phase 2a） |
 > | 综述题、HTML 推送 | 已生效（Phase 2b） |
-> | Bitable 权威存储、WAL 落盘、10 分钟同步 | Phase 3 |
+> | Bitable 镜像、手工编辑回拉、10 分钟同步 | 已生效（Phase 3a，双读期） |
+> | Bitable 权威读、WAL 落盘、下线文件写入 | Phase 3b（双读 7 天后） |
 >
 > Phase 2/3 的命令在文中标注；未标注的均为当前可用命令。
 
@@ -263,14 +264,22 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 
 页脚统一说明：同意后立即写入；拒绝保持原样；答完才发下一题。
 
-## 6. 落盘（Phase 3）
+## 6. 落盘
 
-- **Bitable 是知识层唯一真相**：知识卡片 / 命题 / 证据 / 报道 / 变更日志五表。
-- 原文、推送、队列、评分仍是本地文件。
+**Phase 3a（当前，双读期）**：
+
+- 本地 `archive/` 仍是读与写的权威；Bitable 是镜像。
+- 每次同意更新后，spawn `python -m knowledge.cli sync`：按业务 id 幂等 upsert 卡片 / 命题 / 证据 / 报道 / 变更日志，并重建关联。
+- `frontier-sync.timer` 每 10 分钟：`knowledge.cli pull`（把 Bitable 文本列的手工编辑拉回本地并补 changelog）→ `sync` → `compare`（只记差异，不让 timer 失败）。
+- 首次 `pull` 只建立 `knowledge/state.json` 基线；之后只接受 title / review / annotation / conclusion 的文本改动。
+- 非法编辑不落本地：在 Base 的「待修正」列写原因。
+
+**Phase 3b（双读 7 天后）**：
+
+- Bitable 成为知识层唯一真相；本地 JSON 转为只读快照。
 - 读：`KnowledgeStore` 实时读 Bitable；测试与 `--offline` 用 `FixtureStore`。
-- 写：先写本地 group journal（pending + proposals + before 快照），再逐条写 Bitable；按 `group_id` 幂等，失败可断点续跑。
+- 写：本地 WAL（pending + proposals + before 快照）→ 逐条写 Bitable；按 `group_id` 幂等，失败断点续跑。
 - 写前校验：id 唯一、≥2 关联卡、conclusion ≤200、review ≤2000、quote 可定位、paper_id ∈ push、before 不陈旧。
-- 迁移：全量导入 → 双读比对 7 天 → 下线文件写入。
 
 ## 7. 手工编辑与同步（Phase 3）
 

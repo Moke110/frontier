@@ -38,6 +38,12 @@ v2 的命题把三样东西塞进两个字段：
 - **把 review 也做成飞书云文档**：云文档不能按视口自适应字号；HTML 附件才满足阅读需求。
 - **在 Bitable 用公式/插件做校验**：表达不了“引文必须能在原文锚点定位”这类跨源约束。
 
+## 实施状态（2026-10-22）
+
+- 已完成：生产 Base 五表、全量导入、`knowledge.cli sync` 幂等镜像、`pull` 文本回拉、10 分钟 timer、`compare`。
+- 当前仍是**双读期**：本地 `archive/` 负责读写，Bitable 是镜像；7 天无漂移后再切换到 Bitable 权威读 + WAL。
+- 因此本 ADR 的“Bitable 权威”是目标状态，不是今天的读写路径；切换前不得删除本地写入。
+
 ## 后果
 
 - `archive.store` 要拆出 `KnowledgeStore` 接口 + `BitableStore` / `FixtureStore`；

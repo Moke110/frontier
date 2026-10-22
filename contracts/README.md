@@ -25,6 +25,9 @@ $KL_HOME/
 │   ├── applied/<proposal_id>.json# 已应用的更新记录
 │   └── legacy/v1-<ts>/           # v1 迁移备份（可 rollback）
 ├── ratings.jsonl                 # publisher 写，editor/frontier 读
+├── knowledge/                    # Bitable 镜像（Phase 3a）
+│   ├── base.json                 # base_token / base_url / 五表 id
+│   └── state.json                # 文本列基线，用于识别手工编辑
 ├── queue/                        # 统一问题队列（docs/specs/unified-question-queue.md）
 │   ├── state.json                # 队列表 + 单 active
 │   ├── events.jsonl              # 只追加的审计/重建日志
@@ -415,6 +418,20 @@ python -m archive.cli migrate-v3 [--dry-run] [--rollback <backup>]
 ```json
 { "item_id": "q_…", "push_id": "…", "proposal_ids": ["…"], "decision": "agree_all | reject_all", "operator_id": "ou_…", "created_at": "…" }
 ```
+
+## 10.5 Bitable 镜像（Phase 3a）
+
+```bash
+python -m knowledge.cli sync        # 本地知识层 → Bitable（幂等 upsert + 关联）
+python -m knowledge.cli pull        # Bitable 文本列 → 本地（补 changelog / 待修正）
+python -m knowledge.cli compare     # 报告漂移；ok=false 时退出码 1
+python -m knowledge.cli ledger      # 重建文本基线
+```
+
+- 双读期本地 `archive/` 仍是权威；Bitable 是镜像。
+- `sync` 按业务 id 匹配，不做删除；Bitable 多出的记录由 `compare` 暴露。
+- `pull` 只接受 title / review / annotation / conclusion；结构列（id、关联、日期、计数）不回拉。
+- `sync` 成功后刷新 `knowledge/state.json`；`pull` 结束后同样刷新。
 
 ## 11. 统一问题队列
 

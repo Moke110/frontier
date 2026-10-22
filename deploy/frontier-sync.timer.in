@@ -1,0 +1,11 @@
+[Unit]
+Description=frontier Bitable sync every 10 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Persistent=false
+Unit=frontier-sync.service
+
+[Install]
+WantedBy=timers.target
