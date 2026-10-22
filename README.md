@@ -14,6 +14,7 @@
 | `editor` | 排序候选；agent 做语义排序，脚本学偏好与校验 | candidates + ratings → `editor-task.json` → `selection.json` |
 | `writer` | agent 写长文推送（HTML 片段 + 图片）；脚本提供上下文、校验与渲染 | selection + archive 上下文 → `writer-task.json` → push JSON → HTML（Phase 3） |
 | `publisher` | 飞书推送、评分/更新卡与回调 | push + 文件 → 消息 / 卡片 / `ratings.jsonl` / `decisions.jsonl` |
+| `knowledge` | 知识层 ↔ Bitable 镜像、手工编辑回拉、漂移比对 | `KnowledgeStore` → Base 五表 / `knowledge/state.json` |
 
 模块之间**零 Python import**，只通过 `contracts/README.md` 定义的文件交换数据。唯一共享代码是根目录 `common.py`（纯 IO 工具，无领域逻辑）。因此每个模块都能单独跑、单独替换 —— 例如把 `writer` 换成 LLM 版本，或把 `retriever` 换成别的数据源，其它模块不用改。
 

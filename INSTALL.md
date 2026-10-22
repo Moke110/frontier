@@ -154,10 +154,15 @@ sed "s|__PYTHON__|$(command -v python3)|" \
   > "$HOME/.config/systemd/user/frontier-retry.service"
 cp "$HOME/frontier/deploy/frontier-retry.timer.in" \
   "$HOME/.config/systemd/user/frontier-retry.timer"
+sed "s|__PYTHON__|$(command -v python3)|" \
+  "$HOME/frontier/deploy/frontier-sync.service.in" \
+  > "$HOME/.config/systemd/user/frontier-sync.service"
+cp "$HOME/frontier/deploy/frontier-sync.timer.in" \
+  "$HOME/.config/systemd/user/frontier-sync.timer"
 
 systemctl --user daemon-reload
 systemctl --user enable --now frontier-listener frontier-rating-listener
-systemctl --user enable --now frontier-daily.timer frontier-retry.timer
+systemctl --user enable --now frontier-daily.timer frontier-retry.timer frontier-sync.timer
 systemctl --user is-active frontier-listener frontier-rating-listener   # 都应输出 active
 systemctl --user list-timers frontier-daily.timer                       # 下一次 08:00
 ```
@@ -167,6 +172,7 @@ systemctl --user list-timers frontier-daily.timer                       # 下一
 - `frontier-listener`：收 `im.message.receive_v1`（手动补推关键词）；
 - `frontier-rating-listener`：收 `card.action.trigger`（评分/更新题按钮）。没有它，点击不会推进队列；
 - `frontier-daily.timer`：每天 08:00 Asia/Shanghai 调 `trigger.cli scheduled`。队列非空时只合并待推请求；队列清空后由评分回调自动拉起 `run-request`。
+- `frontier-sync.timer`：每 10 分钟 `knowledge.cli pull → sync → compare`；没有 `knowledge/base.json` 时跳过镜像。
 - `frontier-retry.timer`：每 2 分钟调一次 `trigger.cli run-request --quiet`，作为 lease 过期后的兜底；没有待推请求、队列未清空、租约仍有效或 job lock 被占时立即退出（不写日志、不告警）。
 
 没有 systemd 时，用 tmux 常驻：
