@@ -26,9 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("answer", help="answer an active question")
     p.add_argument("--item", required=True)
     p.add_argument("--verdict", choices=["irrelevant", "ok", "great"])
-    p.add_argument("--decision", choices=["agree_all", "reject_all"])
+    p.add_argument("--decision", choices=["agree_all", "reject_all", "adopt", "keep_previous"])
     p.add_argument("--comment", default="")
     p.add_argument("--operator", default="cli")
+
+    p = sub.add_parser("review-ready", help="attach a generated review and activate its question")
+    p.add_argument("--item", required=True)
+    p.add_argument("--review", required=True)
+    p.add_argument("--html", required=True)
+    p.add_argument("--base-url", default=None)
 
     p = sub.add_parser("retry")
     p.add_argument("--item", required=True)
@@ -75,6 +81,19 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 raise QueueError("provide --verdict or --decision")
             emit(store.answer(args.item, answer))
+        elif args.cmd == "review-ready":
+            review = read_json(Path(args.review))
+            if not review or not review.get("proposal"):
+                raise QueueError(f"no review proposal at {args.review}")
+            emit(
+                store.mark_review_ready(
+                    args.item,
+                    [review["proposal"]],
+                    stats=review.get("stats"),
+                    base_url=args.base_url,
+                    html_path=args.html,
+                )
+            )
         elif args.cmd == "retry":
             emit(store.retry(args.item))
         elif args.cmd == "abandon":

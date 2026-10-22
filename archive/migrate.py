@@ -444,3 +444,92 @@ def rollback(home: Path, backup: str) -> dict:
         "backup": str(backup_dir),
         "restored": manifest.get("files", []),
     }
+
+
+def migrate_v3(home: Path, dry_run: bool = False) -> dict:
+    """Convert v2 propositions (content + history) to v3 (review + evidence + changelog)."""
+    from archive.store import v3_prop_from_v2
+
+    home = Path(home).resolve()
+    store = Archive(home)
+    paths = sorted(store.props.glob("*.json"))
+    if not paths:
+        return {"ok": True, "status": "nothing-to-migrate", "home": str(home), "converted": 0}
+    pending = []
+    already = 0
+    for path in paths:
+        raw = read_json(path) or {}
+        if raw.get("schema_version") == 3 and "review" in raw and "evidence" in raw:
+            already += 1
+            continue
+        pending.append((path, raw))
+    if not pending:
+        return {
+            "ok": True,
+            "status": "already-migrated",
+            "home": str(home),
+            "converted": 0,
+            "already": already,
+        }
+    plan = {
+        "ok": True,
+        "status": "dry-run" if dry_run else "migrated",
+        "home": str(home),
+        "converted": len(pending),
+        "already": already,
+        "propositions": [raw.get("id") or raw.get("prop_id") for _, raw in pending],
+    }
+    if dry_run:
+        return plan
+
+    backup = store.legacy / f"v3-{_ts()}"
+    backed = _copy_into(home, backup, store.props)
+    write_json(
+        backup / "manifest.json",
+        {
+            "schema_version": 1,
+            "created_at": now(),
+            "files": [backed] if backed else [],
+            "kind": "v2-to-v3-propositions",
+        },
+    )
+    converted = []
+    for path, raw in pending:
+        prop = v3_prop_from_v2(raw)
+        store.put_prop(prop)
+        converted.append(prop["id"])
+    store.reindex()
+    report = {
+        **plan,
+        "status": "migrated",
+        "converted_ids": converted,
+        "backup": str(backup),
+        "migrated_at": now(),
+    }
+    write_json(backup / "report.json", report)
+    return report
+
+
+def rollback_v3(home: Path, backup: str) -> dict:
+    home = Path(home).resolve()
+    backup_dir = Path(backup)
+    if not backup_dir.is_absolute():
+        backup_dir = home / "archive" / "legacy" / backup
+    manifest = read_json(backup_dir / "manifest.json")
+    if not manifest or manifest.get("kind") != "v2-to-v3-propositions":
+        raise ArchiveError(f"no v3 manifest under {backup_dir}")
+    store = Archive(home)
+    for rel in manifest.get("files") or []:
+        src = backup_dir / rel
+        dst = home / rel
+        if src.is_dir():
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+    store.reindex()
+    return {
+        "ok": True,
+        "status": "rolled-back",
+        "backup": str(backup_dir),
+        "restored": manifest.get("files", []),
+    }

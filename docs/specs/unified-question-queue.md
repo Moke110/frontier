@@ -6,7 +6,7 @@
 
 ## 1. 目标与不变量
 
-一次推送 = 一篇论文 = 1 个评分题 + 0–2 个更新题。所有题进入**同一个串行队列**，一次只问一题；队列清空后才允许启动下一次检索推送。
+一次推送 = 一篇论文 = 1 个评分题 + 0–2 个更新题；命题综述题由第 10 条证据触发的独立题。所有题进入**同一个串行队列**，一次只问一题；队列清空后才允许启动下一次检索推送。
 
 必须始终成立：
 
@@ -19,6 +19,7 @@
 7. 知识库只在「同意全部」时写入；拒绝只落决定，不写 archive。
 8. `queue/state.json` 的所有变更必须在 `queue/lock` 排他锁内完成。
 9. 同一时刻最多一个「待推请求」在执行（start lease）。
+10. `proposition_review` 题在综述 HTML 生成前是 `pending` + `payload.ready=false`：闸住检索，但不发给用户；生成后 `review-ready` 置为 ready 才可 active。
 
 ## 2. 文件与所有权
 
@@ -105,7 +106,7 @@ $KL_HOME/
 | `kind` | `rating` / `card_update` / `proposition_update` |
 | `card_id` | 本次 push 的主卡片；所有题都带，便于按 push 丢弃 |
 | `status` | `pending` / `active` / `answered` / `dropped` / `failed` |
-| `payload` | 评分题为 `{}`；更新题含 `target_type / target_id / proposal_ids / proposals` |
+| `payload` | 评分题为 `{}`；更新题含 `target_type / target_id / proposal_ids / proposals`；综述题另含 `stats / ready / html_path / base_url` |
 | `answer` | 评分 `{verdict, comment, operator_id}`；更新 `{decision: agree_all\|reject_all, operator_id}` |
 | `attempts` | 成功发出一次 +1；失败不增，重发 +1（上限 3） |
 
@@ -125,6 +126,7 @@ writer 的同一批 proposals 按目标归组：
 
 - 实体更新题：按 proposals 数组顺序全局取前 **2** 个目标（卡片/命题混排，新建实体同样占位）；其余记 `overflow` 事件（`reason=target_limit`），不建题。
 - 评分题固定 1 个，不占限额；命题综述题独立，不占限额。
+- 命题 counter 达到 10 且没有未完成的综述题时，`answer` 自动追加一个 `proposition_review` 题（`ready=false`）。同一命题同一时间最多一个未完成综述题。
 
 ### 4.3 队列顺序
 
@@ -254,6 +256,10 @@ writer 的同一批 proposals 按目标归组：
 | 6 | 更新题回调先于评分 | 返回 `ok:false, not_active`；评分题仍 active |
 | 7 | 同意全部但目标命题已被删 | 题 → `failed`；不写任何部分更新；队列闸住 |
 | 8 | 同意全部时 archive 写到一半崩溃 | 该题 `failed`；用同一 `group_id` 重试不会重复写 |
+| 8.1 | 第 10 条证据被采纳 | 追加 `proposition_review` 题（ready=false）；队列非空，检索不启动 |
+| 8.2 | 综述题 ready=false 且无其他题 | 不发送任何卡；等待 review-request 生成；队列仍算未清空 |
+| 8.3 | 综述 `keep_previous` | 只落决定；review 不变；counter 保留；下一条证据采纳时重新生成 |
+| 8.4 | 综述 `adopt` | 写入新 review；counter 归零；题 `answered` |
 | 9 | 同一按钮回调两次 | 第二次 `deduped:true`，状态不变 |
 | 10 | 先同意后拒绝 | 拒绝被忽略；状态仍 `answered/agree_all` |
 | 11 | active 题发送后进程崩溃 | 重启重发（attempts+1）；不重复入队、不跳过 |

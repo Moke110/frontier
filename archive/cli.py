@@ -93,6 +93,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--rollback", metavar="BACKUP_DIR", help="restore a v1 backup")
 
+    p = sub.add_parser("migrate-v3", help="convert v2 propositions to review + evidence + changelog")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--rollback", metavar="BACKUP_DIR", help="restore a pre-v3 backup")
+
     sub.add_parser("stats")
     return parser
 
@@ -151,6 +155,11 @@ def main(argv: list[str] | None = None) -> int:
                 emit(migration.rollback(root, args.rollback))
             else:
                 emit(migration.migrate(root, dry_run=args.dry_run))
+        elif args.cmd == "migrate-v3":
+            if args.rollback:
+                emit(migration.rollback_v3(root, args.rollback))
+            else:
+                emit(migration.migrate_v3(root, dry_run=args.dry_run))
         elif args.cmd == "stats":
             emit(store.stats())
         else:  # pragma: no cover

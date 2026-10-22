@@ -10,7 +10,7 @@ from pathlib import Path
 from common import emit, home, read_json
 from publisher.cards import build_rating_card
 from publisher.feishu import FeishuError
-from publisher.service import listen, replay, send_push, send_rating
+from publisher.service import deliver_next, listen, replay, send_push, send_rating
 from publisher.store import PublisherStore
 
 
@@ -19,9 +19,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("send", help="send one push: PDF file + rating card")
+    p = sub.add_parser("send", help="send one push: HTML file + rating card")
     p.add_argument("--push", required=True)
-    p.add_argument("--pdf", help="PDF rendered by `writer render`")
+    p.add_argument("--html", help="self-contained HTML rendered by `writer render`")
+    p.add_argument("--pdf", help="legacy PDF rendered by `writer render`")
     p.add_argument("--to", required=True, help="open_id (ou_...)")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true", help="re-send even if already pushed")
@@ -78,26 +79,30 @@ def main(argv: list[str] | None = None) -> int:
             push = read_json(Path(args.push))
             if not push:
                 raise ValueError(f"no push at {args.push}")
-            if args.pdf or push.get("format") == "pdf":
-                if not args.pdf:
-                    raise ValueError("--pdf is required for a pdf-format push")
+            if args.html or args.pdf:
+                path = Path(args.html or args.pdf)
                 return _emit_result(
                     send_push(
                         root,
                         push,
-                        Path(args.pdf),
+                        path,
                         args.to,
                         args.dry_run,
                         args.identity,
                         force=args.force,
                     )
                 )
+            if push.get("format") in ("pdf", "html"):
+                raise ValueError("--html (or legacy --pdf) is required for a push file")
             return _emit_result(send_rating(root, push, args.to, args.dry_run, args.identity))
         elif args.cmd == "rating":
             push = read_json(Path(args.push))
             if not push:
                 raise ValueError(f"no push at {args.push}")
             return _emit_result(send_rating(root, push, args.to, args.dry_run, args.identity))
+        elif args.cmd == "deliver":
+            delivered = deliver_next(root, args.to, args.dry_run, args.identity)
+            emit(delivered or {"ok": True, "active": None})
         elif args.cmd == "preview":
             push = read_json(Path(args.push))
             if not push:

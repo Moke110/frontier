@@ -39,15 +39,35 @@ PROMPT = """使用 frontier skill（{repo}/SKILL.md）执行一次检索推送�
 6. 你亲自读 task、写 /tmp/selection.json，并 python -m editor.cli check ...
 7. 从 selection 里只选 1 篇；python -m writer.cli task ...；python -m writer.cli figures ...
 8. 你亲自写 push（七段 HTML + assets）；python -m writer.cli check ...
-9. python -m writer.cli render --push ... --out /tmp/<push_id>.pdf
+9. python -m writer.cli render --push ... --out /tmp/<push_id>.html
 10. python -m archive.cli add-push --file ...
-11. python -m publisher.cli send --push ... --pdf ... --to "$FRONTIER_OWNER_ID"
+11. python -m publisher.cli send --push ... --html ... --to "$FRONTIER_OWNER_ID"
 
 如果 publisher send 返回非零（尤其 reason=duplicate_paper），立即停止，不要换论文重试、不要重复 add-push；输出「推送发送失败：<reason>」并结束。
 {checkpoint_line}
 完成后输出一句：已推送 <push_id>，或 今天没有新的。"""
 
 CHECKPOINT_LINE = "- 本次只处理知识卡片：{checkpoint}"
+
+REVIEW_PROMPT = """使用 frontier-loop skill（{repo}/skills/frontier-loop/SKILL.md）处理一条命题综述更新题：{item_id}。
+
+硬约束：
+- 工作目录 {repo}；数据根 KL_HOME={home}；
+- 只处理这一条综述题；不检索、不排序、不写 archive；
+- review 固定四节（结论 / 支持证据 / 反证与边界 / 待验证），≤2000 字，只基于 task.evidence；
+- body_html 用 <h2>/<p>/<ul>/<blockquote>；相对上一版的改动用 <span class="diff-del">/ <span class="diff-add">；
+- 校验失败就修正后重试，不要绕过 review-check。
+
+步骤：
+1. python -m writer.cli review-task --prop {prop_id} --item {item_id} --out /tmp/frontier-review-task-{item_id}.json
+2. 你亲自读 task，写 /tmp/frontier-review-{prop_id}.json（schema_version=1, kind=proposition-review,
+   prop_id, review, body_html, proposal{op=update_proposition_review,...}）；
+3. python -m writer.cli review-check --task /tmp/frontier-review-task-{item_id}.json --review /tmp/frontier-review-{prop_id}.json
+4. python -m writer.cli review-render --review /tmp/frontier-review-{prop_id}.json --out /tmp/frontier-review-{prop_id}.html
+5. python -m question_queue.cli review-ready --item {item_id} --review /tmp/frontier-review-{prop_id}.json --html /tmp/frontier-review-{prop_id}.html
+6. python -m publisher.cli deliver --to "$FRONTIER_OWNER_ID"
+
+完成后输出一句：已发送命题综述 {prop_id}。"""
 
 
 @dataclass
@@ -282,6 +302,58 @@ def scheduled_pull(config: Config, runner=run_agent) -> dict:
     result = _run_job(config, queue, start.get("card_id"), runner)
     _notify(config, result.get("text") or "定时推送完成。")
     return result
+
+
+def run_review(config: Config, item_id: str, runner=run_agent) -> dict:
+    """Generate and send one review question while holding the job lock."""
+    queue = _queue(config)
+    item = queue.get(item_id)
+    if item.get("kind") != "proposition_review":
+        return {"ok": False, "reason": "not_review", "item_id": item_id}
+    prop_id = (item.get("payload") or {}).get("target_id")
+    with job_lock(config.home) as acquired:
+        if not acquired:
+            _log(config, {"kind": "blocked", "reason": "job_lock", "review": item_id})
+            return {"ok": False, "reason": "busy", "item_id": item_id}
+        prompt = REVIEW_PROMPT.format(
+            repo=config.repo,
+            home=config.home,
+            item_id=item_id,
+            prop_id=prop_id,
+        )
+        try:
+            proc = runner(config, prompt)
+            output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+            ok = proc.returncode == 0 and bool(
+                (queue.get(item_id).get("payload") or {}).get("ready")
+            )
+            _log(
+                config,
+                {
+                    "kind": "review_finish",
+                    "item_id": item_id,
+                    "prop_id": prop_id,
+                    "ok": ok,
+                    "exit": proc.returncode,
+                    "stdout_tail": output[-1500:],
+                },
+            )
+            if not ok:
+                _notify(config, "命题综述生成失败，请查看 trigger.log。")
+            return {
+                "ok": ok,
+                "item_id": item_id,
+                "prop_id": prop_id,
+                "exit": proc.returncode,
+                "text": "已发送命题综述。" if ok else "命题综述生成失败。",
+            }
+        except subprocess.TimeoutExpired:
+            _log(config, {"kind": "review_timeout", "item_id": item_id})
+            _notify(config, "命题综述生成超时，请查看 trigger.log。")
+            return {"ok": False, "reason": "timeout", "item_id": item_id}
+        except Exception as exc:  # noqa: BLE001 - keep listener alive
+            _log(config, {"kind": "review_error", "item_id": item_id, "error": str(exc)})
+            return {"ok": False, "reason": "error", "error": str(exc), "item_id": item_id}
 
 
 def run_pending(config: Config, runner=run_agent, quiet: bool = False) -> dict:

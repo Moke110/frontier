@@ -56,8 +56,9 @@ def test_proposition_update_shows_page_and_does_not_repeat_evidence():
     text = _markdown(card)
     assert "**`prop_hmbs_aip`**" in text.splitlines()[0]
     assert "改写命题标题" in text
-    assert "改写命题内容" in text
-    assert "补充证据" in text
+    assert "改写命题综述" in text
+    assert "新增证据" in text
+    assert "立场：支持" in text
     assert "第 6 页" in text
     quote = "We show that HMBS loss increases delta-aminolevulinic acid"
     assert text.count(quote) == 1
@@ -71,6 +72,19 @@ def test_create_proposition_shows_related_knowledge():
     assert "card_hmbs" in text
     assert "card_heme_biosynthesis" in text
     assert "card_aip" in text
+
+
+def test_review_card_has_adopt_buttons_and_stats():
+    _, _, card = _load("proposal-review")
+    text = _markdown(card)
+    assert card["header"]["title"]["content"].startswith("命题综述更新 · 第 3 / 5 题")
+    assert "**`prop_hmbs_aip`**" in text.splitlines()[0]
+    assert "基于 4 条证据（支持 3 / 反证 1）" in text
+    assert "本次改动 +6 / -2 行" in text
+    assert "在知识库中查看" in text
+    labels = [b["text"]["content"] for b in _buttons(card)]
+    assert labels == ["采纳此版", "保持上一版"]
+    assert [b["name"] for b in _buttons(card)] == ["adopt", "keep_previous"]
 
 
 def test_empty_item_is_rejected():

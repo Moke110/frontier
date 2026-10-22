@@ -43,16 +43,16 @@
         "schema_version": 2,
         "proposal_id": "p_2026-10-21_card_hmbs_01_04",
         "push_id": "2026-10-21_card_hmbs_01",
-        "op": "update_proposition_content",
+        "op": "update_proposition_review",
         "target_type": "proposition",
         "target_id": "prop_hmbs_aip",
         "diff": {
           "op": "replace",
-          "path": "content",
-          "value": "HMBS 功能缺失使血红素合成受阻，ALA 与卟啉前体在肝细胞中积聚，进而造成线粒体功能障碍并表现为急性间歇性卟啉症（AIP）。"
+          "path": "review",
+          "value": "## 结论\nHMBS 功能缺失使血红素合成受阻，ALA 与卟啉前体在肝细胞中积聚，进而造成线粒体功能障碍并表现为 AIP。\n## 支持证据\n肝细胞模型显示 HMBS 缺失升高 ALA 并损伤线粒体。\n## 反证与边界\n现有证据以细胞与病例为主，缺少人群剂量—反应数据。\n## 待验证\n需要在原代肝细胞与动物模型中复核线粒体通路。"
         },
         "before": "HMBS 功能缺失导致急性间歇性卟啉症（AIP）。",
-        "after": "HMBS 功能缺失使血红素合成受阻，ALA 与卟啉前体在肝细胞中积聚，进而造成线粒体功能障碍并表现为急性间歇性卟啉症（AIP）。",
+        "after": "## 结论\nHMBS 功能缺失使血红素合成受阻，ALA 与卟啉前体在肝细胞中积聚，进而造成线粒体功能障碍并表现为 AIP。\n## 支持证据\n肝细胞模型显示 HMBS 缺失升高 ALA 并损伤线粒体。\n## 反证与边界\n现有证据以细胞与病例为主，缺少人群剂量—反应数据。\n## 待验证\n需要在原代肝细胞与动物模型中复核线粒体通路。",
         "rationale": "原命题只有终点，补上血红素合成受阻与线粒体损伤这条中间链路。",
         "confidence": 0.6,
         "evidence": {
@@ -74,15 +74,20 @@
           "op": "add",
           "path": "evidence",
           "value": {
-            "paper_id": "europepmc_42900001",
-            "page": 6,
-            "quote": "We show that HMBS loss increases delta-aminolevulinic acid and impairs mitochondrial function.",
-            "section": "results"
+            "conclusion": "HMBS 缺失升高 ALA 并损伤肝细胞线粒体功能。",
+            "stance": "supports",
+            "papers": [
+              {
+                "paper_id": "europepmc_42900001",
+                "page": 6,
+                "quote": "We show that HMBS loss increases delta-aminolevulinic acid and impairs mitochondrial function."
+              }
+            ]
           }
         },
         "before": 0,
         "after": 1,
-        "rationale": "把这次肝细胞模型的直接证据挂到命题 history 上。",
+        "rationale": "把这次肝细胞模型的直接证据加入命题的证据条目。",
         "confidence": 0.9,
         "evidence": {
           "paper_id": "europepmc_42900001",

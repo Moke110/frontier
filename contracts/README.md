@@ -200,14 +200,14 @@ checkpoints:
 }
 ```
 
-## 5.1 长文推送 `format: pdf`
+## 5.1 长文推送 `format: html`
 
 正式流程使用长文 PDF；`format` 缺省或为 `card` 时仍按 §5 的四段卡片处理（离线 fallback）。
 
 ```json
 {
   "schema_version": 1,
-  "format": "pdf",
+  "format": "html",
   "push_id": "2026-10-20_card_hmbs_01",
   "date": "2026-10-20",
   "checkpoint_id": "card_hmbs",
@@ -276,24 +276,41 @@ python -m archive.cli context --card card_hmbs       # 卡片 + 命题 + 历史�
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "id": "prop_hmbs_aip",
   "title": "HMBS 功能缺失导致 AIP",
-  "content": "HMBS 功能缺失导致急性间歇性卟啉症（AIP）。",
+  "review": "## 结论\n…\n## 支持证据\n…\n## 反证与边界\n…\n## 待验证\n…",
   "related_knowledge": ["card_hmbs", "card_aip"],
-  "history": [
+  "evidence": [
+    {
+      "id": "ev_hmbs_aip_01",
+      "stance": "supports",
+      "conclusion": "多项病例与酶学研究一致显示 HMBS 活性下降导致 AIP。",
+      "papers": [
+        {
+          "paper_id": "europepmc_42888036",
+          "push_id": "2026-10-16_card_hmbs_01",
+          "page": 3,
+          "quote": "原文引文",
+          "added_at": "2026-10-16T09:00:00+08:00"
+        }
+      ],
+      "created_at": "2026-10-16T09:00:00+08:00",
+      "updated_at": "2026-10-16T09:00:00+08:00"
+    }
+  ],
+  "changelog": [
     {
       "at": "2026-10-20T09:00:00+08:00",
       "action": "created",
-      "source": { "kind": "paper | push | user | migration | cli", "id": "…" },
+      "field": "review",
       "before": null,
-      "after": { "title": "…", "content": "…", "related_knowledge": ["…"] },
-      "rationale": "为什么改",
-      "evidence": [
-        { "paper_id": "europepmc_42830441", "push_id": "…", "page": 7, "quote": "原文引文" }
-      ]
+      "after": "…",
+      "rationale": "初始构建",
+      "source": { "kind": "initial-build | push | user | migration | cli", "id": "…" }
     }
   ],
+  "evidence_updates_since_review": 0,
   "created_at": "2026-10-20T09:00:00+08:00",
   "updated_at": "2026-10-20T09:00:00+08:00"
 }
@@ -301,10 +318,14 @@ python -m archive.cli context --card card_hmbs       # 卡片 + 命题 + 历史�
 
 约束：
 
-- `related_knowledge` 至少 2 个**已存在**的卡片 id，不得重复；
-- `history` 非空，`action ∈ created | content_changed | title_changed | related_knowledge_changed | evidence_added`；
-- 改 title / content / related_knowledge 必须追加 history（`archive.store.update_prop` 会做）；
-- 证据只存在 history 里，不再有顶层 `evidence` 字段。
+- `related_knowledge` 至少 2 个**已存在**的卡片 id，不得重复。
+- `review` 非空、≤2000 字；固定四节（结论 / 支持证据 / 反证与边界 / 待验证）。
+- `evidence[]` 每条：`stance ∈ supports|contradicts`、`conclusion` 1–200 字、`papers[]` 至少一篇；
+  每篇带 `paper_id / page / quote`，`quote` 8–500 字，`page` 为 ≥1 整数或 `null`（摘要）。
+- 同一条 evidence 内只放方向一致的报道；不同 evidence 可以互相矛盾。
+- `changelog` 非空，只记 title / review / related_knowledge 的变更；证据更新不进 changelog。
+- 新建命题必须带 ≥2 条 evidence。
+- 迁移：旧 `history[].evidence` 每个条目拆成一条 evidence，标 `migrated_from_v2`。
 
 写入命令：
 
@@ -312,6 +333,7 @@ python -m archive.cli context --card card_hmbs       # 卡片 + 命题 + 历史�
 python -m archive.cli prop-put --file prop.json
 python -m archive.cli prop-get prop_hmbs_aip
 python -m archive.cli prop-list --card card_hmbs
+python -m archive.cli migrate-v3 [--dry-run] [--rollback <backup>]
 ```
 
 ## 8. 评分 `ratings.jsonl`（publisher → editor / frontier）
@@ -362,17 +384,20 @@ python -m archive.cli prop-list --card card_hmbs
 | `add_card_ontology` | `card` | 已有卡片 id | `ontology` | 新词（string）或词列表 | 当前 ontology / 追加后的 ontology |
 | `update_card_annotation` | `card` | 已有卡片 id | `annotation` | 新 annotation | 当前 annotation / 新 annotation |
 | `create_card` | `none` | `null` | `card` | `{id?, label, ontology, annotation}` | `null` / 新卡片对象 |
-| `create_proposition` | `none` | `null` | `proposition` | `{id?, title, content, related_knowledge}` | `null` / 新命题对象 |
+| `create_proposition` | `none` | `null` | `proposition` | `{id?, title, review, related_knowledge, evidence[≥2]}` | `null` / 新命题对象 |
 | `update_proposition_title` | `proposition` | 已有命题 id | `title` | 新标题 | 当前标题 / 新标题 |
-| `update_proposition_content` | `proposition` | 已有命题 id | `content` | 新内容 | 当前内容 / 新内容 |
-| `add_proposition_evidence` | `proposition` | 已有命题 id | `evidence` | 与顶层 `evidence` 相同 | 当前证据条数 / +1 |
+| `update_proposition_review` | `proposition` | 已有命题 id | `review` | 新综述（20–2000 字） | 当前综述 / 新综述 |
+| `add_proposition_evidence` | `proposition` | 已有命题 id | `evidence` | `{conclusion≤200, stance, papers[]}` | 当前证据条数 / +1 |
+| `merge_proposition_evidence` | `proposition` | 已有命题 id | `evidence` | `{target_evidence_id, papers[], conclusion?}` | 目标条目当前报道数 / +新增报道数 |
 | `update_proposition_related_knowledge` | `proposition` | 已有命题 id | `related_knowledge` | ≥2 张已有卡片 id | 当前列表 / 新列表 |
 
 ### 9.2 约束
 
 - `evidence` 每条必填：`paper_id` 必须是本次 `push.paper_ids` 之一；`page` 是 ≥1 的整数，摘要引文可为 `null`；`quote` 是 8–500 字的原文片段。证据必须可追溯到该论文，不得编造。
 - `before` 必须与 writer task 快照一致（防陈旧 diff）；`after` 必须等于 `diff.value`（或按操作表推导），且不得与 `before` 相同。
+- 证据提议的 `papers[]` 每篇都要带 `paper_id / page / quote`；`paper_id` 必须是本次 push 的论文。
 - `create_proposition.related_knowledge` 至少 2 张**已存在**卡片；同一次推送新建的卡片不能立刻被新命题引用。
+- `create_proposition.evidence` 至少 2 条；每条 `conclusion ≤200` 字。
 - `proposal_id` 形如 `p_<push_id>_<NN>`；同一 push 内唯一；`status` 只能是 `draft`。
 - writer **不写 archive**；同意后由 archive 按操作表落盘（`archive.cli apply-proposal` / 队列的 `apply-group`）。
 - v1 迁移来的旧提议标 `status: historical`，不补问；archive 仍能识别旧 `kind`，但新 writer 只产出上表操作。

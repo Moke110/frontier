@@ -68,7 +68,7 @@ python -m editor.cli check --task editor-task.json --selection selection.json
 {
   "schema_version": 2,
   "kind": "writer-task",
-  "format": "pdf",
+  "format": "html",
   "date": "2026-10-21",
   "instructions": "……七段结构、HTML 片段、图片、引用、提议规则……",
   "archive_cli": "python -m archive.cli",
@@ -91,18 +91,20 @@ python -m editor.cli check --task editor-task.json --selection selection.json
           {
             "id": "prop_hmbs_aip",
             "title": "…",
-            "content": "…",
+            "review": "## 结论\n…\n## 支持证据\n…\n## 反证与边界\n…\n## 待验证\n…",
             "related_knowledge": ["card_hmbs", "card_aip"],
-            "history": [
+            "evidence": [
               {
-                "at": "…",
-                "action": "created",
-                "before": null,
-                "after": { "…": "…" },
-                "rationale": "…",
-                "evidence": [{ "paper_id": "…", "page": 3, "quote": "…" }]
+                "id": "ev_hmbs_aip_01",
+                "stance": "supports",
+                "conclusion": "≤200 字",
+                "papers": [{ "paper_id": "…", "page": 3, "quote": "…", "added_at": "…" }],
+                "created_at": "…",
+                "updated_at": "…"
               }
-            ]
+            ],
+            "evidence_updates_since_review": 3,
+            "review_due": false
           }
         ],
         "cards": [ { "id": "card_aip", "label": "AIP", "ontology": ["…"], "annotation": "…" } ],
@@ -115,10 +117,11 @@ python -m editor.cli check --task editor-task.json --selection selection.json
     "add_card_ontology": "给现有卡片加 ontology 词：target_type=card，diff.path=ontology",
     "update_card_annotation": "改写卡片 annotation：target_type=card，diff.path=annotation",
     "create_card": "新建卡片：target_type=none，value=label+ontology+annotation",
-    "create_proposition": "新建命题：target_type=none，value=title+content+related_knowledge（≥2 张已有卡）",
+    "create_proposition": "新建命题：target_type=none，value=title+review+related_knowledge（≥2 张已有卡）+evidence（≥2 条）",
     "update_proposition_title": "改命题标题：target_type=proposition，diff.path=title",
-    "update_proposition_content": "改命题内容：target_type=proposition，diff.path=content",
-    "add_proposition_evidence": "给命题补证据：target_type=proposition，value={paper_id,page,quote}",
+    "update_proposition_review": "改写综述：target_type=proposition，diff.path=review",
+    "add_proposition_evidence": "新建证据条目：target_type=proposition，value={conclusion,stance,papers[]}",
+    "merge_proposition_evidence": "并入已有证据：target_type=proposition，value={target_evidence_id,papers[],conclusion?}",
     "update_proposition_related_knowledge": "改命题关联卡片：target_type=proposition，diff.path=related_knowledge"
   },
   "output": {
@@ -174,18 +177,19 @@ python -m writer.cli figures --selection selection.json --out outbox
 | `add_card_ontology` | 已有 card | `ontology` / 新词或词列表 | 当前列表 → 追加后列表 |
 | `update_card_annotation` | 已有 card | `annotation` / 新文本 | 当前文本 → 新文本 |
 | `create_card` | 无 | `card` / `{id?, label, ontology, annotation}` | `null` → 新卡片 |
-| `create_proposition` | 无 | `proposition` / `{id?, title, content, related_knowledge}` | `null` → 新命题 |
+| `create_proposition` | 无 | `proposition` / `{id?, title, review, related_knowledge, evidence[≥2]}` | `null` → 新命题 |
 | `update_proposition_title` | 已有 prop | `title` / 新标题 | 当前标题 → 新标题 |
-| `update_proposition_content` | 已有 prop | `content` / 新内容 | 当前内容 → 新内容 |
-| `add_proposition_evidence` | 已有 prop | `evidence` / 与顶层 evidence 相同 | 当前证据数 → +1 |
+| `update_proposition_review` | 已有 prop | `review` / 新综述 | 当前综述 → 新综述（20–2000 字） |
+| `add_proposition_evidence` | 已有 prop | `evidence` / `{conclusion≤200, stance, papers[]}` | 当前证据数 → +1 |
+| `merge_proposition_evidence` | 已有 prop | `evidence` / `{target_evidence_id, papers[], conclusion?}` | 目标条目报道数 → +新增报道数 |
 | `update_proposition_related_knowledge` | 已有 prop | `related_knowledge` / ≥2 卡 id | 当前列表 → 新列表 |
 
 硬规则（`writer check` 会逐条校验）：
 
 1. 每篇推送最多 **2 个实体目标**（知识卡片 + 命题合计，新建也占名额）；同一目标的多个操作合并成一个更新题，不重复占名额。
 2. `before` 必须等于任务快照里的当前值（防陈旧 diff）；`after` 必须等于 `diff.value`（或按上表推导），且必须发生变化。
-3. `evidence.paper_id` 必须是 `push.paper_ids` 之一；`page` 为 ≥1 整数或 `null`（摘要引文）；`quote` 8–500 字。
-4. `create_proposition.related_knowledge` ≥2 张**已存在**卡片；本次新建的卡片不能在同一 push 里被新命题引用。
+3. 证据每篇报道的 `paper_id` 必须是 `push.paper_ids` 之一；`page` 为 ≥1 整数或 `null`（摘要引文）；`quote` 8–500 字；`conclusion` 1–200 字；`stance ∈ supports|contradicts`。
+4. `create_proposition.related_knowledge` ≥2 张**已存在**卡片；本次新建的卡片不能在同一 push 里被新命题引用；`create_proposition` 必须带 ≥2 条证据。
 5. `create_card.id` / `create_proposition.id` 可省略（由 archive 按 label/title 生成），给定时必须符合 `card_<slug>` / `prop_<slug>`。
 6. 目标必须存在于本 item 的 `context`；不得编造卡片、命题或论文。
 7. `proposal_id` 在 push 内唯一，`status` 只能 `draft`；writer 永不直接写 `archive/`。

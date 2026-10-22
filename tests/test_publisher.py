@@ -188,3 +188,19 @@ def test_send_cli_exits_non_zero_on_duplicate(kl_home, tmp_path):
         ]
     )
     assert code == 1
+
+
+def test_send_push_accepts_a_self_contained_html_file(kl_home, tmp_path):
+    html_path = tmp_path / "2026-10-20_hmbs_02.html"
+    html_path.write_text("<!doctype html><p>hello</p>", encoding="utf-8")
+    push = {**PUSH_PDF, "push_id": "2026-10-20_hmbs_03", "paper_ids": ["p_html"]}
+    result = send_push(kl_home, push, html_path, "ou_demo", dry_run=True)
+    assert result["ok"] is True
+    assert result["file_type"] == "html"
+    assert result["html"].endswith(".html")
+    assert result["html_message_id"].startswith("offline_file_")
+    outbox = kl_home / "publisher" / "outbox"
+    assert any(
+        json.loads(path.read_text()).get("file_type") == "html"
+        for path in outbox.glob("*.json")
+    )

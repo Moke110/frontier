@@ -8,7 +8,9 @@ agent never has to know the final file path or caption markup.
 
 from __future__ import annotations
 
+import base64
 import html
+import mimetypes
 import re
 from pathlib import Path
 
@@ -44,6 +46,7 @@ JS_URL_RE = re.compile(r"javascript\s*:", re.IGNORECASE)
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "templates" / "push.html"
 STYLE = HERE / "templates" / "push.css"
+WEB_STYLE = HERE / "templates" / "push-web.css"
 
 SOURCE_LABEL = {
     "arxiv": "arXiv",
@@ -160,7 +163,16 @@ def inspect(push: dict, base_dir: Path) -> list[str]:
     return errors
 
 
-def expand_figures(fragment: str, assets: dict[str, dict], base_dir: Path) -> str:
+def _data_uri(path: Path) -> str:
+    mime, _ = mimetypes.guess_type(path.name)
+    mime = mime or "application/octet-stream"
+    payload = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{payload}"
+
+
+def expand_figures(
+    fragment: str, assets: dict[str, dict], base_dir: Path, *, inline: bool = False
+) -> str:
     def replace(match: re.Match) -> str:
         aid = match.group(1)
         asset = assets[aid]
@@ -171,9 +183,10 @@ def expand_figures(fragment: str, assets: dict[str, dict], base_dir: Path) -> st
         pill = "原文图" if source == "paper" else "生成图"
         pill_class = "source-pill" if source == "paper" else "source-pill generated"
         alt = html.escape((asset.get("caption") or aid)[:160], quote=True)
+        src = _data_uri(path) if inline else path.as_uri()
         return (
             '<figure class="push-figure">'
-            f'<img src="{path.as_uri()}" alt="{alt}">'
+            f'<img src="{src}" alt="{alt}">'
             "<figcaption>"
             f"{html.escape(asset['caption'], quote=False)}"
             f'<span class="{pill_class}">{pill}</span>'
@@ -206,13 +219,13 @@ def _meta_rows(push: dict) -> str:
     )
 
 
-def build_html(push: dict) -> str:
+def build_html(push: dict, *, web: bool = False) -> str:
     base_dir = Path(push["_base_dir"])
     body = push.get("body_html") or ""
     assets, asset_errors = _asset_map(push)
     if asset_errors:
         raise RenderError("; ".join(asset_errors))
-    body = expand_figures(body, assets, base_dir)
+    body = expand_figures(body, assets, base_dir, inline=web)
 
     sections = push.get("sections") or {}
     paper = push.get("paper") or {}
@@ -220,7 +233,7 @@ def build_html(push: dict) -> str:
     kicker = f"FRONTIER · {label}"
 
     template = TEMPLATE.read_text(encoding="utf-8")
-    css = STYLE.read_text(encoding="utf-8")
+    css = (WEB_STYLE if web else STYLE).read_text(encoding="utf-8")
     replacements = {
         "{{CSS}}": css,
         "{{TITLE}}": html.escape(_text(push.get("title"))),
@@ -237,8 +250,34 @@ def build_html(push: dict) -> str:
     return template
 
 
+def render_html(push_path: Path, out_path: Path | None = None) -> dict:
+    """Render a self-contained responsive HTML file (inline CSS + base64 images)."""
+    push_path = Path(push_path).resolve()
+    push = read_json(push_path)
+    if not push:
+        raise RenderError(f"no push at {push_path}")
+    push = {**push, "_base_dir": str(push_path.parent)}
+    errors = inspect(push, push_path.parent)
+    if errors:
+        raise RenderError("; ".join(errors))
+
+    out_path = Path(out_path) if out_path else push_path.with_suffix(".html")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    document_html = build_html(push, web=True)
+    out_path.write_text(document_html, encoding="utf-8")
+    return {
+        "ok": True,
+        "push_id": push.get("push_id"),
+        "html": str(out_path),
+        "bytes": out_path.stat().st_size,
+        "figures": len(push.get("assets") or []),
+    }
+
+
 def render_push(push_path: Path, out_path: Path | None = None) -> dict:
     push_path = Path(push_path).resolve()
+    if out_path is not None and Path(out_path).suffix.lower() in (".html", ".htm"):
+        return render_html(push_path, Path(out_path))
     push = read_json(push_path)
     if not push:
         raise RenderError(f"no push at {push_path}")

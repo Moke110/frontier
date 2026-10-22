@@ -33,7 +33,7 @@
       },
       {
         "tag": "markdown",
-        "content": "**改写命题标题**\n<font color='grey'>原</font> HMBS 功能缺失导致急性间歇性卟啉症（AIP）\n**新** HMBS 缺失通过血红素合成障碍导致 AIP\n\n**改写命题内容**\n<font color='red'>- HMBS 功能缺失导致急性间歇性卟啉症（AIP）。</font>\n<font color='green'>+ HMBS 功能缺失使血红素合成受阻，ALA 与卟啉前体在肝细胞中积聚，进而造成线粒体功能障碍并表现为急性间歇性卟啉症（AIP）。</font>\n\n**补充证据**\n> We show that HMBS loss increases delta-aminolevulinic acid and impairs mitochondrial function.\n<font color='grey'>第 6 页</font>"
+        "content": "**改写命题标题**\n<font color='grey'>原</font> HMBS 功能缺失导致急性间歇性卟啉症（AIP）\n**新** HMBS 缺失通过血红素合成障碍导致 AIP\n\n**改写命题综述**\n<font color='red'>- HMBS 功能缺失导致急性间歇性卟啉症（AIP）。</font>\n<font color='green'>+ ## 结论</font>\n<font color='green'>+ HMBS 功能缺失使血红素合成受阻，ALA 与卟啉前体在肝细胞中积聚，进而造成线粒体功能障碍并表现为 AIP。</font>\n<font color='green'>+ ## 支持证据</font>\n<font color='green'>+ 肝细胞模型显示 HMBS 缺失升高 ALA 并损伤线粒体。</font>\n<font color='grey'>…</font>\n\n**新增证据**\n<font color='grey'>立场：支持</font>\nHMBS 缺失升高 ALA 并损伤肝细胞线粒体功能。\n> We show that HMBS loss increases delta-aminolevulinic acid and impairs mitochondrial function.\n<font color='grey'>《europepmc_42900001》 · 第 6 页</font>"
       },
       {
         "tag": "markdown",
@@ -41,7 +41,7 @@
       },
       {
         "tag": "markdown",
-        "content": "<font color='grey'>理由：把这次肝细胞模型的直接证据挂到命题 history 上。 · 置信度 0.9</font>"
+        "content": "<font color='grey'>理由：把这次肝细胞模型的直接证据加入命题的证据条目。 · 置信度 0.9</font>"
       },
       {
         "tag": "column_set",

@@ -13,7 +13,7 @@ from common import now, read_json
 from writer.model import _context
 from writer.render import inspect as inspect_pdf
 
-INSTRUCTIONS = """你是知识循环的写作者。对每个 item 写一篇长文推送（push JSON，format=pdf）：
+INSTRUCTIONS = """你是知识循环的写作者。对每个 item 写一篇长文推送（push JSON，format=html）：
 1) 先运行 figures 命令取图：python -m writer.cli figures --selection <selection.json> --out <outbox>；
    它会把原文图或生成图落到 outbox/assets/<push_id>/，并返回 assets 列表；
 2) 七个 sections 都必填：takeaway / background / methods / results / why / limits / sources；
@@ -27,9 +27,13 @@ INSTRUCTIONS = """你是知识循环的写作者。对每个 item 写一篇长�
 6) sections.sources 必须包含原文 URL；paper 元数据（authors / journal / published / url）要保留；
 7) 如果原文足以更新知识卡或命题，在 proposals 里提出，op 只能是：
    add_card_ontology / update_card_annotation / create_card /
-   create_proposition / update_proposition_title / update_proposition_content /
-   add_proposition_evidence / update_proposition_related_knowledge；
+   create_proposition / update_proposition_title / update_proposition_review /
+   add_proposition_evidence / merge_proposition_evidence /
+   update_proposition_related_knowledge；
    每条都要有 diff / before / after / rationale / confidence / evidence；
+   证据条目：conclusion ≤200 字、stance=supports|contradicts、papers[] 每篇带 paper_id/page/quote；
+   同立场且结论同向用 merge_proposition_evidence，否则 add_proposition_evidence；
+   新建命题必须带 ≥2 条证据；review ≤2000 字；
 8) 每篇推送最多 2 个实体目标（知识卡片 + 命题合计；新建也占名额；同一目标的多个操作合并成一个更新题）；
 9) proposals 一律 status=draft，绝不直接改 archive。
 输出目录 outbox/pushes，一个 push 一个文件，文件名 = push_id。
@@ -39,18 +43,20 @@ CARD_OPS = {"add_card_ontology", "update_card_annotation", "create_card"}
 PROP_OPS = {
     "create_proposition",
     "update_proposition_title",
-    "update_proposition_content",
+    "update_proposition_review",
     "add_proposition_evidence",
+    "merge_proposition_evidence",
     "update_proposition_related_knowledge",
 }
 PROPOSAL_KINDS = {
     "add_card_ontology": "给现有卡片加 ontology 词：target_type=card，diff.path=ontology",
     "update_card_annotation": "改写卡片 annotation：target_type=card，diff.path=annotation",
     "create_card": "新建卡片：target_type=none，value=label+ontology+annotation",
-    "create_proposition": "新建命题：target_type=none，value=title+content+related_knowledge（≥2 张已有卡）",
+    "create_proposition": "新建命题：target_type=none，value=title+review+related_knowledge（≥2 张已有卡）+evidence（≥2 条）",
     "update_proposition_title": "改命题标题：target_type=proposition，diff.path=title",
-    "update_proposition_content": "改命题内容：target_type=proposition，diff.path=content",
-    "add_proposition_evidence": "给命题补证据：target_type=proposition，value={paper_id,page,quote}",
+    "update_proposition_review": "改写综述：target_type=proposition，diff.path=review（仅综述题使用）",
+    "add_proposition_evidence": "新建证据条目：value={conclusion≤200, stance, papers[]}",
+    "merge_proposition_evidence": "并入已有证据：value={target_evidence_id, papers[], conclusion?}",
     "update_proposition_related_knowledge": "改命题关联卡片：target_type=proposition，diff.path=related_knowledge",
 }
 MAX_TARGETS = 2
@@ -111,7 +117,7 @@ def build_task(home: Path, selection: dict, date: str) -> dict:
     return {
         "schema_version": 2,
         "kind": "writer-task",
-        "format": "pdf",
+        "format": "html",
         "date": date,
         "generated_at": now(),
         "instructions": INSTRUCTIONS,
@@ -154,7 +160,7 @@ def _target_sets(task: dict) -> tuple[dict[str, dict], dict[str, dict]]:
 
 
 def _evidence_count(prop: dict) -> int:
-    return sum(len(h.get("evidence", [])) for h in prop.get("history", []))
+    return len(prop.get("evidence") or [])
 
 
 def _validate_evidence(evidence, paper_ids: list[str], where: str, pid: str) -> list[str]:
@@ -170,6 +176,45 @@ def _validate_evidence(evidence, paper_ids: list[str], where: str, pid: str) -> 
     quote = evidence.get("quote")
     if not isinstance(quote, str) or not (8 <= len(quote.strip()) <= 500):
         errors.append(f"{where}: proposal {pid} evidence.quote must be 8..500 characters")
+    return errors
+
+
+def _validate_paper(paper, paper_ids: list[str], where: str, pid: str) -> list[str]:
+    errors = []
+    if not isinstance(paper, dict):
+        return [f"{where}: proposal {pid} evidence paper must be an object"]
+    paper_id = paper.get("paper_id")
+    if paper_id not in paper_ids:
+        errors.append(
+            f"{where}: proposal {pid} evidence.paper_id {paper_id!r} is not the pushed paper"
+        )
+    page = paper.get("page")
+    if page is not None and (not isinstance(page, int) or page < 1):
+        errors.append(f"{where}: proposal {pid} evidence.page must be a positive integer or null")
+    quote = paper.get("quote")
+    if not isinstance(quote, str) or not (8 <= len(quote.strip()) <= 500):
+        errors.append(f"{where}: proposal {pid} evidence.quote must be 8..500 characters")
+    return errors
+
+
+def _validate_evidence_entry(
+    entry, paper_ids: list[str], where: str, pid: str, index: int
+) -> list[str]:
+    errors = []
+    if not isinstance(entry, dict):
+        return [f"{where}: proposal {pid} evidence[{index}] must be an object"]
+    conclusion = entry.get("conclusion")
+    if not isinstance(conclusion, str) or not (1 <= len(conclusion.strip()) <= 200):
+        errors.append(f"{where}: proposal {pid} evidence[{index}] conclusion must be 1..200 chars")
+    stance = entry.get("stance")
+    if stance not in ("supports", "contradicts"):
+        errors.append(f"{where}: proposal {pid} evidence[{index}] stance must be supports or contradicts")
+    papers = entry.get("papers")
+    if not isinstance(papers, list) or not papers:
+        errors.append(f"{where}: proposal {pid} evidence[{index}] needs at least one paper")
+    else:
+        for paper in papers:
+            errors.extend(_validate_paper(paper, paper_ids, where, pid))
     return errors
 
 
@@ -210,7 +255,8 @@ def _validate_proposals(
         rationale = proposal.get("rationale")
         if not isinstance(rationale, str) or len(rationale.strip()) < 8:
             errors.append(f"{where}: proposal {pid} needs a rationale")
-        errors.extend(_validate_evidence(proposal.get("evidence"), paper_ids, where, pid))
+        if op not in ("add_proposition_evidence", "merge_proposition_evidence"):
+            errors.extend(_validate_evidence(proposal.get("evidence"), paper_ids, where, pid))
 
         diff = proposal.get("diff") or {}
         value = diff.get("value")
@@ -277,13 +323,14 @@ def _validate_proposals(
                     errors.append(f"{where}: proposal {pid} create_proposition needs diff.value object")
                     continue
                 title = value.get("title")
-                content = value.get("content")
+                review = value.get("review")
                 related = value.get("related_knowledge")
+                evidence = value.get("evidence")
                 prop_id = value.get("id")
                 if not isinstance(title, str) or not title.strip():
                     errors.append(f"{where}: proposal {pid} create_proposition needs title")
-                if not isinstance(content, str) or len(content.strip()) < 20:
-                    errors.append(f"{where}: proposal {pid} create_proposition needs content")
+                if not isinstance(review, str) or not (20 <= len(review.strip()) <= 2000):
+                    errors.append(f"{where}: proposal {pid} create_proposition needs review (20..2000 chars)")
                 if not isinstance(related, list) or len(set(related)) < 2:
                     errors.append(
                         f"{where}: proposal {pid} create_proposition needs >=2 related_knowledge cards"
@@ -295,6 +342,11 @@ def _validate_proposals(
                                 f"{where}: proposal {pid} references unknown card {card_id} "
                                 "(new cards cannot be linked in the same push)"
                             )
+                if not isinstance(evidence, list) or len(evidence) < 2:
+                    errors.append(f"{where}: proposal {pid} create_proposition needs >=2 evidence entries")
+                else:
+                    for index, entry in enumerate(evidence, start=1):
+                        errors.extend(_validate_evidence_entry(entry, paper_ids, where, pid, index))
                 if prop_id and not PROP_ID_RE.match(str(prop_id)):
                     errors.append(f"{where}: proposal {pid} proposition id must look like prop_<slug>")
                 key = prop_id or f"new:{title}"
@@ -312,11 +364,16 @@ def _validate_proposals(
                         errors.append(f"{where}: proposal {pid} before does not match proposition title")
                     if not isinstance(value, str) or not value.strip() or after != value or after == before:
                         errors.append(f"{where}: proposal {pid} needs a changed title")
-                elif op == "update_proposition_content":
-                    if before != prop.get("content", ""):
-                        errors.append(f"{where}: proposal {pid} before does not match proposition content")
-                    if not isinstance(value, str) or len(value.strip()) < 20 or after != value or after == before:
-                        errors.append(f"{where}: proposal {pid} needs a changed content")
+                elif op == "update_proposition_review":
+                    if before != prop.get("review", ""):
+                        errors.append(f"{where}: proposal {pid} before does not match proposition review")
+                    if (
+                        not isinstance(value, str)
+                        or not (20 <= len(value.strip()) <= 2000)
+                        or after != value
+                        or after == before
+                    ):
+                        errors.append(f"{where}: proposal {pid} needs a changed review (20..2000 chars)")
                 elif op == "update_proposition_related_knowledge":
                     current = list(prop.get("related_knowledge", []))
                     if before != current:
@@ -330,16 +387,63 @@ def _validate_proposals(
                     if after != value or after == before:
                         errors.append(f"{where}: proposal {pid} must change related_knowledge")
                 elif op == "add_proposition_evidence":
-                    evidence = proposal.get("evidence") or {}
                     if not isinstance(value, dict):
-                        errors.append(f"{where}: proposal {pid} needs diff.value evidence")
+                        errors.append(f"{where}: proposal {pid} needs diff.value evidence entry")
                     else:
-                        if any(value.get(k) != evidence.get(k) for k in ("paper_id", "page", "quote")):
-                            errors.append(f"{where}: proposal {pid} diff.value must equal evidence")
+                        errors.extend(
+                            _validate_evidence_entry(
+                                value, paper_ids, where, pid, _evidence_count(prop) + 1
+                            )
+                        )
+                        evidence_id = value.get("evidence_id") or value.get("id")
+                        if evidence_id and evidence_id in {
+                            e.get("id") for e in prop.get("evidence", [])
+                        }:
+                            errors.append(f"{where}: proposal {pid} evidence id {evidence_id} already exists")
                     if before != _evidence_count(prop):
                         errors.append(f"{where}: proposal {pid} before must be current evidence count")
                     if after != _evidence_count(prop) + 1:
                         errors.append(f"{where}: proposal {pid} after must be before + 1")
+                elif op == "merge_proposition_evidence":
+                    if not isinstance(value, dict):
+                        errors.append(f"{where}: proposal {pid} needs diff.value evidence entry")
+                        continue
+                    target_evidence = next(
+                        (
+                            e
+                            for e in prop.get("evidence", [])
+                            if e.get("id") == value.get("target_evidence_id")
+                        ),
+                        None,
+                    )
+                    if not target_evidence:
+                        errors.append(
+                            f"{where}: proposal {pid} targets unknown evidence "
+                            f"{value.get('target_evidence_id')!r}"
+                        )
+                        continue
+                    papers = value.get("papers")
+                    if not isinstance(papers, list) or not papers:
+                        errors.append(f"{where}: proposal {pid} needs papers to merge")
+                        papers = []
+                    new_ids = set()
+                    for paper in papers:
+                        errors.extend(_validate_paper(paper, paper_ids, where, pid))
+                        new_ids.add(paper.get("paper_id"))
+                    existing = {p.get("paper_id") for p in target_evidence.get("papers", [])}
+                    added = len(new_ids - existing)
+                    conclusion = value.get("conclusion")
+                    if conclusion is not None and (
+                        not isinstance(conclusion, str)
+                        or not (1 <= len(conclusion.strip()) <= 200)
+                    ):
+                        errors.append(f"{where}: proposal {pid} merged conclusion must be 1..200 chars")
+                    if not added and conclusion is None:
+                        errors.append(f"{where}: proposal {pid} merge must add a paper or a conclusion")
+                    if before != len(target_evidence.get("papers", [])):
+                        errors.append(f"{where}: proposal {pid} before must be current paper count")
+                    if after != before + added:
+                        errors.append(f"{where}: proposal {pid} after must be before + new papers")
 
     if len(dict.fromkeys(targets)) > MAX_TARGETS:
         errors.append(

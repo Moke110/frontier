@@ -99,6 +99,45 @@ def _spawn_pending(home: Path, owner: str) -> dict:
     return {"ok": True, "pid": pid}
 
 
+def _spawn_review(home: Path, owner: str, item_id: str) -> dict:
+    """Start the review-writing agent for one queued review item."""
+    repo = Path(__file__).resolve().parents[1]
+    home = Path(home)
+    cmd = [sys.executable, "-m", "trigger.cli", "--home", str(home)]
+    if owner:
+        cmd += ["--owner", owner]
+    cmd += ["review-request", "--item", item_id]
+    env = {**os.environ, "KL_HOME": str(home)}
+    log_path = home / "publisher" / "trigger-spawn.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(f"\n--- {now()} spawn review: {' '.join(cmd)}\n")
+            log.flush()
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(repo),
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+    except OSError as exc:
+        _spawn_log(home, {"schema_version": 1, "at": now(), "kind": "review_spawn_failed", "error": str(exc)})
+        _spawn_alert(owner, f"命题综述生成启动失败：{exc}")
+        return {"ok": False, "reason": "spawn_failed", "error": str(exc)}
+    _spawn_log(
+        home,
+        {"schema_version": 1, "at": now(), "kind": "review_spawn", "item_id": item_id, "pid": proc.pid},
+    )
+    time.sleep(0.5)
+    code = proc.poll()
+    if code not in (None, 0):
+        _spawn_alert(owner, f"命题综述生成进程异常退出（exit {code}），请查看 trigger-spawn.log。")
+        return {"ok": False, "reason": "spawn_exited", "code": code}
+    return {"ok": True, "pid": proc.pid}
+
+
 def _deliver_next(
     home: Path,
     store: PublisherStore,
@@ -113,8 +152,24 @@ def _deliver_next(
     if not item:
         return None
     push = push_override or read_json(_push_path(home, item["push_id"]))
-    if not push:
+    if not push and item["kind"] != "proposition_review":
         return None
+    file_message_id = (item.get("payload") or {}).get("file_message_id")
+    if item["kind"] == "proposition_review":
+        html_path = (item.get("payload") or {}).get("html_path")
+        if html_path and not file_message_id:
+            if dry_run:
+                file_message_id = f"offline_review_file_{item['id']}"
+            else:
+                file_message_id = feishu.send_file(target, html_path, identity)["message_id"]
+            store.record_message(
+                file_message_id,
+                "review_file",
+                item.get("push_id"),
+                target=target,
+                queue_item_id=item["id"],
+            )
+            queue.mark_review_file_sent(item["id"], file_message_id)
     if item["kind"] == "rating":
         card = build_rating_card(push)
     else:
@@ -124,7 +179,7 @@ def _deliver_next(
         )
         card = build_update_card(push, item, index, len(siblings))
     proposal_ids = item.get("payload", {}).get("proposal_ids") or []
-    kind = "rating" if item["kind"] == "rating" else "update"
+    kind = item["kind"] if item["kind"] in ("rating", "proposition_review") else "update"
     if dry_run:
         message_id = f"offline_{item['id']}"
         path = store.save_outbox(f"{kind}_{item['id']}", card)
@@ -145,9 +200,22 @@ def _deliver_next(
         "item_id": item["id"],
         "kind": kind,
         "message_id": message_id,
+        "file_message_id": file_message_id,
         "card_path": str(path) if path else None,
         "card": card,
     }
+
+
+def deliver_next(
+    home: Path,
+    target: str,
+    dry_run: bool = False,
+    identity: str = "bot",
+) -> dict | None:
+    """Send the active question (used after a review job marks its item ready)."""
+    store = PublisherStore(home)
+    store.init()
+    return _deliver_next(home, store, target, dry_run, identity)
 
 
 def _handle_queue_event(
@@ -215,14 +283,14 @@ def _handle_queue_event(
             "next_message_id": delivered["message_id"] if delivered else None,
         }
 
-    if action not in {"agree_all", "reject_all"}:
+    if action not in {"agree_all", "reject_all", "adopt", "keep_previous"}:
         return {"ok": False, "reason": "unknown_action", "action": action}
     result = queue.answer(item_id, {"decision": action, "operator_id": operator})
     if not result.get("ok"):
         return result
     if result.get("deduped"):
         return {"ok": True, "deduped": True, "item_id": item_id}
-    approved = action == "agree_all"
+    approved = action in {"agree_all", "adopt"}
     decision_card = build_decision_card("approve" if approved else "reject", len(
         item.get("payload", {}).get("proposal_ids") or []
     ))
@@ -231,6 +299,9 @@ def _handle_queue_event(
     else:
         feishu.update_card(token, decision_card, identity)
     delivered = _deliver_next(home, store, target, offline, identity)
+    if not offline:
+        for review in result.get("reviews") or []:
+            _spawn_review(home, operator or mapping.get("target") or "", review["id"])
     if result.get("start") and not offline:
         _spawn_pending(home, operator or mapping.get("target") or "")
     return {
@@ -239,6 +310,7 @@ def _handle_queue_event(
         "push_id": item["push_id"],
         "item_id": item_id,
         "decision": action,
+        "reviews": result.get("reviews") or [],
         "queue_empty": result.get("queue_empty"),
         "start": result.get("start"),
         "next_message_id": delivered["message_id"] if delivered else None,
@@ -305,19 +377,24 @@ def send_rating(
 def send_push(
     home: Path,
     push: dict,
-    pdf_path: Path,
+    file_path: Path,
     to_user: str,
     dry_run: bool = False,
     identity: str = "bot",
     force: bool = False,
 ) -> dict:
-    """Send the PDF file, then a small rating card. One paper, one push."""
+    """Send the push file (HTML by default, PDF legacy), then the rating card."""
     home = Path(home)
     store = PublisherStore(home)
     store.init()
-    pdf_path = Path(pdf_path).expanduser().resolve()
-    if not dry_run and not pdf_path.is_file():
-        return {"ok": False, "reason": "pdf_not_found", "pdf": str(pdf_path)}
+    file_path = Path(file_path).expanduser().resolve()
+    is_html = file_path.suffix.lower() in (".html", ".htm")
+    if not dry_run and not file_path.is_file():
+        return {
+            "ok": False,
+            "reason": "html_not_found" if is_html else "pdf_not_found",
+            "file": str(file_path),
+        }
 
     if not force:
         duplicate = _duplicate_reason(home, push)
@@ -325,34 +402,43 @@ def send_push(
             return {"ok": False, **duplicate}
 
     if dry_run:
-        pdf_message_id = f"offline_file_{push['push_id']}"
+        file_message_id = f"offline_file_{push['push_id']}"
         store.save_outbox(
             f"file_{push['push_id']}",
             {
                 "kind": "push_file",
                 "push_id": push["push_id"],
                 "target": to_user,
-                "pdf": str(pdf_path),
+                "file": str(file_path),
+                "file_type": "html" if is_html else "pdf",
                 "dry_run": True,
             },
         )
     else:
-        sent = feishu.send_file(to_user, str(pdf_path), identity)
-        pdf_message_id = sent["message_id"]
+        sent = feishu.send_file(to_user, str(file_path), identity)
+        file_message_id = sent["message_id"]
 
-    store.record_message(pdf_message_id, "push_file", push["push_id"], target=to_user)
+    store.record_message(file_message_id, "push_file", push["push_id"], target=to_user)
     queue = _queue(home)
     queue.enqueue_push(push)
     delivered = _deliver_next(home, store, to_user, dry_run, identity, push_override=push)
-    return {
+    result = {
         "ok": True,
         "dry_run": dry_run,
         "push_id": push["push_id"],
-        "pdf": str(pdf_path),
-        "pdf_message_id": pdf_message_id,
+        "file": str(file_path),
+        "file_type": "html" if is_html else "pdf",
+        "file_message_id": file_message_id,
         "rating_message_id": delivered["message_id"] if delivered else None,
         "first_item_id": delivered["item_id"] if delivered else None,
     }
+    if is_html:
+        result["html"] = str(file_path)
+        result["html_message_id"] = file_message_id
+    else:
+        result["pdf"] = str(file_path)
+        result["pdf_message_id"] = file_message_id
+    return result
 
 
 def _parse_form(event: dict) -> dict:

@@ -44,8 +44,34 @@ def _push(home: Path, push_id: str = "2026-10-21_card_hmbs_01") -> dict:
     new_prop = {
         "id": "prop_hmbs_mitochondria",
         "title": "HMBS loss impairs mitochondrial function",
-        "content": "HMBS loss increases ALA and impairs mitochondrial function in hepatocytes.",
+        "review": "HMBS loss increases ALA and impairs mitochondrial function in hepatocytes.",
         "related_knowledge": ["card_hmbs", "card_heme_biosynthesis"],
+        "evidence": [
+            {
+                "id": "ev_hmbs_mitochondria_01",
+                "stance": "supports",
+                "conclusion": "HMBS loss impairs mitochondrial function.",
+                "papers": [
+                    {
+                        "paper_id": "europepmc_42900001",
+                        "page": 3,
+                        "quote": "Knockout of HMBS reduced heme biosynthesis and caused porphyrin precursor accumulation.",
+                    }
+                ],
+            },
+            {
+                "id": "ev_hmbs_mitochondria_02",
+                "stance": "supports",
+                "conclusion": "HMBS loss raises ALA in hepatocytes.",
+                "papers": [
+                    {
+                        "paper_id": "europepmc_42900001",
+                        "page": 4,
+                        "quote": "HMBS loss increases delta-aminolevulinic acid in hepatocytes.",
+                    }
+                ],
+            },
+        ],
     }
     return {
         "schema_version": 2,
@@ -386,7 +412,7 @@ def test_writer_push_enters_queue_and_approval_applies(kl_home, fixtures_dir, tm
     assert all(p["schema_version"] == 2 for p in push["proposals"])
     Archive(kl_home).add_push(push)
     before_props = {
-        prop["id"]: sum(len(h.get("evidence", [])) for h in prop.get("history", []))
+        prop["id"]: sum(len(e.get("papers", [])) for e in prop.get("evidence", []))
         for prop in Archive(kl_home).list_props()
     }
 
@@ -428,7 +454,7 @@ def test_writer_push_enters_queue_and_approval_applies(kl_home, fixtures_dir, tm
 
     archive = Archive(kl_home)
     after_props = {
-        prop["id"]: sum(len(h.get("evidence", [])) for h in prop.get("history", []))
+        prop["id"]: sum(len(e.get("papers", [])) for e in prop.get("evidence", []))
         for prop in archive.list_props()
     }
     grew = any(after_props[key] > before_props.get(key, 0) for key in after_props)
@@ -507,3 +533,166 @@ def test_proposition_updates_apply_when_they_fit_the_shared_limit(kl_home):
         "card_hmbs",
         "card_heme_biosynthesis",
     ]
+
+
+def _evidence_push(home: Path, push_id: str = "2026-10-22_card_hmbs_90") -> dict:
+    store = Archive(home)
+    prop = store.get_prop("prop_hmbs_aip")
+    prop["evidence"] = [
+        {
+            "id": "ev_hmbs_aip_01",
+            "stance": "supports",
+            "conclusion": "既有证据。",
+            "papers": [
+                {
+                    "paper_id": "p_old",
+                    "page": 1,
+                    "quote": "An older report supports the claim.",
+                }
+            ],
+            "created_at": "2026-10-20T09:00:00+08:00",
+            "updated_at": "2026-10-20T09:00:00+08:00",
+        }
+    ]
+    prop["evidence_updates_since_review"] = 9
+    store.put_prop(prop)
+    return {
+        "schema_version": 2,
+        "push_id": push_id,
+        "date": "2026-10-22",
+        "checkpoint_id": "card_hmbs",
+        "card_id": "card_hmbs",
+        "paper_ids": ["p_new"],
+        "paper": {"paper_id": "p_new", "title": "A new report"},
+        "proposals": [
+            {
+                "schema_version": 2,
+                "proposal_id": f"p_{push_id}_01",
+                "push_id": push_id,
+                "op": "add_proposition_evidence",
+                "target_type": "proposition",
+                "target_id": "prop_hmbs_aip",
+                "diff": {
+                    "op": "add",
+                    "path": "evidence",
+                    "value": {
+                        "conclusion": "新报道与既有结论一致。",
+                        "stance": "supports",
+                        "papers": [
+                            {
+                                "paper_id": "p_new",
+                                "page": 2,
+                                "quote": "A new report agrees with the existing conclusion.",
+                            }
+                        ],
+                    },
+                },
+                "before": 1,
+                "after": 2,
+                "rationale": "A rationale long enough for the review test.",
+                "confidence": 0.8,
+                "status": "draft",
+            }
+        ],
+    }
+
+
+def test_tenth_evidence_update_queues_a_not_ready_review(kl_home):
+    push = _evidence_push(kl_home)
+    _enqueue(kl_home, push)
+    sent = send_rating(kl_home, push, "ou_demo", dry_run=True)
+    handle_event(kl_home, _event(sent["message_id"], "score_high"), offline=True)
+    queue = QueueStore(kl_home)
+    active = queue.next_active()
+    assert active["kind"] == "proposition_update"
+    result = QueueStore(kl_home).answer(
+        active["id"], {"decision": "agree_all", "operator_id": "ou_test"}
+    )
+    assert result["ok"] is True
+    assert result["reviews"] and result["reviews"][0]["kind"] == "proposition_review"
+    review_item = result["reviews"][0]
+    assert review_item["payload"]["ready"] is False
+    assert review_item["payload"]["stats"]["evidence_count"] == 2
+    assert queue.next_active() is None
+    assert queue.has_unfinished() is True
+
+
+def test_review_item_becomes_active_and_adopt_resets_counter(kl_home):
+    push = _evidence_push(kl_home)
+    _enqueue(kl_home, push)
+    sent = send_rating(kl_home, push, "ou_demo", dry_run=True)
+    handle_event(kl_home, _event(sent["message_id"], "score_high"), offline=True)
+    evidence_item = QueueStore(kl_home).next_active()
+    result = QueueStore(kl_home).answer(
+        evidence_item["id"], {"decision": "agree_all", "operator_id": "ou_test"}
+    )
+    review_item = result["reviews"][0]
+    prop = Archive(kl_home).get_prop("prop_hmbs_aip")
+    proposal = {
+        "schema_version": 3,
+        "proposal_id": "p_review_02",
+        "push_id": push["push_id"],
+        "op": "update_proposition_review",
+        "target_type": "proposition",
+        "target_id": "prop_hmbs_aip",
+        "diff": {
+            "op": "replace",
+            "path": "review",
+            "value": "## 结论\n新的综述。\n## 支持证据\n两条。\n## 反证与边界\n无。\n## 待验证\n无。",
+        },
+        "before": prop["review"],
+        "after": "## 结论\n新的综述。\n## 支持证据\n两条。\n## 反证与边界\n无。\n## 待验证\n无。",
+        "rationale": "A rationale long enough for the review test.",
+        "confidence": 0.8,
+        "status": "draft",
+    }
+    queue = QueueStore(kl_home)
+    queue.mark_review_ready(review_item["id"], [proposal])
+    active = queue.next_active()
+    assert active["id"] == review_item["id"]
+    sent = send_rating(kl_home, push, "ou_demo", dry_run=True)
+    assert sent["kind"] == "proposition_review"
+    adopted = handle_event(kl_home, _event(sent["message_id"], "adopt"), offline=True)
+    assert adopted["ok"] is True
+    updated = Archive(kl_home).get_prop("prop_hmbs_aip")
+    assert updated["review"].startswith("## 结论\n新的综述")
+    assert updated["evidence_updates_since_review"] == 0
+    assert QueueStore(kl_home).review_items("answered")
+
+
+def test_review_keep_previous_keeps_counter_and_waits_for_next_evidence(kl_home):
+    push = _evidence_push(kl_home)
+    _enqueue(kl_home, push)
+    sent = send_rating(kl_home, push, "ou_demo", dry_run=True)
+    handle_event(kl_home, _event(sent["message_id"], "score_high"), offline=True)
+    evidence_item = QueueStore(kl_home).next_active()
+    result = QueueStore(kl_home).answer(
+        evidence_item["id"], {"decision": "agree_all", "operator_id": "ou_test"}
+    )
+    review_item = result["reviews"][0]
+    prop = Archive(kl_home).get_prop("prop_hmbs_aip")
+    proposal = {
+        "schema_version": 3,
+        "proposal_id": "p_review_03",
+        "push_id": push["push_id"],
+        "op": "update_proposition_review",
+        "target_type": "proposition",
+        "target_id": "prop_hmbs_aip",
+        "diff": {"op": "replace", "path": "review", "value": "## 结论\n不该被采纳。"},
+        "before": prop["review"],
+        "after": "## 结论\n不该被采纳。",
+        "rationale": "A rationale long enough for the review test.",
+        "confidence": 0.8,
+        "status": "draft",
+    }
+    queue = QueueStore(kl_home)
+    queue.mark_review_ready(review_item["id"], [proposal])
+    sent = send_rating(kl_home, push, "ou_demo", dry_run=True)
+    kept = QueueStore(kl_home).answer(
+        review_item["id"], {"decision": "keep_previous", "operator_id": "ou_test"}
+    )
+    assert kept["ok"] is True
+    updated = Archive(kl_home).get_prop("prop_hmbs_aip")
+    assert updated["review"] == prop["review"]
+    assert updated["evidence_updates_since_review"] >= 10
+    assert not QueueStore(kl_home).review_items("pending")

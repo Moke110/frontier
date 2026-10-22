@@ -19,14 +19,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from archive.store import Archive
+from archive.store import Archive, MAX_CONCLUSION, MAX_REVIEW, v3_prop_from_v2
 from common import now, write_json
 from pdf_ingest.anchors import locate_quote
 
 CARD_ID_RE = re.compile(r"^card_[a-z0-9][a-z0-9_]*$")
 PROP_ID_RE = re.compile(r"^prop_[a-z0-9][a-z0-9_]*$")
 CARD_FIELDS = ("id", "label", "ontology", "annotation")
-PROP_FIELDS = ("id", "title", "content", "related_knowledge", "history")
+PROP_FIELDS = ("id", "title", "review", "related_knowledge", "evidence", "changelog")
 MIN_EVIDENCE_PAPERS = 2
 
 
@@ -79,7 +79,10 @@ def _validate_card(card: dict, draft_ids: set[str], seen: set[str]) -> list[str]
 def _validate_prop(prop: dict, draft_ids: set[str], seen: set[str]) -> list[str]:
     errors = []
     name = prop.get("id") or f"<proposition {prop.get('title')!r}>"
-    missing = [field for field in PROP_FIELDS if prop.get(field) in (None, "", [])]
+    prop = v3_prop_from_v2(prop)
+    missing = [
+        field for field in PROP_FIELDS if field != "evidence" and prop.get(field) in (None, "", [])
+    ]
     if missing:
         errors.append(f"{name}: missing {', '.join(missing)}")
     if not PROP_ID_RE.match(str(prop.get("id", ""))):
@@ -98,31 +101,41 @@ def _validate_prop(prop: dict, draft_ids: set[str], seen: set[str]) -> list[str]
         if unknown:
             errors.append(f"{name}: unknown related_knowledge {unknown}")
 
-    history = prop.get("history")
-    if not isinstance(history, list) or not history:
-        errors.append(f"{name}: needs a non-empty history")
-        return errors
-    if history[0].get("action") != "created":
-        errors.append(f"{name}: first history entry must be 'created'")
-    if not str(history[0].get("rationale") or "").strip():
-        errors.append(f"{name}: created history needs a rationale")
+    review = str(prop.get("review") or "")
+    if not review.strip():
+        errors.append(f"{name}: needs a review")
+    elif len(review) > MAX_REVIEW:
+        errors.append(f"{name}: review exceeds {MAX_REVIEW} chars")
 
-    evidence = [item for entry in history for item in (entry.get("evidence") or [])]
-    for item in evidence:
-        if item.get("paper_id") and (
-            not isinstance(item.get("page"), int) or item.get("page") < 1
-        ):
-            errors.append(f"{name}: evidence page must be a positive integer")
-        if item.get("paper_id") and not str(item.get("quote") or "").strip():
-            errors.append(f"{name}: evidence needs a quote")
+    if not prop.get("changelog"):
+        errors.append(f"{name}: needs a non-empty changelog")
+    evidence = prop.get("evidence") or []
+    for entry in evidence:
+        conclusion = str(entry.get("conclusion") or "")
+        if not conclusion.strip() or len(conclusion) > MAX_CONCLUSION:
+            errors.append(
+                f"{name}: evidence conclusion must be 1..{MAX_CONCLUSION} chars"
+            )
+        if entry.get("stance") not in {"supports", "contradicts"}:
+            errors.append(f"{name}: evidence stance must be supports or contradicts")
+        if not entry.get("papers"):
+            errors.append(f"{name}: evidence needs at least one paper")
+        for item in entry.get("papers") or []:
+            if item.get("paper_id") and (
+                not isinstance(item.get("page"), int) or item.get("page") < 1
+            ):
+                errors.append(f"{name}: evidence page must be a positive integer")
+            if item.get("paper_id") and not str(item.get("quote") or "").strip():
+                errors.append(f"{name}: evidence needs a quote")
     return errors
 
 
 def evidence_papers(prop: dict) -> set[str]:
+    prop = v3_prop_from_v2(prop)
     return {
         item.get("paper_id")
-        for entry in prop.get("history", [])
-        for item in (entry.get("evidence") or [])
+        for entry in prop.get("evidence", [])
+        for item in (entry.get("papers") or [])
         if item.get("paper_id")
     }
 
@@ -158,8 +171,9 @@ def validate_structure(draft: dict) -> list[str]:
 
 def _draft_evidence(draft: dict):
     for prop in draft["propositions"]:
-        for entry in prop.get("history", []):
-            for item in entry.get("evidence") or []:
+        prop = v3_prop_from_v2(prop)
+        for entry in prop.get("evidence", []):
+            for item in entry.get("papers") or []:
                 yield prop, item
 
 
@@ -303,10 +317,11 @@ def apply(
             "held": len(report["held"]),
         }
         for prop in active_props:
-            payload = {field: prop[field] for field in PROP_FIELDS}
+            prop_v3 = v3_prop_from_v2(prop)
+            payload = {field: prop_v3[field] for field in PROP_FIELDS}
             previous = None
             try:
-                previous = store.get_prop(prop["id"])
+                previous = store.get_prop(prop_v3["id"])
             except Exception:
                 previous = None
             if previous and _same_prop(previous, payload):

@@ -15,7 +15,8 @@ metadata:
 > | 能力 | 状态 |
 > |---|---|
 > | 每篇推送 2 个实体名额；三类卡片顶栏/正文 | 已生效（Phase 1） |
-> | 命题 v3（evidence / review / changelog）、综述题、HTML 推送 | Phase 2 |
+> | 命题 v3（evidence / review / changelog）、证据 add/merge、迁移 | 已生效（Phase 2a） |
+> | 综述题、HTML 推送 | 已生效（Phase 2b） |
 > | Bitable 权威存储、WAL 落盘、10 分钟同步 | Phase 3 |
 >
 > Phase 2/3 的命令在文中标注；未标注的均为当前可用命令。
@@ -177,10 +178,13 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 - 同一目标的多个 proposals 合并成一题；每篇推送最多 **2 个实体目标**。
 - 证据题只处理一个命题；卡片题只处理一个卡片。
 
-### 3.8 综述题（Phase 2）
+### 3.8 综述题
 
-- 第 10 条证据被采纳 → 立即生成综述，占住队列闸门。
-- 综述 HTML + 确认卡推送；`采纳此版` 写入，`保持上一版` 保留计数。
+- 第 10 条证据被采纳 → 队列追加 `proposition_review` 题（`ready=false`），占住闸门。
+- 监听器拉起 `trigger.cli review-request --item <id>`，agent 执行：
+  `writer.cli review-task` → 写 review JSON → `review-check` → `review-render` →
+  `question_queue.cli review-ready` → `publisher.cli deliver`。
+- 综述 HTML + 确认卡推送；`采纳此版` 写入并清零计数，`保持上一版` 保留计数。
 - 综述题不占每篇推送的 2 个实体名额。
 
 ### 3.9 队列清空后

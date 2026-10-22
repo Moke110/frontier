@@ -1,0 +1,42 @@
+{
+  "_index": 3,
+  "_total": 5,
+  "id": "q_review_prop_hmbs_aip_01",
+  "kind": "proposition_review",
+  "push_id": null,
+  "card_id": null,
+  "payload": {
+    "target_type": "proposition_review",
+    "target_id": "prop_hmbs_aip",
+    "target_label": "HMBS 功能缺失导致急性间歇性卟啉症（AIP）",
+    "base_url": "https://example.feishu.cn/base/Rf6obOTtCaHgFvsQeYmccEEunxf",
+    "stats": {
+      "evidence_count": 4,
+      "supports": 3,
+      "contradicts": 1,
+      "added": 6,
+      "removed": 2
+    },
+    "proposal_ids": ["p_review_prop_hmbs_aip_01"],
+    "proposals": [
+      {
+        "schema_version": 3,
+        "proposal_id": "p_review_prop_hmbs_aip_01",
+        "push_id": null,
+        "op": "update_proposition_review",
+        "target_type": "proposition",
+        "target_id": "prop_hmbs_aip",
+        "diff": {
+          "op": "replace",
+          "path": "review",
+          "value": "## 结论\nHMBS 功能缺失使血红素合成受阻，ALA 与卟啉前体在肝细胞中积聚，进而造成线粒体功能障碍并表现为 AIP。\n## 支持证据\n三项病例与细胞研究报告 HMBS 活性下降与 ALA 升高。\n## 反证与边界\n一项队列研究报告线粒体功能未见显著变化；现有证据缺少人群剂量—反应数据。\n## 待验证\n需要在原代肝细胞与动物模型中复核线粒体通路。"
+        },
+        "before": "## 结论\nHMBS 功能缺失导致 AIP。\n## 支持证据\n病例报告一致。\n## 反证与边界\n无。\n## 待验证\n无。",
+        "after": "## 结论\nHMBS 功能缺失使血红素合成受阻，ALA 与卟啉前体在肝细胞中积聚，进而造成线粒体功能障碍并表现为 AIP。\n## 支持证据\n三项病例与细胞研究报告 HMBS 活性下降与 ALA 升高。\n## 反证与边界\n一项队列研究报告线粒体功能未见显著变化；现有证据缺少人群剂量—反应数据。\n## 待验证\n需要在原代肝细胞与动物模型中复核线粒体通路。",
+        "rationale": "第 10 条证据采纳后重写综述，纳入一项反证与人群数据缺口。",
+        "confidence": 0.8,
+        "status": "draft"
+      }
+    ]
+  }
+}

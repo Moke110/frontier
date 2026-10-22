@@ -33,7 +33,7 @@
       },
       {
         "tag": "markdown",
-        "content": "**新建命题**\n**HMBS 缺失通过线粒体功能障碍放大卟啉前体毒性**\nHMBS 缺失不仅阻断血红素合成，还直接损害线粒体功能，使 ALA 与卟啉前体的毒性放大，形成比单纯酶活下降更严重的细胞表型。\n关联：`card_hmbs`、`card_heme_biosynthesis`、`card_aip`"
+        "content": "**新建命题**\n**HMBS 缺失通过线粒体功能障碍放大卟啉前体毒性**\n\n关联：`card_hmbs`、`card_heme_biosynthesis`、`card_aip`"
       },
       {
         "tag": "markdown",

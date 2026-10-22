@@ -135,3 +135,16 @@ def test_figures_falls_back_to_generated_svg(tmp_path):
     assert assets[0]["source"] == "generated"
     assert (tmp_path / assets[0]["path"]).exists()
     assert "<svg" in (tmp_path / assets[0]["path"]).read_text()
+
+
+def test_render_produces_standalone_responsive_html(tmp_path):
+    path = _push(tmp_path)
+    out = tmp_path / "push.html"
+    result = render_push(path, out)
+    text = out.read_text(encoding="utf-8")
+    assert result["ok"] is True
+    assert result["html"] == str(out)
+    assert "data:image/svg+xml;base64," in text
+    assert "file://" not in text
+    assert "clamp(16px, 1.1vw + 12px, 20px)" in text
+    assert "prefers-color-scheme: dark" in text

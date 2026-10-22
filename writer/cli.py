@@ -1,4 +1,4 @@
-"""writer CLI: agent task packets, validation, PDF rendering, and a fallback.
+"""writer CLI: agent task packets, validation, HTML/PDF rendering, and a fallback.
 
 Primary flow (agent-driven):
   writer task -> writer figures -> agent writes push JSON -> writer check
@@ -17,6 +17,7 @@ from pathlib import Path
 from common import emit, home, now, read_json, today, write_json
 from writer.figures import fetch_for_paper
 from writer.model import write
+from writer import review as review_task
 from writer.render import RenderError, render_push
 from writer.tasks import build_task, validate as validate_outbox
 
@@ -40,9 +41,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--task", required=True)
     p.add_argument("--outbox", required=True)
 
-    p = sub.add_parser("render", help="render a push JSON into a PDF")
+    p = sub.add_parser("render", help="render a push JSON into HTML (or legacy PDF)")
     p.add_argument("--push", required=True)
     p.add_argument("--out", help="PDF path (default: next to the push)")
+
+    p = sub.add_parser("review-task", help="build an agent review packet for a proposition")
+    p.add_argument("--prop", required=True)
+    p.add_argument("--item", help="review queue item id")
+    p.add_argument("--out", required=True)
+
+    p = sub.add_parser("review-check", help="validate an agent-written review")
+    p.add_argument("--task", required=True)
+    p.add_argument("--review", required=True)
+
+    p = sub.add_parser("review-render", help="render a review JSON into self-contained HTML")
+    p.add_argument("--review", required=True)
+    p.add_argument("--out", required=True)
 
     p = sub.add_parser("figures", help="fetch paper figures (or generate a fallback)")
     p.add_argument("--selection", required=True)
@@ -105,6 +119,32 @@ def main(argv: list[str] | None = None) -> int:
                 emit({"ok": False, "error": str(exc)})
                 return 1
             emit(result)
+        elif args.cmd == "review-task":
+            task = review_task.build_task(root, args.prop, args.item)
+            write_json(Path(args.out), task)
+            emit(
+                {
+                    "ok": True,
+                    "out": args.out,
+                    "prop_id": task["prop_id"],
+                    "evidence": len(task["evidence"]),
+                    "output": task["output"],
+                }
+            )
+        elif args.cmd == "review-check":
+            task = read_json(Path(args.task))
+            review = read_json(Path(args.review))
+            if not task or not review:
+                raise ValueError("review-check needs --task and --review files")
+            errors = review_task.validate(task, review)
+            emit({"ok": not errors, "errors": errors, "stats": review.get("stats")})
+            return 0 if not errors else 1
+        elif args.cmd == "review-render":
+            review = read_json(Path(args.review))
+            if not review:
+                raise ValueError(f"no review at {args.review}")
+            out = review_task.render_html(root, review, Path(args.out))
+            emit({"ok": True, "html": str(out), "bytes": out.stat().st_size})
         elif args.cmd == "figures":
             selection = read_json(Path(args.selection))
             if not selection:

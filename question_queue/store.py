@@ -26,11 +26,14 @@ CARD_OPS = {
 PROP_OPS = {
     "create_proposition",
     "update_proposition_title",
-    "update_proposition_content",
+    "update_proposition_review",
     "add_proposition_evidence",
+    "merge_proposition_evidence",
     "update_proposition_related_knowledge",
 }
 MAX_TARGETS = 2
+REVIEW_EVERY = 10
+REVIEW_KIND = "proposition_review"
 LEASE_MINUTES = 10
 _ID_RE = re.compile(r"[^a-z0-9_]+")
 
@@ -252,7 +255,12 @@ class QueueStore:
 
     def _activate(self, state: dict) -> dict | None:
         active = next(
-            (r for r in state["items"] if r["status"] == "pending"),
+            (
+                r
+                for r in state["items"]
+                if r["status"] == "pending"
+                and (r.get("payload") or {}).get("ready", True) is not False
+            ),
             None,
         )
         if not active:
@@ -318,6 +326,7 @@ class QueueStore:
             if item["status"] != "active":
                 return {"ok": False, "reason": "not_active", "item": item}
 
+            decision = None
             if item["kind"] == "rating":
                 verdict = answer.get("verdict")
                 if verdict not in {"irrelevant", "ok", "great"}:
@@ -338,10 +347,15 @@ class QueueStore:
                             self.event("dropped", item_id=other["id"], reason="rating_irrelevant")
             else:
                 decision = answer.get("decision")
-                if decision not in {"agree_all", "reject_all"}:
+                allowed = (
+                    {"adopt", "keep_previous"}
+                    if item["kind"] == REVIEW_KIND
+                    else {"agree_all", "reject_all"}
+                )
+                if decision not in allowed:
                     return {"ok": False, "reason": "bad_decision"}
                 self._record_decision(item, decision, decisions_path)
-                if decision == "agree_all":
+                if decision in {"agree_all", "adopt"}:
                     try:
                         Archive(self.home).apply_group(
                             item["payload"]["proposals"], group_id=item_id
@@ -358,6 +372,13 @@ class QueueStore:
                 item["answered_at"] = now()
 
             state["active_id"] = None
+            reviews = []
+            if decision in {"agree_all", "adopt"} and any(
+                (p.get("op") or p.get("kind"))
+                in ("add_proposition_evidence", "merge_proposition_evidence", "add_evidence")
+                for p in item["payload"].get("proposals", [])
+            ):
+                reviews = self._enqueue_due_reviews(state, item.get("push_id"))
             nxt = None
             if not any(r["status"] == "failed" for r in state["items"]):
                 nxt = self._activate(state)
@@ -376,10 +397,126 @@ class QueueStore:
                 "ok": True,
                 "item": item,
                 "next": nxt,
+                "reviews": reviews,
                 "queue_empty": queue_empty,
                 "start": start_signal,
             }
             return result
+
+    def _enqueue_due_reviews(self, state: dict, push_id: str | None) -> list[dict]:
+        """Queue one not-ready review item per proposition with >=10 updates."""
+        out = []
+        for prop in Archive(self.home).list_props():
+            counter = int(prop.get("evidence_updates_since_review") or 0)
+            if counter < REVIEW_EVERY:
+                continue
+            target = prop["id"]
+            unfinished = any(
+                r.get("kind") == REVIEW_KIND
+                and (r.get("payload") or {}).get("target_id") == target
+                and r.get("status") not in TERMINAL
+                for r in state["items"]
+            )
+            if unfinished:
+                continue
+            evidence = prop.get("evidence") or []
+            stats = {
+                "evidence_count": len(evidence),
+                "supports": sum(1 for e in evidence if e.get("stance") == "supports"),
+                "contradicts": sum(1 for e in evidence if e.get("stance") == "contradicts"),
+            }
+            n = 1 + sum(
+                1
+                for r in state["items"]
+                if r.get("kind") == REVIEW_KIND
+                and (r.get("payload") or {}).get("target_id") == target
+            )
+            item = {
+                "id": f"q_review_{_safe(target)}_{n:02d}",
+                "kind": REVIEW_KIND,
+                "push_id": push_id,
+                "card_id": None,
+                "status": "pending",
+                "created_at": now(),
+                "sent_at": None,
+                "answered_at": None,
+                "message_id": None,
+                "attempts": 0,
+                "answer": None,
+                "payload": {
+                    "target_type": "proposition_review",
+                    "target_id": target,
+                    "target_label": prop.get("title", target),
+                    "stats": stats,
+                    "proposal_ids": [],
+                    "proposals": [],
+                    "ready": False,
+                    "base_url": None,
+                },
+            }
+            state["items"].append(item)
+            out.append(item)
+            self.event(
+                "review_due",
+                item_id=item["id"],
+                proposition_id=target,
+                counter=counter,
+            )
+        return out
+
+    def mark_review_ready(
+        self,
+        item_id: str,
+        proposals: list[dict],
+        *,
+        stats: dict | None = None,
+        base_url: str | None = None,
+        html_path: str | None = None,
+    ) -> dict:
+        with self.locked():
+            state = self.load()
+            item = next((r for r in state["items"] if r["id"] == item_id), None)
+            if not item:
+                raise QueueError(f"unknown queue item: {item_id}")
+            if item.get("kind") != REVIEW_KIND:
+                raise QueueError(f"{item_id} is not a review item")
+            item.setdefault("payload", {})
+            item["payload"]["proposals"] = proposals
+            item["payload"]["proposal_ids"] = [
+                p.get("proposal_id") for p in proposals if p.get("proposal_id")
+            ]
+            item["payload"]["ready"] = True
+            if stats is not None:
+                item["payload"]["stats"] = stats
+            if base_url:
+                item["payload"]["base_url"] = base_url
+            if html_path:
+                item["payload"]["html_path"] = html_path
+            if not state.get("active_id"):
+                self._activate(state)
+            self._save(state)
+            self.event(
+                "review_ready",
+                item_id=item_id,
+                proposal_ids=item["payload"]["proposal_ids"],
+            )
+            return item
+
+    def mark_review_file_sent(self, item_id: str, message_id: str) -> dict:
+        with self.locked():
+            state = self.load()
+            item = next((r for r in state["items"] if r["id"] == item_id), None)
+            if not item:
+                raise QueueError(f"unknown queue item: {item_id}")
+            item.setdefault("payload", {})["file_message_id"] = message_id
+            self._save(state)
+            return item
+
+    def review_items(self, status: str | None = None) -> list[dict]:
+        rows = [r for r in self.load()["items"] if r.get("kind") == REVIEW_KIND]
+        if status:
+            rows = [r for r in rows if r.get("status") == status]
+        return rows
 
     def _record_decision(self, item: dict, decision: str, path: Path | None) -> None:
         target = Path(path or self.home / "publisher" / "decisions.jsonl")

@@ -31,18 +31,32 @@ from common import (
     write_json,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CARD_FIELDS = ("id", "label", "ontology", "annotation")
-PROP_FIELDS = ("id", "title", "content", "history", "related_knowledge")
-HISTORY_ACTIONS = {
+PROP_FIELDS = (
+    "id",
+    "title",
+    "review",
+    "related_knowledge",
+    "evidence",
+    "changelog",
+)
+EVIDENCE_FIELDS = ("id", "stance", "conclusion", "papers")
+CHANGELOG_ACTIONS = {
     "created",
-    "content_changed",
     "title_changed",
+    "review_changed",
     "related_knowledge_changed",
-    "evidence_added",
 }
+CHANGELOG_FIELDS = {"title", "review", "related_knowledge"}
+STANCES = {"supports", "contradicts"}
+MAX_CONCLUSION = 200
+MAX_REVIEW = 2000
+MIN_EVIDENCE = 2
+REVIEW_EVERY = 10
 CARD_ID_RE = re.compile(r"^card_[a-z0-9][a-z0-9_]*$")
 PROP_ID_RE = re.compile(r"^prop_[a-z0-9][a-z0-9_]*$")
+EVIDENCE_ID_RE = re.compile(r"^ev_[a-z0-9][a-z0-9_]*$")
 MIN_RELATED_CARDS = 2
 
 
@@ -116,6 +130,49 @@ def _validate_card(card: dict) -> None:
         raise ArchiveError("card annotation must not be empty")
 
 
+def _validate_evidence(prop_id: str, entry: dict, seen_ids: set[str]) -> None:
+    missing = [f for f in EVIDENCE_FIELDS if entry.get(f) in (None, "", [])]
+    if missing:
+        raise ArchiveError(
+            f"proposition {prop_id} evidence missing {', '.join(missing)}"
+        )
+    ev_id = entry["id"]
+    if not EVIDENCE_ID_RE.match(ev_id):
+        raise ArchiveError(f"bad evidence id {ev_id!r} (want ev_<slug>)")
+    if ev_id in seen_ids:
+        raise ArchiveError(f"proposition {prop_id} has duplicate evidence id {ev_id}")
+    seen_ids.add(ev_id)
+    if entry["stance"] not in STANCES:
+        raise ArchiveError(
+            f"proposition {prop_id} evidence {ev_id} stance must be one of {sorted(STANCES)}"
+        )
+    conclusion = str(entry["conclusion"])
+    if len(conclusion) > MAX_CONCLUSION:
+        raise ArchiveError(
+            f"proposition {prop_id} evidence {ev_id} conclusion exceeds {MAX_CONCLUSION} chars"
+        )
+    papers = entry["papers"]
+    if not isinstance(papers, list) or not papers:
+        raise ArchiveError(
+            f"proposition {prop_id} evidence {ev_id} needs at least one paper"
+        )
+    for paper in papers:
+        if not paper.get("paper_id"):
+            raise ArchiveError(
+                f"proposition {prop_id} evidence {ev_id} paper needs paper_id"
+            )
+        page = paper.get("page")
+        if page is not None and (not isinstance(page, int) or page < 1):
+            raise ArchiveError(
+                f"proposition {prop_id} evidence {ev_id} page must be >= 1 or null"
+            )
+        quote = str(paper.get("quote") or "")
+        if not 8 <= len(quote) <= 500:
+            raise ArchiveError(
+                f"proposition {prop_id} evidence {ev_id} quote must be 8..500 chars"
+            )
+
+
 def _validate_prop(prop: dict, cards: dict[str, dict]) -> None:
     missing = [f for f in PROP_FIELDS if prop.get(f) in (None, "")]
     if missing:
@@ -132,16 +189,165 @@ def _validate_prop(prop: dict, cards: dict[str, dict]) -> None:
     unknown = [c for c in related if c not in cards]
     if unknown:
         raise ArchiveError(f"proposition {prop['id']} references unknown cards: {unknown}")
-    history = prop["history"]
-    if not isinstance(history, list) or not history:
-        raise ArchiveError(f"proposition {prop['id']} needs a non-empty history")
-    for entry in history:
+
+    review = prop["review"]
+    if not isinstance(review, str) or not review.strip():
+        raise ArchiveError(f"proposition {prop['id']} needs a non-empty review")
+    if len(review) > MAX_REVIEW:
+        raise ArchiveError(
+            f"proposition {prop['id']} review exceeds {MAX_REVIEW} chars"
+        )
+
+    evidence = prop["evidence"]
+    if not isinstance(evidence, list):
+        raise ArchiveError(f"proposition {prop['id']} evidence must be a list")
+    seen_ids: set[str] = set()
+    for entry in evidence:
+        if not isinstance(entry, dict):
+            raise ArchiveError(f"proposition {prop['id']} evidence entries must be objects")
+        _validate_evidence(prop["id"], entry, seen_ids)
+
+    changelog = prop["changelog"]
+    if not isinstance(changelog, list) or not changelog:
+        raise ArchiveError(f"proposition {prop['id']} needs a non-empty changelog")
+    for entry in changelog:
         if not entry.get("at") or not entry.get("action"):
-            raise ArchiveError(f"proposition {prop['id']} history entries need at and action")
-        if entry["action"] not in HISTORY_ACTIONS:
             raise ArchiveError(
-                f"proposition {prop['id']} has unknown history action {entry['action']!r}"
+                f"proposition {prop['id']} changelog entries need at and action"
             )
+        if entry["action"] not in CHANGELOG_ACTIONS:
+            raise ArchiveError(
+                f"proposition {prop['id']} has unknown changelog action {entry['action']!r}"
+            )
+        if entry.get("field") and entry["field"] not in CHANGELOG_FIELDS:
+            raise ArchiveError(
+                f"proposition {prop['id']} has unknown changelog field {entry['field']!r}"
+            )
+
+    counter = prop.get("evidence_updates_since_review", 0)
+    if not isinstance(counter, int) or counter < 0:
+        raise ArchiveError(
+            f"proposition {prop['id']} evidence_updates_since_review must be a non-negative int"
+        )
+
+
+def evidence_id_for(prop: dict) -> str:
+    """Next ``ev_<prop_slug>_<NN>`` id for a proposition."""
+    slug_part = prop["id"][5:] if prop["id"].startswith("prop_") else prop["id"]
+    base = f"ev_{slug_part}"
+    taken = {e.get("id") for e in prop.get("evidence") or []}
+    n = 1
+    while f"{base}_{n:02d}" in taken:
+        n += 1
+    return f"{base}_{n:02d}"
+
+
+def v3_prop_from_v2(prop: dict) -> dict:
+    """Convert a v2 proposition (content + history) to the v3 shape.
+
+    Idempotent. Each v2 history entry that carries evidence becomes one v3
+    evidence entry; the conclusion is the entry's rationale (clipped), and the
+    papers keep their page/quote anchors. Title/review changes go to changelog.
+    """
+    if "review" in prop and "evidence" in prop and "changelog" in prop:
+        prop["schema_version"] = 3
+        return prop
+    out = {
+        "schema_version": 3,
+        "id": prop.get("id") or prop.get("prop_id"),
+        "title": prop.get("title", ""),
+        "review": prop.get("review") or prop.get("content") or prop.get("text") or "",
+        "related_knowledge": list(prop.get("related_knowledge") or prop.get("node_ids") or []),
+        "evidence": [],
+        "changelog": [],
+        "evidence_updates_since_review": int(
+            prop.get("evidence_updates_since_review") or 0
+        ),
+        "created_at": prop.get("created_at") or now(),
+        "updated_at": prop.get("updated_at") or now(),
+    }
+    counter = 0
+    for entry in prop.get("history") or []:
+        at = entry.get("at") or now()
+        papers = []
+        for raw in entry.get("evidence") or []:
+            quote = str(raw.get("quote") or "")
+            if raw.get("paper_id") and quote:
+                papers.append(
+                    {
+                        "paper_id": raw["paper_id"],
+                        "push_id": raw.get("push_id"),
+                        "page": raw.get("page"),
+                        "quote": quote,
+                        "added_at": at,
+                    }
+                )
+        if papers:
+            counter += 1
+            out["evidence"].append(
+                {
+                    "id": f"ev_legacy_{counter:02d}",
+                    "stance": "supports",
+                    "conclusion": clip(
+                        entry.get("rationale")
+                        or (entry.get("after") or {}).get("content")
+                        or out["review"],
+                        MAX_CONCLUSION,
+                    )
+                    or "未提供结论（v2 迁移）",
+                    "papers": papers,
+                    "created_at": at,
+                    "updated_at": at,
+                    "migrated_from_v2": True,
+                }
+            )
+        action = entry.get("action")
+        if action == "created":
+            out["changelog"].append(
+                {
+                    "at": at,
+                    "action": "created",
+                    "field": "review",
+                    "before": None,
+                    "after": out["review"],
+                    "rationale": entry.get("rationale", ""),
+                    "source": entry.get("source") or {"kind": "migration", "id": "v2"},
+                }
+            )
+        elif action in ("title_changed", "related_knowledge_changed", "content_changed"):
+            field = {
+                "title_changed": "title",
+                "related_knowledge_changed": "related_knowledge",
+                "content_changed": "review",
+            }[action]
+            out["changelog"].append(
+                {
+                    "at": at,
+                    "action": action,
+                    "field": field,
+                    "before": (entry.get("before") or {}).get(field),
+                    "after": (entry.get("after") or {}).get(field),
+                    "rationale": entry.get("rationale", ""),
+                    "source": entry.get("source") or {"kind": "migration", "id": "v2"},
+                }
+            )
+    if not out["changelog"]:
+        out["changelog"].append(
+            {
+                "at": out["created_at"],
+                "action": "created",
+                "field": "review",
+                "before": None,
+                "after": out["review"],
+                "rationale": "v2 迁移",
+                "source": {"kind": "migration", "id": "v2"},
+            }
+        )
+    # Renumber evidence ids to the canonical <prop>_<NN> scheme.
+    slug_part = out["id"][5:] if out["id"].startswith("prop_") else out["id"]
+    for index, entry in enumerate(out["evidence"], start=1):
+        entry["id"] = f"ev_{slug_part}_{index:02d}"
+    return out
 
 
 class Archive:
@@ -375,7 +581,7 @@ class Archive:
 
     # ------------------------------------------------------------ layer 4
     def put_prop(self, prop: dict) -> dict:
-        prop = dict(prop)
+        prop = v3_prop_from_v2(dict(prop))
         cards = {c["id"]: c for c in self.list_cards()}
         existing = {
             p.get("id") or p.get("prop_id"): p for p in self.list_props() if p
@@ -389,6 +595,7 @@ class Archive:
         prop.setdefault("created_at", (previous or {}).get("created_at") or now_ts)
         prop["updated_at"] = now_ts
         prop["schema_version"] = SCHEMA_VERSION
+        prop.setdefault("evidence_updates_since_review", 0)
         write_json(target, prop)
         return {
             "prop_id": prop["id"],
@@ -400,11 +607,11 @@ class Archive:
         rec = read_json(self.props / f"{prop_id}.json")
         if not rec:
             raise ArchiveError(f"unknown proposition: {prop_id}")
-        return rec
+        return v3_prop_from_v2(rec)
 
     def list_props(self, card_id: str | None = None) -> list[dict]:
         rows = [read_json(p) for p in sorted(self.props.glob("*.json"))]
-        rows = [r for r in rows if r]
+        rows = [v3_prop_from_v2(r) for r in rows if r]
         if card_id:
             rows = [r for r in rows if card_id in r.get("related_knowledge", [])]
         return rows
@@ -414,28 +621,28 @@ class Archive:
         prop_id: str,
         changes: dict,
         *,
-        action: str = "content_changed",
+        action: str = "review_changed",
         source: dict | None = None,
         rationale: str = "",
-        evidence: list[dict] | None = None,
     ) -> dict:
         prop = self.get_prop(prop_id)
-        before = {k: prop.get(k) for k in ("title", "content", "related_knowledge")}
-        allowed = {"title", "content", "related_knowledge"}
+        allowed = {"title", "review", "related_knowledge"}
         unknown = set(changes) - allowed
         if unknown:
             raise ArchiveError(f"cannot update {sorted(unknown)} on a proposition")
+        field = next(iter(changes), None)
+        before = {k: prop.get(k) for k in changes}
         prop = {**prop, **changes}
-        after = {k: prop.get(k) for k in ("title", "content", "related_knowledge")}
-        prop.setdefault("history", []).append(
+        after = {k: prop.get(k) for k in changes}
+        prop.setdefault("changelog", []).append(
             {
                 "at": now(),
                 "action": action,
-                "source": source or {"kind": "cli", "id": prop_id},
-                "before": before,
-                "after": after,
+                "field": field,
+                "before": before.get(field),
+                "after": after.get(field),
                 "rationale": rationale,
-                "evidence": evidence or [],
+                "source": source or {"kind": "cli", "id": prop_id},
             }
         )
         self.put_prop(prop)
@@ -450,13 +657,25 @@ class Archive:
                 {
                     "id": prop["id"],
                     "title": prop.get("title", ""),
-                    "content": prop.get("content", ""),
+                    "review": prop.get("review", ""),
                     "related_knowledge": prop.get("related_knowledge", []),
-                    "evidence": [
-                        e
-                        for entry in prop.get("history", [])
-                        for e in entry.get("evidence", [])
-                    ],
+                    "evidence": prop.get("evidence", []),
+                    "evidence_count": len(prop.get("evidence", [])),
+                    "supports": sum(
+                        1
+                        for e in prop.get("evidence", [])
+                        if e.get("stance") == "supports"
+                    ),
+                    "contradicts": sum(
+                        1
+                        for e in prop.get("evidence", [])
+                        if e.get("stance") == "contradicts"
+                    ),
+                    "evidence_updates_since_review": prop.get(
+                        "evidence_updates_since_review", 0
+                    ),
+                    "review_due": prop.get("evidence_updates_since_review", 0)
+                    >= REVIEW_EVERY,
                 }
             )
         papers = self.list_papers(card_id)
@@ -541,6 +760,52 @@ class Archive:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def _paper_record(self, raw: dict, push_id: str | None) -> dict:
+        paper_id = raw.get("paper_id")
+        if not paper_id:
+            raise ArchiveError("evidence paper needs paper_id")
+        quote = str(raw.get("quote") or "")
+        if not 8 <= len(quote) <= 500:
+            raise ArchiveError(f"evidence quote for {paper_id} must be 8..500 chars")
+        page = raw.get("page")
+        if page is not None and (not isinstance(page, int) or page < 1):
+            raise ArchiveError(f"evidence page for {paper_id} must be >= 1 or null")
+        return {
+            "paper_id": paper_id,
+            "push_id": raw.get("push_id") or push_id,
+            "page": page,
+            "quote": quote,
+            "added_at": raw.get("added_at") or now(),
+        }
+
+    def _new_evidence_from_value(
+        self, prop: dict, value: dict, proposal: dict
+    ) -> dict:
+        papers_raw = value.get("papers")
+        if papers_raw is None:
+            single = proposal.get("evidence") or {}
+            if not single and value.get("paper_id"):
+                single = value
+            papers_raw = [single] if single else []
+        if not isinstance(papers_raw, list) or not papers_raw:
+            raise ArchiveError("add_proposition_evidence needs at least one paper")
+        papers = [self._paper_record(raw, proposal.get("push_id")) for raw in papers_raw]
+        conclusion = clip(
+            value.get("conclusion") or proposal.get("rationale") or "", MAX_CONCLUSION
+        )
+        if not conclusion:
+            raise ArchiveError("add_proposition_evidence needs a conclusion")
+        return {
+            "id": value.get("evidence_id")
+            or value.get("id")
+            or evidence_id_for(prop),
+            "stance": value.get("stance") or "supports",
+            "conclusion": conclusion,
+            "papers": papers,
+            "created_at": now(),
+            "updated_at": now(),
+        }
+
     def _apply(self, proposal: dict) -> dict:
         applied_path = self.applied / f"{proposal.get('proposal_id')}.json"
         previous = read_json(applied_path)
@@ -554,14 +819,6 @@ class Archive:
             "kind": "push",
             "id": proposal.get("push_id"),
         }
-        raw_evidence = proposal.get("evidence") or {}
-        evidence = {
-            "paper_id": raw_evidence.get("paper_id") or value.get("paper_id"),
-            "push_id": proposal.get("push_id"),
-            "page": raw_evidence.get("page") if raw_evidence else value.get("page"),
-            "quote": raw_evidence.get("quote") or value.get("quote") or value.get("note", ""),
-        }
-        evidence_list = [evidence] if evidence.get("quote") or evidence.get("paper_id") else []
 
         if op in ("add_card_ontology", "add_alias", "add_ontology"):
             card = self.get_card(target_id)
@@ -593,9 +850,14 @@ class Archive:
             result = self.put_card(card)
             target_id = result["card_id"]
         elif op in ("create_proposition", "add_proposition"):
-            text = value.get("content") or value.get("text", "")
-            title = value.get("title") or clip(text, 60)
+            title = value.get("title")
+            text = value.get("review") or value.get("content") or value.get("text", "")
             related = value.get("related_knowledge") or value.get("node_ids") or []
+            raw_evidence = value.get("evidence") or []
+            if not isinstance(raw_evidence, list) or len(raw_evidence) < MIN_EVIDENCE:
+                raise ArchiveError(
+                    f"create_proposition needs at least {MIN_EVIDENCE} evidence entries"
+                )
             prop_id = prop_id_for(
                 title,
                 {
@@ -605,39 +867,93 @@ class Archive:
                 },
                 explicit=value.get("id") or value.get("prop_id"),
             )
+            scaffold = {"id": prop_id, "evidence": []}
+            entries = []
+            for raw in raw_evidence:
+                entry = {
+                    "id": raw.get("id") or evidence_id_for(scaffold),
+                    "stance": raw.get("stance") or "supports",
+                    "conclusion": clip(raw.get("conclusion") or "", MAX_CONCLUSION),
+                    "papers": [
+                        self._paper_record(paper, proposal.get("push_id"))
+                        for paper in (raw.get("papers") or [])
+                    ],
+                    "created_at": raw.get("created_at") or now(),
+                    "updated_at": raw.get("updated_at") or now(),
+                }
+                if not entry["papers"]:
+                    raise ArchiveError(
+                        f"create_proposition evidence {entry['id']} needs a paper"
+                    )
+                scaffold["evidence"].append(entry)
+                entries.append(entry)
             self.put_prop(
                 {
                     "id": prop_id,
-                    "title": title,
-                    "content": text,
+                    "title": title or clip(text, 60),
+                    "review": text,
                     "related_knowledge": related,
-                    "history": [
+                    "evidence": entries,
+                    "changelog": [
                         {
                             "at": now(),
                             "action": "created",
-                            "source": source,
+                            "field": "review",
                             "before": None,
-                            "after": {
-                                "title": title,
-                                "content": text,
-                                "related_knowledge": related,
-                            },
+                            "after": text,
                             "rationale": proposal.get("rationale", ""),
-                            "evidence": evidence_list,
+                            "source": source,
                         }
                     ],
+                    "evidence_updates_since_review": 0,
                 }
             )
             target_id = prop_id
         elif op in ("add_proposition_evidence", "add_evidence"):
-            self.update_prop(
-                target_id,
-                {},
-                action="evidence_added",
-                source=source,
-                rationale=proposal.get("rationale", ""),
-                evidence=evidence_list,
+            prop = self.get_prop(target_id)
+            entry = self._new_evidence_from_value(prop, value, proposal)
+            prop.setdefault("evidence", []).append(entry)
+            prop["evidence_updates_since_review"] = (
+                int(prop.get("evidence_updates_since_review") or 0) + 1
             )
+            self.put_prop(prop)
+        elif op == "merge_proposition_evidence":
+            prop = self.get_prop(target_id)
+            evidence_id = value.get("target_evidence_id")
+            entry = next(
+                (e for e in prop.get("evidence", []) if e.get("id") == evidence_id),
+                None,
+            )
+            if not entry:
+                raise ArchiveError(
+                    f"merge_proposition_evidence: unknown evidence {evidence_id}"
+                )
+            papers_raw = value.get("papers") or []
+            if not isinstance(papers_raw, list):
+                raise ArchiveError("merge_proposition_evidence papers must be a list")
+            existing = {p.get("paper_id") for p in entry.get("papers", [])}
+            added = 0
+            for raw in papers_raw:
+                paper = self._paper_record(raw, proposal.get("push_id"))
+                if paper["paper_id"] in existing:
+                    continue
+                entry.setdefault("papers", []).append(paper)
+                existing.add(paper["paper_id"])
+                added += 1
+            conclusion = value.get("conclusion")
+            if conclusion:
+                conclusion = clip(conclusion, MAX_CONCLUSION)
+            if not added and not conclusion:
+                raise ArchiveError(
+                    "merge_proposition_evidence must add a paper or change the conclusion"
+                )
+            if conclusion:
+                entry["conclusion"] = conclusion
+            entry["updated_at"] = now()
+            prop["evidence_updates_since_review"] = (
+                int(prop.get("evidence_updates_since_review") or 0) + 1
+            )
+            self.put_prop(prop)
         elif op == "update_proposition_title":
             text = raw_value if isinstance(raw_value, str) else value.get("title", "")
             self.update_prop(
@@ -646,18 +962,28 @@ class Archive:
                 action="title_changed",
                 source=source,
                 rationale=proposal.get("rationale", ""),
-                evidence=evidence_list,
             )
-        elif op in ("update_proposition_content", "update_summary"):
-            text = raw_value if isinstance(raw_value, str) else value.get("text", "")
-            self.update_prop(
-                target_id,
-                {"content": text},
-                action="content_changed",
-                source=source,
-                rationale=proposal.get("rationale", ""),
-                evidence=evidence_list,
+        elif op in ("update_proposition_review", "update_proposition_content", "update_summary"):
+            text = (
+                raw_value
+                if isinstance(raw_value, str)
+                else value.get("review") or value.get("content") or value.get("text", "")
             )
+            prop = self.get_prop(target_id)
+            prop.setdefault("changelog", []).append(
+                {
+                    "at": now(),
+                    "action": "review_changed",
+                    "field": "review",
+                    "before": prop.get("review", ""),
+                    "after": text,
+                    "rationale": proposal.get("rationale", ""),
+                    "source": source,
+                }
+            )
+            prop["review"] = text
+            prop["evidence_updates_since_review"] = 0
+            self.put_prop(prop)
         elif op == "update_proposition_related_knowledge":
             related = raw_value if isinstance(raw_value, list) else value.get("related_knowledge", [])
             self.update_prop(
@@ -666,13 +992,12 @@ class Archive:
                 action="related_knowledge_changed",
                 source=source,
                 rationale=proposal.get("rationale", ""),
-                evidence=evidence_list,
             )
         else:
             raise ArchiveError(f"unknown proposal op: {op}")
 
         record = {
-            "schema_version": 2,
+            "schema_version": 3,
             "proposal_id": proposal.get("proposal_id"),
             "push_id": proposal.get("push_id"),
             "op": op,

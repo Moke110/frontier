@@ -48,6 +48,7 @@ def test_context_aggregates_card_props_and_history(kl_home):
 def test_apply_three_proposal_kinds(kl_home):
     store = Archive(kl_home)
     store.init()
+    quote = "HMBS loss impairs heme biosynthesis in hepatocytes."
     push = {
         "push_id": "push_1",
         "checkpoint_id": "card_hmbs",
@@ -56,15 +57,23 @@ def test_apply_three_proposal_kinds(kl_home):
             {
                 "proposal_id": "p1",
                 "push_id": "push_1",
-                "kind": "add_evidence",
+                "op": "add_proposition_evidence",
                 "target_type": "proposition",
                 "target_id": "prop_hmbs_aip",
-                "diff": {"op": "add", "path": "evidence", "value": {"paper_id": "p1", "note": "n"}},
+                "diff": {
+                    "op": "add",
+                    "path": "evidence",
+                    "value": {
+                        "conclusion": "HMBS 缺失降低血红素合成。",
+                        "stance": "supports",
+                        "papers": [{"paper_id": "p1", "page": 3, "quote": quote}],
+                    },
+                },
             },
             {
                 "proposal_id": "p2",
                 "push_id": "push_1",
-                "kind": "add_alias",
+                "op": "add_card_ontology",
                 "target_type": "card",
                 "target_id": "card_hmbs",
                 "diff": {"op": "add", "path": "ontology", "value": "HMBS enzyme 2"},
@@ -72,17 +81,30 @@ def test_apply_three_proposal_kinds(kl_home):
             {
                 "proposal_id": "p3",
                 "push_id": "push_1",
-                "kind": "add_proposition",
+                "op": "create_proposition",
                 "target_type": "none",
-                "target_id": "",
+                "target_id": None,
                 "diff": {
                     "op": "add",
                     "path": "proposition",
                     "value": {
                         "title": "New claim",
-                        "content": "new claim",
+                        "review": "A synthetic cross-paper claim.",
                         "related_knowledge": ["card_hmbs", "card_heme_biosynthesis"],
-                        "paper_id": "p1",
+                        "evidence": [
+                            {
+                                "id": "ev_new_claim_01",
+                                "stance": "supports",
+                                "conclusion": "First paper supports the claim.",
+                                "papers": [{"paper_id": "p1", "page": 1, "quote": quote}],
+                            },
+                            {
+                                "id": "ev_new_claim_02",
+                                "stance": "contradicts",
+                                "conclusion": "Second paper points the other way.",
+                                "papers": [{"paper_id": "p2", "page": 2, "quote": quote}],
+                            },
+                        ],
                     },
                 },
             },
@@ -92,13 +114,12 @@ def test_apply_three_proposal_kinds(kl_home):
     for pid in ("p1", "p2", "p3"):
         store.apply_proposal("push_1", pid)
     prop = store.get_prop("prop_hmbs_aip")
-    evidence = [
-        e for entry in prop["history"] for e in entry.get("evidence", []) if e.get("paper_id")
-    ]
-    assert [e["paper_id"] for e in evidence] == ["p1"]
-    assert prop["history"][-1]["action"] == "evidence_added"
+    assert [p["paper_id"] for p in prop["evidence"][0]["papers"]] == ["p1"]
+    assert prop["evidence_updates_since_review"] == 1
     assert "HMBS enzyme 2" in store.get_card("card_hmbs")["ontology"]
-    assert len(store.list_props("card_heme_biosynthesis")) == 1
+    created = store.get_prop("prop_new_claim")
+    assert len(created["evidence"]) == 2
+    assert {e["stance"] for e in created["evidence"]} == {"supports", "contradicts"}
 
 
 def test_apply_decisions_is_idempotent_and_handles_reject(kl_home, tmp_path):
@@ -243,7 +264,8 @@ def test_migration_is_idempotent_and_rolls_back(tmp_path):
     store = Archive(home)
     prop = store.get_prop("prop_virtual_cell_perturbation")
     assert prop["related_knowledge"] == ["card_virtual_cell", "card_perturbation_prediction"]
-    assert prop["history"][0]["source"]["kind"] == "migration"
+    assert prop["changelog"][0]["source"]["kind"] == "migration"
+    assert prop["evidence"] == []
 
     backup = Path(first["backup"]).name
     out = migrate.rollback(home, backup)
@@ -251,3 +273,74 @@ def test_migration_is_idempotent_and_rolls_back(tmp_path):
     assert (home / "frontier.yaml").exists()
     assert (home / "archive" / "kg" / "nodes" / "kg_hmbs.json").exists()
     assert not (home / "archive" / "cards").exists()
+
+
+def test_migrate_v3_converts_history_and_rolls_back(kl_home):
+    from archive import migrate
+
+    before = json.loads(
+        (kl_home / "archive" / "propositions" / "prop_virtual_cell_perturbation.json").read_text()
+    )
+    assert "history" in before
+
+    out = migrate.migrate_v3(kl_home)
+    assert out["status"] == "migrated"
+    assert out["converted"] >= 1
+    prop = Archive(kl_home).get_prop("prop_virtual_cell_perturbation")
+    assert prop["schema_version"] == 3
+    assert "history" not in prop
+    assert prop["review"]
+    assert prop["evidence"] == []
+    assert prop["changelog"][0]["action"] == "created"
+
+    assert migrate.migrate_v3(kl_home)["status"] == "already-migrated"
+
+    backup = Path(out["backup"]).name
+    assert migrate.rollback_v3(kl_home, backup)["status"] == "rolled-back"
+    restored = json.loads(
+        (kl_home / "archive" / "propositions" / "prop_virtual_cell_perturbation.json").read_text()
+    )
+    assert "history" in restored
+
+
+def test_v3_conversion_maps_history_evidence_to_one_entry():
+    from archive.store import v3_prop_from_v2
+
+    raw = {
+        "id": "prop_hmbs_aip",
+        "title": "HMBS 缺失导致 AIP",
+        "content": "短结论",
+        "related_knowledge": ["card_hmbs", "card_aip"],
+        "history": [
+            {
+                "at": "2026-10-20T09:00:00+08:00",
+                "action": "created",
+                "source": {"kind": "migration", "id": "v1"},
+                "before": None,
+                "after": {"content": "短结论"},
+                "rationale": "初始构建",
+                "evidence": [],
+            },
+            {
+                "at": "2026-10-21T09:00:00+08:00",
+                "action": "evidence_added",
+                "source": {"kind": "push", "id": "p1"},
+                "before": {},
+                "after": {},
+                "rationale": "两篇病例一致显示 HMBS 活性下降导致 AIP。",
+                "evidence": [
+                    {"paper_id": "pmid1", "push_id": "p1", "page": 3, "quote": "Case report quote one."},
+                    {"paper_id": "pmid2", "push_id": "p2", "page": 5, "quote": "Case report quote two."},
+                ],
+            },
+        ],
+    }
+    prop = v3_prop_from_v2(raw)
+    assert prop["review"] == "短结论"
+    assert len(prop["evidence"]) == 1
+    entry = prop["evidence"][0]
+    assert entry["stance"] == "supports"
+    assert entry["conclusion"].startswith("两篇病例")
+    assert [p["paper_id"] for p in entry["papers"]] == ["pmid1", "pmid2"]
+    assert entry["migrated_from_v2"] is True
+    assert len(prop["changelog"]) == 1

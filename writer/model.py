@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from archive.store import v3_prop_from_v2
 from common import clip, now, read_json, write_json
 
 SENTENCE_RE = re.compile(r"(?<=[.!?。！？])\s+")
@@ -83,7 +84,7 @@ def _context(home: Path, card_id: str | None) -> dict:
     prop_dir = root / "propositions"
     props = []
     for path in sorted(prop_dir.glob("*.json")) if prop_dir.exists() else []:
-        prop = read_json(path) or {}
+        prop = v3_prop_from_v2(read_json(path) or {})
         if card_id and card_id in prop.get("related_knowledge", []):
             props.append(prop)
     raw_dir = root / "raw"
@@ -102,7 +103,7 @@ def _why(context: dict) -> str:
     if card and card.get("annotation"):
         parts.append(card["annotation"].strip().rstrip("。."))
     for prop in context["props"][:2]:
-        parts.append(f"命题「{(prop.get('title') or prop.get('content','')).rstrip('。.')}」")
+        parts.append(f"命题「{(prop.get('title') or prop.get('review','')).rstrip('。.')}」")
     if context["archived"]:
         parts.append(f"该知识卡片已归档 {context['archived']} 篇，本篇是其中之一")
     return clip("；".join(parts) or "暂无知识卡片脉络，本篇作为该卡片的新线索。", 400)
@@ -177,24 +178,30 @@ def _propose(push: dict, paper: dict, context: dict, card_id: str) -> list[dict]
                     best_sentence = sentence
                     break
     if best and best_hits:
-        evidence = [
-            e
-            for entry in best.get("history", [])
-            for e in entry.get("evidence", [])
-            if e.get("paper_id") == paper.get("paper_id")
+        current_paper = paper.get("paper_id")
+        already = [
+            row
+            for entry in best.get("evidence", [])
+            for row in entry.get("papers", [])
+            if row.get("paper_id") == current_paper
         ]
-        if not evidence and best_sentence:
-            count = sum(len(entry.get("evidence", [])) for entry in best.get("history", []))
+        if not already and best_sentence:
+            count = len(best.get("evidence", []))
             add(
                 "add_proposition_evidence",
                 "proposition",
                 best["id"],
                 "evidence",
                 {
-                    "paper_id": paper.get("paper_id"),
-                    "page": None,
-                    "quote": clip(best_sentence, 400),
-                    "section": "abstract",
+                    "conclusion": clip(best_sentence, 200),
+                    "stance": "supports",
+                    "papers": [
+                        {
+                            "paper_id": paper.get("paper_id"),
+                            "page": None,
+                            "quote": clip(best_sentence, 400),
+                        }
+                    ],
                 },
                 count,
                 count + 1,
@@ -203,7 +210,9 @@ def _propose(push: dict, paper: dict, context: dict, card_id: str) -> list[dict]
                 0.7,
             )
 
-    # 2) propose a new proposition when two existing cards co-occur in one sentence
+    # 2) propose a new proposition when two existing cards co-occur in >=2 sentences
+    support = []
+    hit_ids: list[str] = []
     for sentence in _sentences(abstract):
         low_sentence = sentence.lower()
         hit_cards = []
@@ -214,13 +223,33 @@ def _propose(push: dict, paper: dict, context: dict, card_id: str) -> list[dict]
         if len(hit_cards) < 2:
             continue
         ids = [c["id"] for c in hit_cards[:2]]
-        linked = any(
-            set(ids).issubset(set(p.get("related_knowledge", []))) for p in context["props"]
-        )
-        if linked or ids[0] == ids[1]:
+        if ids[0] == ids[1]:
             continue
-        title = clip(sentence, 60)
-        content = clip(sentence, 300)
+        linked = any(
+            set(ids).issubset(set(p.get("related_knowledge", [])))
+            for p in context["props"]
+        )
+        if linked:
+            continue
+        hit_ids = ids
+        support.append(sentence)
+    if len(support) >= 2:
+        title = clip(support[0], 60)
+        review = clip(" ".join(support[:2]), 2000)
+        entries = [
+            {
+                "stance": "supports",
+                "conclusion": clip(sentence, 200),
+                "papers": [
+                    {
+                        "paper_id": paper.get("paper_id"),
+                        "page": None,
+                        "quote": clip(sentence, 400),
+                    }
+                ],
+            }
+            for sentence in support[:2]
+        ]
         add(
             "create_proposition",
             "none",
@@ -228,16 +257,16 @@ def _propose(push: dict, paper: dict, context: dict, card_id: str) -> list[dict]
             "proposition",
             {
                 "title": title,
-                "content": content,
-                "related_knowledge": ids,
+                "review": review,
+                "related_knowledge": hit_ids,
+                "evidence": entries,
             },
             None,
-            {"title": title, "content": content, "related_knowledge": ids},
-            "同一句话同时提到两张知识卡片，且现有命题未连接它们。",
-            sentence,
+            {"title": title, "review": review, "related_knowledge": hit_ids},
+            "至少两句话同时提到两张知识卡片，且现有命题未连接它们。",
+            support[0],
             0.5,
         )
-        break
     return proposals
 
 
@@ -256,6 +285,7 @@ def write(selection: dict, home: Path, out_dir: Path, day: str | None = None) ->
         sections["why"] = _why(context)
         push = {
             "schema_version": 1,
+            "format": "html",
             "push_id": f"{day}_{cp_id}_{index:02d}",
             "date": day,
             "checkpoint_id": cp_id,

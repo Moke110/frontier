@@ -12,7 +12,7 @@ from typing import Any
 
 from common import clip
 
-TEMPLATE = {"card": "blue", "proposition": "violet"}
+TEMPLATE = {"card": "blue", "proposition": "violet", "proposition_review": "violet"}
 MAX_CHANGES = 3
 MAX_EVIDENCE = 2
 DIFF_LIMIT = 260
@@ -58,8 +58,9 @@ def _op_label(op: str) -> str:
         "create_card": "新建知识卡片",
         "create_proposition": "新建命题",
         "update_proposition_title": "改写命题标题",
-        "update_proposition_content": "改写命题内容",
-        "add_proposition_evidence": "补充证据",
+        "update_proposition_review": "改写命题综述",
+        "add_proposition_evidence": "新增证据",
+        "merge_proposition_evidence": "并入已有证据",
         "update_proposition_related_knowledge": "调整关联卡片",
     }.get(op, op)
 
@@ -95,11 +96,31 @@ def _change_block(proposal: dict) -> str:
         lines.append(_text_diff(before, after or value))
     elif op == "add_proposition_evidence":
         evidence = value if isinstance(value, dict) else {}
-        quote = evidence.get("quote") or (proposal.get("evidence") or {}).get("quote", "")
-        lines.append(f"> {_short(quote, 300)}")
-        page = evidence.get("page")
-        if page:
-            lines.append(f"<font color='grey'>第 {page} 页</font>")
+        stance = "支持" if evidence.get("stance") == "supports" else "反证"
+        lines.append(f"<font color='grey'>立场：{stance}</font>")
+        lines.append(_short(evidence.get("conclusion"), 200))
+        papers = evidence.get("papers") or []
+        if papers:
+            paper = papers[0]
+            lines.append(f"> {_short(paper.get('quote'), 300)}")
+            where = f"第 {paper.get('page')} 页" if paper.get("page") else "摘要"
+            lines.append(
+                f"<font color='grey'>《{_short(paper.get('paper_id'), 60)}》 · {where}</font>"
+            )
+    elif op == "merge_proposition_evidence":
+        evidence = value if isinstance(value, dict) else {}
+        target = evidence.get("target_evidence_id") or "—"
+        lines.append(f"并入 `{target}`")
+        if evidence.get("conclusion"):
+            lines.append(_short(evidence.get("conclusion"), 200))
+        for paper in evidence.get("papers") or []:
+            where = f"第 {paper.get('page')} 页" if paper.get("page") else "摘要"
+            lines.append(
+                f"> {_short(paper.get('quote'), 300)}\n"
+                f"<font color='grey'>《{_short(paper.get('paper_id'), 60)}》 · {where}</font>"
+            )
+    elif op == "update_proposition_review":
+        lines.append(_text_diff(before, after or value))
     elif op == "update_proposition_related_knowledge":
         lines.append(
             "<font color='grey'>原</font> "
@@ -134,8 +155,8 @@ def _evidence_lines(push: dict, proposals: list[dict]) -> list[str]:
     }
     for proposal in proposals:
         op = proposal.get("op") or proposal.get("kind")
-        if op == "add_proposition_evidence":
-            # The change block already shows this quote and page.
+        if op in ("add_proposition_evidence", "merge_proposition_evidence"):
+            # The change block already shows these quotes and pages.
             continue
         evidence = proposal.get("evidence") or {}
         quote = _short(evidence.get("quote"), 300)
@@ -161,20 +182,26 @@ def _target_line(item: dict) -> str:
         if not target_id:
             return "**新建知识卡片**" + (f" · {label}" if label else "")
         return f"**`{target_id}`**" + (f" · {label}" if label and label != target_id else "")
-    if target_type == "proposition":
+    if target_type in ("proposition", "proposition_review"):
         if not target_id:
             return "**新建命题**" + (f" · {label}" if label and label != "新建命题" else "")
         return f"**`{target_id}`**" + (f" · {label}" if label and label != target_id else "")
     return item.get("summary") or "知识库更新"
 
 
-def _header_title(target_type: str, index: int, total: int) -> str:
-    kind = "知识卡片更新" if target_type == "card" else "命题证据更新"
-    return f"{kind} · 第 {index} / {total} 题"
+def _header_title(kind: str, target_type: str, index: int, total: int) -> str:
+    if kind == "proposition_review":
+        label = "命题综述更新"
+    elif target_type == "card":
+        label = "知识卡片更新"
+    else:
+        label = "命题证据更新"
+    return f"{label} · 第 {index} / {total} 题"
 
 
 def _buttons(item: dict, proposal_ids: list[str]) -> dict:
     item_id = item.get("id") or item.get("queue_item_id") or ""
+    review = item.get("kind") == "proposition_review" or item.get("target_type") == "proposition_review"
     base = {
         "queue_item_id": item_id,
         "proposal_ids": proposal_ids,
@@ -204,13 +231,27 @@ def _buttons(item: dict, proposal_ids: list[str]) -> dict:
                 "tag": "column",
                 "width": "weighted",
                 "weight": 1,
-                "elements": [button("agree_all", "同意全部", "primary_filled", "agree_all")],
+                "elements": [
+                    button(
+                        "adopt" if review else "agree_all",
+                        "采纳此版" if review else "同意全部",
+                        "primary_filled",
+                        "adopt" if review else "agree_all",
+                    )
+                ],
             },
             {
                 "tag": "column",
                 "width": "weighted",
                 "weight": 1,
-                "elements": [button("reject_all", "拒绝全部", "danger", "reject_all")],
+                "elements": [
+                    button(
+                        "keep_previous" if review else "reject_all",
+                        "保持上一版" if review else "拒绝全部",
+                        "danger",
+                        "keep_previous" if review else "reject_all",
+                    )
+                ],
             },
         ],
     }
@@ -232,11 +273,16 @@ def build_update_card(push: dict, item: dict, index: int, total: int) -> dict:
         p.get("proposal_id") for p in proposals if p.get("proposal_id")
     ]
     target_type = payload.get("target_type") or (
-        "card" if item.get("kind") == "card_update" else "proposition"
+        "card"
+        if item.get("kind") == "card_update"
+        else "proposition_review"
+        if item.get("kind") == "proposition_review"
+        else "proposition"
     )
     merged = {
         **payload,
         "id": item.get("id") or item.get("queue_item_id"),
+        "kind": item.get("kind"),
         "target_type": target_type,
     }
     shown = proposals[:MAX_CHANGES]
@@ -249,9 +295,35 @@ def build_update_card(push: dict, item: dict, index: int, total: int) -> dict:
     confidence = float(top.get("confidence") or 0)
     elements: list[dict] = [
         {"tag": "markdown", "content": _target_line(merged)},
-        {"tag": "markdown", "content": _paper_line(push)},
-        {"tag": "markdown", "content": "\n\n".join(blocks)},
     ]
+    if item.get("kind") == "proposition_review":
+        payload = item.get("payload") or {}
+        stats = payload.get("stats") or {}
+        if stats:
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": (
+                        f"基于 {stats.get('evidence_count', 0)} 条证据"
+                        f"（支持 {stats.get('supports', 0)} / 反证 {stats.get('contradicts', 0)}）"
+                        + (
+                            f"；本次改动 +{stats.get('added', 0)} / -{stats.get('removed', 0)} 行"
+                            if stats.get("added") or stats.get("removed")
+                            else ""
+                        )
+                    ),
+                }
+            )
+        if payload.get("base_url"):
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": f"[在知识库中查看]({payload['base_url']})",
+                }
+            )
+    else:
+        elements.append({"tag": "markdown", "content": _paper_line(push)})
+    elements.append({"tag": "markdown", "content": "\n\n".join(blocks)})
     evidence = _evidence_lines(push, proposals)
     if evidence:
         elements.append(
@@ -269,8 +341,13 @@ def build_update_card(push: dict, item: dict, index: int, total: int) -> dict:
         {
             "tag": "markdown",
             "content": (
-                "<font color='grey'>只处理这一项。同意后立即写入知识库；"
-                "拒绝则保持原样。答完这一题才会发下一题。</font>"
+                (
+                    "<font color='grey'>只处理这一项。采纳后立即写入知识库；"
+                    "保持上一版则综述不变。答完这一题才会发下一题。</font>"
+                    if item.get("kind") == "proposition_review"
+                    else "<font color='grey'>只处理这一项。同意后立即写入知识库；"
+                    "拒绝则保持原样。答完这一题才会发下一题。</font>"
+                )
             ),
         }
     )
@@ -290,7 +367,7 @@ def build_update_card(push: dict, item: dict, index: int, total: int) -> dict:
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": _header_title(target_type, index, total),
+                "content": _header_title(merged.get("kind", ""), target_type, index, total),
             },
             "template": TEMPLATE.get(target_type, "yellow"),
             "icon": {"tag": "standard_icon", "token": "wiki-bitable_colorful"},

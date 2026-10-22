@@ -16,6 +16,7 @@ from trigger.service import (
     listen,
     load_owner,
     run_pending,
+    run_review,
     scheduled_pull,
 )
 
@@ -38,6 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--event", help="JSON file; default stdin")
 
     sub.add_parser("scheduled", help="08:00 timer entry: request or start one push")
+    p = sub.add_parser("review-request", help="generate and send one queued review question")
+    p.add_argument("--item", required=True)
+
     p = sub.add_parser("run-request", help="start the merged pending request if allowed")
     p.add_argument("--quiet", action="store_true", help="do not log no-op polls (retry timer)")
     return parser
@@ -67,6 +71,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "scheduled":
         emit(scheduled_pull(config))
+        return 0
+    if args.cmd == "review-request":
+        emit(run_review(config, args.item))
         return 0
     if args.cmd == "run-request":
         emit(run_pending(config, quiet=args.quiet))

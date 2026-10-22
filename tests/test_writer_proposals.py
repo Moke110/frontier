@@ -68,7 +68,7 @@ def test_task_carries_history_limits_and_evidence_rules(kl_home, fixtures_dir, t
     task, _ = _pipeline(kl_home, fixtures_dir, tmp_path)
     hmbs = next(i for i in task["items"] if i["checkpoint_id"] == "card_hmbs")
     prop = next(p for p in hmbs["context"]["propositions"] if p["id"] == "prop_hmbs_aip")
-    assert prop["history"]
+    assert prop["changelog"]
     assert task["limits"] == {"targets": 2, "per_entity": 1}
     assert task["evidence_rules"]["page"].startswith("integer")
     assert set(task["proposal_kinds"]) == set(writer_tasks.PROPOSAL_KINDS)
@@ -134,8 +134,10 @@ def test_enforces_two_entity_targets_across_cards_and_propositions(kl_home, fixt
 def test_evidence_must_come_from_the_pushed_paper(kl_home, fixtures_dir, tmp_path):
     task, outbox = _pipeline(kl_home, fixtures_dir, tmp_path)
     path, push = _push(outbox)
-    proposal = push["proposals"][0]
-    proposal["evidence"]["paper_id"] = "made_up_paper"
+    proposal = next(
+        p for p in push["proposals"] if p["op"] == "add_proposition_evidence"
+    )
+    proposal["diff"]["value"]["papers"][0]["paper_id"] = "made_up_paper"
     path.write_text(json.dumps(push, ensure_ascii=False), encoding="utf-8")
     result = writer_tasks.validate(task, outbox)
     assert result["ok"] is False
@@ -192,16 +194,23 @@ def test_stale_before_is_rejected(kl_home, fixtures_dir, tmp_path):
     assert any("before does not match card annotation" in e for e in result["errors"])
 
 
-def test_archive_applies_every_v2_op_and_is_idempotent(kl_home):
+def test_archive_applies_every_v3_op_and_is_idempotent(kl_home):
     store = Archive(kl_home)
     store.init()
     card = store.get_card("card_hmbs")
     prop = store.get_prop("prop_hmbs_aip")
     push_id = "push_contract_01"
-    evidence = {"paper_id": "p1", "page": 3, "quote": "HMBS loss impairs heme biosynthesis"}
-    first_evidence = [
-        e for entry in prop["history"] for e in entry.get("evidence", [])
-    ]
+    quote = "HMBS loss impairs heme biosynthesis in hepatocytes"
+    evidence = {"paper_id": "p1", "page": 3, "quote": quote}
+
+    def ev(ev_id: str, paper_id: str = "p1") -> dict:
+        return {
+            "id": ev_id,
+            "stance": "supports",
+            "conclusion": "HMBS 缺失会降低血红素合成。",
+            "papers": [{"paper_id": paper_id, "page": 3, "quote": quote}],
+        }
+
     proposals = [
         _proposal(
             {"push_id": push_id, "paper_ids": ["p1"]},
@@ -220,7 +229,11 @@ def test_archive_applies_every_v2_op_and_is_idempotent(kl_home):
             "update_card_annotation",
             "card",
             "card_hmbs",
-            diff={"op": "replace", "path": "annotation", "value": card["annotation"] + "\n新增注释。"},
+            diff={
+                "op": "replace",
+                "path": "annotation",
+                "value": card["annotation"] + "\n新增注释。",
+            },
             before=card["annotation"],
             after=card["annotation"] + "\n新增注释。",
             evidence=evidence,
@@ -257,8 +270,9 @@ def test_archive_applies_every_v2_op_and_is_idempotent(kl_home):
                 "value": {
                     "id": "prop_hmbs_heme_trafficking",
                     "title": "HMBS 影响血红素转运",
-                    "content": "HMBS 功能缺失会改变血红素在细胞内的转运与分配。",
+                    "review": "HMBS 功能缺失会改变血红素在细胞内的转运与分配。",
                     "related_knowledge": ["card_hmbs", "card_heme_biosynthesis"],
+                    "evidence": [ev("ev_hmbs_heme_trafficking_01", "p1"), ev("ev_hmbs_heme_trafficking_02", "p2")],
                 },
             },
             before=None,
@@ -279,12 +293,16 @@ def test_archive_applies_every_v2_op_and_is_idempotent(kl_home):
         _proposal(
             {"push_id": push_id, "paper_ids": ["p1"]},
             "p_contract_06",
-            "update_proposition_content",
+            "update_proposition_review",
             "proposition",
             prop["id"],
-            diff={"op": "replace", "path": "content", "value": "修订后的命题内容：HMBS 功能缺失导致 AIP。"},
-            before=prop["content"],
-            after="修订后的命题内容：HMBS 功能缺失导致 AIP。",
+            diff={
+                "op": "replace",
+                "path": "review",
+                "value": "修订后的综述：HMBS 功能缺失导致 AIP，现有证据以病例与酶学测定为主。",
+            },
+            before=prop["review"],
+            after="修订后的综述：HMBS 功能缺失导致 AIP，现有证据以病例与酶学测定为主。",
             evidence=evidence,
         ),
         _proposal(
@@ -293,14 +311,34 @@ def test_archive_applies_every_v2_op_and_is_idempotent(kl_home):
             "add_proposition_evidence",
             "proposition",
             prop["id"],
-            diff={"op": "add", "path": "evidence", "value": evidence},
-            before=len(first_evidence),
-            after=len(first_evidence) + 1,
+            diff={"op": "add", "path": "evidence", "value": ev("ev_hmbs_aip_01")},
+            before=len(prop["evidence"]),
+            after=len(prop["evidence"]) + 1,
             evidence=evidence,
         ),
         _proposal(
             {"push_id": push_id, "paper_ids": ["p1"]},
             "p_contract_08",
+            "merge_proposition_evidence",
+            "proposition",
+            prop["id"],
+            diff={
+                "op": "merge",
+                "path": "evidence",
+                "value": {
+                    "target_evidence_id": "ev_hmbs_aip_01",
+                    "papers": [
+                        {"paper_id": "p3", "page": 2, "quote": quote}
+                    ],
+                },
+            },
+            before={"conclusion": "HMBS 缺失会降低血红素合成。", "papers": ["p1"]},
+            after={"conclusion": "HMBS 缺失会降低血红素合成。", "papers": ["p1", "p3"]},
+            evidence=evidence,
+        ),
+        _proposal(
+            {"push_id": push_id, "paper_ids": ["p1"]},
+            "p_contract_09",
             "update_proposition_related_knowledge",
             "proposition",
             prop["id"],
@@ -318,25 +356,25 @@ def test_archive_applies_every_v2_op_and_is_idempotent(kl_home):
     for proposal in proposals:
         store.apply_proposal(push_id, proposal["proposal_id"])
 
-    updated_card = store.get_card("card_hmbs")
-    assert "PBGD enzyme" in updated_card["ontology"]
-    assert "新增注释" in updated_card["annotation"]
+    assert "PBGD enzyme" in store.get_card("card_hmbs")["ontology"]
+    assert store.get_card("card_hmbs")["annotation"].endswith("新增注释。")
     assert store.get_card("card_heme_trafficking")["label"] == "heme trafficking"
-    assert store.get_prop("prop_hmbs_heme_trafficking")["related_knowledge"] == [
-        "card_hmbs",
-        "card_heme_biosynthesis",
-    ]
-    updated_prop = store.get_prop(prop["id"])
-    assert updated_prop["title"].endswith("（修订）")
-    assert updated_prop["content"].startswith("修订后的命题内容")
-    assert updated_prop["related_knowledge"] == ["card_hmbs", "card_heme_biosynthesis"]
-    evidence_rows = [
-        e for entry in updated_prop["history"] for e in entry.get("evidence", [])
-    ]
-    assert any(e.get("paper_id") == "p1" and e.get("page") == 3 for e in evidence_rows)
+
+    updated = store.get_prop("prop_hmbs_aip")
+    assert updated["title"].endswith("（修订）")
+    assert updated["review"].startswith("修订后的综述")
+    assert updated["related_knowledge"] == ["card_hmbs", "card_heme_biosynthesis"]
+    assert len(updated["evidence"]) == 1
+    assert [p["paper_id"] for p in updated["evidence"][0]["papers"]] == ["p1", "p3"]
+    assert updated["evidence_updates_since_review"] == 2  # review reset, then add + merge
+    assert updated["changelog"][-1]["action"] == "related_knowledge_changed"
+
+    created = store.get_prop("prop_hmbs_heme_trafficking")
+    assert len(created["evidence"]) == 2
 
     again = store.apply_proposal(push_id, "p_contract_07")
     assert again["deduped"] is True
+    assert len(store.get_prop("prop_hmbs_aip")["evidence"]) == 1
 
 
 def test_mixed_card_and_proposition_targets_share_one_pool(

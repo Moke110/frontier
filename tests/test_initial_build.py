@@ -139,7 +139,8 @@ def test_apply_writes_cards_propositions_and_report(kl_home, tmp_path):
     assert store.get_card("card_topic")["label"] == "Topic"
     prop = store.get_prop("prop_topic_claim")
     assert prop["related_knowledge"] == ["card_topic", "card_other"]
-    assert len(prop["history"][0]["evidence"]) == 2
+    assert len(prop["evidence"]) == 1
+    assert len(prop["evidence"][0]["papers"]) == 2
     assert report["report_path"]
     assert Path(report["report_path"]).exists()
 
