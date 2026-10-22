@@ -158,12 +158,19 @@ def _target_line(item: dict) -> str:
     target_id = item.get("target_id") or ""
     label = item.get("target_label") or ""
     if target_type == "card":
-        return f"知识卡片 `{target_id}`" + (f" · {label}" if label else "")
+        if not target_id:
+            return "**新建知识卡片**" + (f" · {label}" if label else "")
+        return f"**`{target_id}`**" + (f" · {label}" if label and label != target_id else "")
     if target_type == "proposition":
         if not target_id:
-            return "新建命题" + (f" · {label}" if label and label != "新建命题" else "")
-        return f"命题 `{target_id}`" + (f" · {label}" if label else "")
+            return "**新建命题**" + (f" · {label}" if label and label != "新建命题" else "")
+        return f"**`{target_id}`**" + (f" · {label}" if label and label != target_id else "")
     return item.get("summary") or "知识库更新"
+
+
+def _header_title(target_type: str, index: int, total: int) -> str:
+    kind = "知识卡片更新" if target_type == "card" else "命题证据更新"
+    return f"{kind} · 第 {index} / {total} 题"
 
 
 def _buttons(item: dict, proposal_ids: list[str]) -> dict:
@@ -241,6 +248,7 @@ def build_update_card(push: dict, item: dict, index: int, total: int) -> dict:
     rationale = top.get("rationale") or ""
     confidence = float(top.get("confidence") or 0)
     elements: list[dict] = [
+        {"tag": "markdown", "content": _target_line(merged)},
         {"tag": "markdown", "content": _paper_line(push)},
         {"tag": "markdown", "content": "\n\n".join(blocks)},
     ]
@@ -274,18 +282,15 @@ def build_update_card(push: dict, item: dict, index: int, total: int) -> dict:
             "width_mode": "default",
             "summary": {
                 "content": clip(
-                    f"知识更新 {index}/{total}：{_target_line(merged)}", 80
+                    f"知识更新 {index}/{total}：{_target_line(merged).replace('**', '').replace('`', '')}",
+                    80,
                 )
             },
         },
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"知识更新 · 第 {index} / {total} 题",
-            },
-            "subtitle": {
-                "tag": "plain_text",
-                "content": _target_line(merged),
+                "content": _header_title(target_type, index, total),
             },
             "template": TEMPLATE.get(target_type, "yellow"),
             "icon": {"tag": "standard_icon", "token": "wiki-bitable_colorful"},

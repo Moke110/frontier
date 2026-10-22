@@ -30,8 +30,7 @@ PROP_OPS = {
     "add_proposition_evidence",
     "update_proposition_related_knowledge",
 }
-MAX_CARD_TARGETS = 2
-MAX_PROP_TARGETS = 2
+MAX_TARGETS = 2
 LEASE_MINUTES = 10
 _ID_RE = re.compile(r"[^a-z0-9_]+")
 
@@ -157,19 +156,17 @@ class QueueStore:
                 "payload": {},
             }
         ]
-        card_groups: dict[str, dict] = {}
-        prop_groups: dict[str, dict] = {}
+        groups: list[tuple[str, str, dict]] = []
+        index: dict[tuple[str, str], int] = {}
         overflow: list[dict] = []
         for proposal in push.get("proposals") or []:
             if proposal.get("status") != "draft":
                 continue
             op = proposal.get("op") or proposal.get("kind")
             if op in CARD_OPS:
-                key, label = self._target_key(proposal, "card")
-                card_groups.setdefault(key, {"label": label, "proposals": []})["proposals"].append(proposal)
+                target_type = "card"
             elif op in PROP_OPS:
-                key, label = self._target_key(proposal, "proposition")
-                prop_groups.setdefault(key, {"label": label, "proposals": []})["proposals"].append(proposal)
+                target_type = "proposition"
             else:
                 overflow.append(
                     {
@@ -178,30 +175,33 @@ class QueueStore:
                         "op": op,
                     }
                 )
+                continue
+            key, label = self._target_key(proposal, target_type)
+            dedupe = (target_type, key)
+            if dedupe in index:
+                groups[index[dedupe]][2]["proposals"].append(proposal)
+            else:
+                index[dedupe] = len(groups)
+                groups.append(
+                    (target_type, key, {"label": label, "proposals": [proposal]})
+                )
 
-        for index, (key, group) in enumerate(card_groups.items()):
-            if index >= MAX_CARD_TARGETS:
+        for position, (target_type, key, group) in enumerate(groups):
+            if position >= MAX_TARGETS:
                 overflow.append(
                     {
-                        "reason": "card_limit",
+                        "reason": "target_limit",
+                        "target_type": target_type,
                         "target": key,
-                        "proposal_ids": [p.get("proposal_id") for p in group["proposals"]],
+                        "proposal_ids": [
+                            p.get("proposal_id") for p in group["proposals"]
+                        ],
                     }
                 )
                 continue
-            items.append(self._update_item("card_update", push_id, card_id, key, group, "card"))
-        for index, (key, group) in enumerate(prop_groups.items()):
-            if index >= MAX_PROP_TARGETS:
-                overflow.append(
-                    {
-                        "reason": "proposition_limit",
-                        "target": key,
-                        "proposal_ids": [p.get("proposal_id") for p in group["proposals"]],
-                    }
-                )
-                continue
+            kind = "card_update" if target_type == "card" else "proposition_update"
             items.append(
-                self._update_item("proposition_update", push_id, card_id, key, group, "proposition")
+                self._update_item(kind, push_id, card_id, key, group, target_type)
             )
         return items, overflow
 

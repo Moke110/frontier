@@ -37,14 +37,14 @@ def test_every_sample_has_two_buttons_and_one_entity():
             value = button["behaviors"][0]["value"]
             assert value["proposal_ids"]
             assert value["queue_item_id"]
-        # One entity per card: the subtitle references at most one target id.
-        assert card["header"]["subtitle"]["content"].count("`") <= 2
+        # One entity per card: the body opens with that entity's id or title.
+        assert "subtitle" not in card["header"]
 
 
 def test_card_update_shows_ontology_and_line_level_annotation_diff():
     _, _, card = _load("card-update")
     text = _markdown(card)
-    assert "知识卡片 `card_hmbs`" in card["header"]["subtitle"]["content"]
+    assert "**`card_hmbs`**" in text.splitlines()[0]
     assert "PBG deaminase" in text
     assert "+ 📌 新证据" in text
     assert "第 3 页" in text
@@ -54,7 +54,7 @@ def test_card_update_shows_ontology_and_line_level_annotation_diff():
 def test_proposition_update_shows_page_and_does_not_repeat_evidence():
     _, _, card = _load("proposition-update")
     text = _markdown(card)
-    assert "命题 `prop_hmbs_aip`" in card["header"]["subtitle"]["content"]
+    assert "**`prop_hmbs_aip`**" in text.splitlines()[0]
     assert "改写命题标题" in text
     assert "改写命题内容" in text
     assert "补充证据" in text
@@ -67,7 +67,7 @@ def test_proposition_update_shows_page_and_does_not_repeat_evidence():
 def test_create_proposition_shows_related_knowledge():
     _, _, card = _load("create-proposition")
     text = _markdown(card)
-    assert card["header"]["subtitle"]["content"].startswith("新建命题")
+    assert text.startswith("**新建命题**")
     assert "card_hmbs" in text
     assert "card_heme_biosynthesis" in text
     assert "card_aip" in text

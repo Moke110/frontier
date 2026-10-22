@@ -93,19 +93,26 @@ ls ~/frontier/SKILL.md ~/frontier/contracts/README.md ~/frontier/archive/cli.py
 SKILLS_DIR="$HOME/.config/opencode/skills"   # 按上表替换
 mkdir -p "$SKILLS_DIR"
 
-if [ -L "$SKILLS_DIR/frontier" ]; then
-  echo "already linked: $(readlink "$SKILLS_DIR/frontier")"
-elif [ -e "$SKILLS_DIR/frontier" ]; then
-  echo "STOP: $SKILLS_DIR/frontier 已存在且不是软链，请询问用户"
-else
-  ln -s "$HOME/frontier" "$SKILLS_DIR/frontier"
-fi
+for name in frontier frontier-loop; do
+  target="$HOME/frontier"
+  [ "$name" = "frontier-loop" ] && target="$HOME/frontier/skills/frontier-loop"
+  if [ -L "$SKILLS_DIR/$name" ]; then
+    echo "already linked: $name -> $(readlink "$SKILLS_DIR/$name")"
+  elif [ -e "$SKILLS_DIR/$name" ]; then
+    echo "STOP: $SKILLS_DIR/$name 已存在且不是软链，请询问用户"
+  else
+    ln -s "$target" "$SKILLS_DIR/$name"
+  fi
+done
 ```
+
+`frontier` 是入口（转发到 `skills/frontier-loop/SKILL.md`）；`frontier-loop` 是完整流程 skill，两者都需要接入。
 
 若所选 agent 不支持软链，改为复制（并告诉用户以后更新要重新复制）：
 
 ```bash
 cp -R "$HOME/frontier" "$SKILLS_DIR/frontier"
+cp -R "$HOME/frontier/skills/frontier-loop" "$SKILLS_DIR/frontier-loop"
 ```
 
 ### 5. 初始化数据（可选，但推荐）

@@ -69,12 +69,12 @@ def test_task_carries_history_limits_and_evidence_rules(kl_home, fixtures_dir, t
     hmbs = next(i for i in task["items"] if i["checkpoint_id"] == "card_hmbs")
     prop = next(p for p in hmbs["context"]["propositions"] if p["id"] == "prop_hmbs_aip")
     assert prop["history"]
-    assert task["limits"] == {"cards": 2, "propositions": 2, "per_entity": 1}
+    assert task["limits"] == {"targets": 2, "per_entity": 1}
     assert task["evidence_rules"]["page"].startswith("integer")
     assert set(task["proposal_kinds"]) == set(writer_tasks.PROPOSAL_KINDS)
 
 
-def test_enforces_two_card_and_two_proposition_targets(kl_home, fixtures_dir, tmp_path):
+def test_enforces_two_entity_targets_across_cards_and_propositions(kl_home, fixtures_dir, tmp_path):
     task, outbox = _pipeline(kl_home, fixtures_dir, tmp_path)
     path, push = _push(outbox)
     hmbs_item = next(i for i in task["items"] if i["checkpoint_id"] == "card_hmbs")
@@ -97,7 +97,7 @@ def test_enforces_two_card_and_two_proposition_targets(kl_home, fixtures_dir, tm
     path.write_text(json.dumps(push, ensure_ascii=False), encoding="utf-8")
     result = writer_tasks.validate(task, outbox)
     assert result["ok"] is False
-    assert any("card targets > limit 2" in e for e in result["errors"])
+    assert any("entity targets > limit 2" in e for e in result["errors"])
 
     for fake_id in ("prop_fake", "prop_fake2"):
         hmbs_item["context"]["propositions"].append(
@@ -128,7 +128,7 @@ def test_enforces_two_card_and_two_proposition_targets(kl_home, fixtures_dir, tm
     path.write_text(json.dumps(push, ensure_ascii=False), encoding="utf-8")
     result = writer_tasks.validate(task, outbox)
     assert result["ok"] is False
-    assert any("proposition targets > limit 2" in e for e in result["errors"])
+    assert any("entity targets > limit 2" in e for e in result["errors"])
 
 
 def test_evidence_must_come_from_the_pushed_paper(kl_home, fixtures_dir, tmp_path):
@@ -337,3 +337,74 @@ def test_archive_applies_every_v2_op_and_is_idempotent(kl_home):
 
     again = store.apply_proposal(push_id, "p_contract_07")
     assert again["deduped"] is True
+
+
+def test_mixed_card_and_proposition_targets_share_one_pool(
+    kl_home, fixtures_dir, tmp_path
+):
+    task, outbox = _pipeline(kl_home, fixtures_dir, tmp_path)
+    path, push = _push(outbox)
+    item = next(i for i in task["items"] if i["checkpoint_id"] == "card_hmbs")
+    card = next(c for c in item["context"]["cards"] if c["id"] == "card_hmbs")
+    prop = next(
+        p for p in item["context"]["propositions"] if p["id"] == "prop_hmbs_aip"
+    )
+    push["proposals"] = [
+        _proposal(
+            push,
+            f"p_{push['push_id']}_01",
+            "add_card_ontology",
+            "card",
+            "card_hmbs",
+            diff={"op": "add", "path": "ontology", "value": "PBG deaminase"},
+            before=card["ontology"],
+            after=card["ontology"] + ["PBG deaminase"],
+        ),
+        _proposal(
+            push,
+            f"p_{push['push_id']}_02",
+            "update_proposition_title",
+            "proposition",
+            "prop_hmbs_aip",
+            diff={"op": "replace", "path": "title", "value": "修订后的标题"},
+            before=prop["title"],
+            after="修订后的标题",
+        ),
+        _proposal(
+            push,
+            f"p_{push['push_id']}_03",
+            "update_proposition_title",
+            "proposition",
+            "prop_hmbs_aip",
+            diff={"op": "replace", "path": "title", "value": "同一目标的另一条操作"},
+            before=prop["title"],
+            after="同一目标的另一条操作",
+        ),
+    ]
+    path.write_text(json.dumps(push, ensure_ascii=False), encoding="utf-8")
+    result = writer_tasks.validate(task, outbox)
+    # Two proposals targeting the same proposition still count as one target.
+    assert result["ok"] is True, result["errors"]
+
+    push["proposals"].append(
+        _proposal(
+            push,
+            f"p_{push['push_id']}_04",
+            "update_card_annotation",
+            "card",
+            "card_aip",
+            diff={
+                "op": "replace",
+                "path": "annotation",
+                "value": "A sufficiently long replacement annotation for the validator.",
+            },
+            before=next(
+                c for c in item["context"]["cards"] if c["id"] == "card_aip"
+            )["annotation"],
+            after="A sufficiently long replacement annotation for the validator.",
+        )
+    )
+    path.write_text(json.dumps(push, ensure_ascii=False), encoding="utf-8")
+    result = writer_tasks.validate(task, outbox)
+    assert result["ok"] is False
+    assert any("entity targets > limit 2" in e for e in result["errors"])

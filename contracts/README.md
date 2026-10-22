@@ -331,7 +331,7 @@ python -m archive.cli prop-list --card card_hmbs
 
 ## 9. 更新提议 `proposal`
 
-嵌在 push 里；v2 每篇推送最多 **2 个卡片目标 + 2 个命题目标**，同一目标的多个操作在入队时合并成一个更新题（见 `docs/specs/unified-question-queue.md`）。
+嵌在 push 里；v2 每篇推送最多 **2 个实体目标**（知识卡片 + 命题合计，新建也占名额），同一目标的多个操作在入队时合并成一个更新题（见 `docs/specs/unified-question-queue.md`）。
 
 ```json
 {

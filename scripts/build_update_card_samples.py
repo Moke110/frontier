@@ -22,7 +22,6 @@ FONT_RE = re.compile(r"</?font[^>]*>")
 def _preview(card: dict) -> str:
     lines = [
         f"## {card['header']['title']['content']}",
-        f"*{card['header']['subtitle']['content']}*",
         "",
     ]
     for element in card["body"]["elements"]:
@@ -76,8 +75,7 @@ def _html(card: dict) -> str:
             body.append('<div class="buttons">' + "".join(buttons) + "</div>")
     return (
         f'<section class="card {template}">'
-        f'<header><div class="no">{html.escape(card["header"]["title"]["content"])}</div>'
-        f'<div class="target">{inline(card["header"]["subtitle"]["content"])}</div></header>'
+        f'<header><div class="no">{html.escape(card["header"]["title"]["content"])}</div></header>'
         f'<div class="content">{"".join(body)}</div></section>'
     )
 
@@ -90,7 +88,7 @@ h1{font-size:20px;max-width:640px;margin:0 auto 8px}
 .card{max-width:640px;margin:0 auto 20px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)}
 header{padding:14px 18px;color:#fff}
 .card.blue header{background:#3370ff}.card.violet header{background:#7f4bff}
-.no{font-size:16px;font-weight:600}.target{font-size:12px;opacity:.9;margin-top:4px}
+.no{font-size:16px;font-weight:600}
 .content{padding:14px 18px 18px;font-size:14px;line-height:1.65}
 .md{margin-bottom:10px}.muted{color:#8f959e}.added{color:#2ea121}.removed{color:#d83931}
 code{background:#f2f3f5;border-radius:4px;padding:1px 4px;font-size:12px}
@@ -114,7 +112,7 @@ def main() -> int:
     previews = [
         "# 更新题卡片样张（由 `scripts/build_update_card_samples.py` 生成）",
         "",
-        "每张卡只含一个实体；按钮只有「同意全部 / 拒绝全部」；标题显示第 N / M 题。",
+        "每张卡只含一个实体；顶栏标题 = 类型 + 第 N / M 题；正文第一行是该实体的 id/title；按钮只有「同意全部 / 拒绝全部」。",
         "",
     ]
     cards = []

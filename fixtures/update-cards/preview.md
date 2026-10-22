@@ -1,9 +1,10 @@
 # 更新题卡片样张（由 `scripts/build_update_card_samples.py` 生成）
 
-每张卡只含一个实体；按钮只有「同意全部 / 拒绝全部」；标题显示第 N / M 题。
+每张卡只含一个实体；顶栏标题 = 类型 + 第 N / M 题；正文第一行是该实体的 id/title；按钮只有「同意全部 / 拒绝全部」。
 
-## 知识更新 · 第 1 / 4 题
-*知识卡片 `card_hmbs` · HMBS*
+## 知识卡片更新 · 第 1 / 4 题
+
+**`card_hmbs`** · HMBS
 
 来源：**HMBS loss impairs heme biosynthesis and drives porphyrin accumulation in hepatocytes** · Journal of Inherited Metabolic Disease · 2026-10-16
 
@@ -24,8 +25,9 @@
 
 只处理这一项。同意后立即写入知识库；拒绝则保持原样。答完这一题才会发下一题。
 
-## 知识更新 · 第 2 / 4 题
-*命题 `prop_hmbs_aip` · HMBS 功能缺失导致急性间歇性卟啉症（AIP）*
+## 命题证据更新 · 第 2 / 4 题
+
+**`prop_hmbs_aip`** · HMBS 功能缺失导致急性间歇性卟啉症（AIP）
 
 来源：**HMBS loss impairs heme biosynthesis and drives porphyrin accumulation in hepatocytes** · Journal of Inherited Metabolic Disease · 2026-10-16
 
@@ -51,8 +53,9 @@
 
 只处理这一项。同意后立即写入知识库；拒绝则保持原样。答完这一题才会发下一题。
 
-## 知识更新 · 第 3 / 4 题
-*新建命题*
+## 命题证据更新 · 第 3 / 4 题
+
+**新建命题**
 
 来源：**HMBS loss impairs heme biosynthesis and drives porphyrin accumulation in hepatocytes** · Journal of Inherited Metabolic Disease · 2026-10-16
 

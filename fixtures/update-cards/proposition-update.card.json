@@ -4,17 +4,13 @@
     "update_multi": true,
     "width_mode": "default",
     "summary": {
-      "content": "知识更新 2/4：命题 `prop_hmbs_aip` · HMBS 功能缺失导致急性间歇性卟啉症（AIP）"
+      "content": "知识更新 2/4：prop_hmbs_aip · HMBS 功能缺失导致急性间歇性卟啉症（AIP）"
     }
   },
   "header": {
     "title": {
       "tag": "plain_text",
-      "content": "知识更新 · 第 2 / 4 题"
-    },
-    "subtitle": {
-      "tag": "plain_text",
-      "content": "命题 `prop_hmbs_aip` · HMBS 功能缺失导致急性间歇性卟啉症（AIP）"
+      "content": "命题证据更新 · 第 2 / 4 题"
     },
     "template": "violet",
     "icon": {
@@ -27,6 +23,10 @@
     "padding": "12px 12px 20px 12px",
     "vertical_spacing": "10px",
     "elements": [
+      {
+        "tag": "markdown",
+        "content": "**`prop_hmbs_aip`** · HMBS 功能缺失导致急性间歇性卟啉症（AIP）"
+      },
       {
         "tag": "markdown",
         "content": "来源：**HMBS loss impairs heme biosynthesis and drives porphyrin accumulation in hepatocytes** · Journal of Inherited Metabolic Disease · 2026-10-16"

@@ -30,7 +30,7 @@ INSTRUCTIONS = """你是知识循环的写作者。对每个 item 写一篇长�
    create_proposition / update_proposition_title / update_proposition_content /
    add_proposition_evidence / update_proposition_related_knowledge；
    每条都要有 diff / before / after / rationale / confidence / evidence；
-8) 每篇推送最多 2 个卡片目标 + 2 个命题目标（同一目标的多个操作合并成一个更新题）；
+8) 每篇推送最多 2 个实体目标（知识卡片 + 命题合计；新建也占名额；同一目标的多个操作合并成一个更新题）；
 9) proposals 一律 status=draft，绝不直接改 archive。
 输出目录 outbox/pushes，一个 push 一个文件，文件名 = push_id。
 渲染：python -m writer.cli render --push outbox/pushes/<push_id>.json --out <pdf>。"""
@@ -53,8 +53,7 @@ PROPOSAL_KINDS = {
     "add_proposition_evidence": "给命题补证据：target_type=proposition，value={paper_id,page,quote}",
     "update_proposition_related_knowledge": "改命题关联卡片：target_type=proposition，diff.path=related_knowledge",
 }
-MAX_CARD_TARGETS = 2
-MAX_PROP_TARGETS = 2
+MAX_TARGETS = 2
 PROPOSAL_ID_RE = re.compile(r"^p_[a-z0-9_-]+$")
 CARD_ID_RE = re.compile(r"^card_[a-z0-9][a-z0-9_]*$")
 PROP_ID_RE = re.compile(r"^prop_[a-z0-9][a-z0-9_]*$")
@@ -121,8 +120,7 @@ def build_task(home: Path, selection: dict, date: str) -> dict:
         "render_command": "python -m writer.cli render --push outbox/pushes/<push_id>.json --out <pdf>",
         "proposal_kinds": PROPOSAL_KINDS,
         "limits": {
-            "cards": MAX_CARD_TARGETS,
-            "propositions": MAX_PROP_TARGETS,
+            "targets": MAX_TARGETS,
             "per_entity": 1,
         },
         "evidence_rules": {
@@ -178,13 +176,12 @@ def _validate_evidence(evidence, paper_ids: list[str], where: str, pid: str) -> 
 def _validate_proposals(
     push: dict, props: dict[str, dict], cards: dict[str, dict]
 ) -> list[str]:
-    """Validate the v2 proposal contract and the 2-card/2-proposal limits."""
+    """Validate the v2 proposal contract and the 2-entity-target limit."""
     errors: list[str] = []
     where = f"push[{push.get('push_id')}]"
     paper_ids = push.get("paper_ids") or []
     proposals = push.get("proposals") or []
-    card_targets: list[str] = []
-    prop_targets: list[str] = []
+    targets: list[str] = []
     proposal_ids: set[str] = set()
 
     for proposal in proposals:
@@ -219,7 +216,6 @@ def _validate_proposals(
         value = diff.get("value")
         before = proposal.get("before")
         after = proposal.get("after")
-        path = diff.get("path")
 
         if op in CARD_OPS:
             if op == "create_card":
@@ -245,7 +241,7 @@ def _validate_proposals(
                 if not isinstance(annotation, str) or not annotation.strip():
                     errors.append(f"{where}: proposal {pid} create_card needs annotation")
                 key = card_id or f"new:{label}"
-                card_targets.append(key)
+                targets.append(f"card:{key}")
                 if before is not None:
                     errors.append(f"{where}: proposal {pid} create_card before must be null")
             else:
@@ -253,7 +249,7 @@ def _validate_proposals(
                     errors.append(f"{where}: proposal {pid} {op} targets unknown card {target_id}")
                     continue
                 card = cards[target_id]
-                card_targets.append(target_id)
+                targets.append(f"card:{target_id}")
                 if op == "add_card_ontology":
                     terms = value if isinstance(value, list) else [value]
                     if not all(isinstance(t, str) and t.strip() for t in terms):
@@ -302,7 +298,7 @@ def _validate_proposals(
                 if prop_id and not PROP_ID_RE.match(str(prop_id)):
                     errors.append(f"{where}: proposal {pid} proposition id must look like prop_<slug>")
                 key = prop_id or f"new:{title}"
-                prop_targets.append(key)
+                targets.append(f"prop:{key}")
                 if before is not None:
                     errors.append(f"{where}: proposal {pid} create_proposition before must be null")
             else:
@@ -310,7 +306,7 @@ def _validate_proposals(
                     errors.append(f"{where}: proposal {pid} {op} targets unknown proposition {target_id}")
                     continue
                 prop = props[target_id]
-                prop_targets.append(target_id)
+                targets.append(f"prop:{target_id}")
                 if op == "update_proposition_title":
                     if before != prop.get("title", ""):
                         errors.append(f"{where}: proposal {pid} before does not match proposition title")
@@ -345,13 +341,9 @@ def _validate_proposals(
                     if after != _evidence_count(prop) + 1:
                         errors.append(f"{where}: proposal {pid} after must be before + 1")
 
-    if len(set(card_targets)) > MAX_CARD_TARGETS:
+    if len(dict.fromkeys(targets)) > MAX_TARGETS:
         errors.append(
-            f"{where}: {len(set(card_targets))} card targets > limit {MAX_CARD_TARGETS}"
-        )
-    if len(set(prop_targets)) > MAX_PROP_TARGETS:
-        errors.append(
-            f"{where}: {len(set(prop_targets))} proposition targets > limit {MAX_PROP_TARGETS}"
+            f"{where}: {len(dict.fromkeys(targets))} entity targets > limit {MAX_TARGETS}"
         )
     return errors
 

@@ -129,7 +129,7 @@ def _event(message_id: str, action: str, token: str = "") -> dict:
     }
 
 
-def test_enqueue_groups_two_cards_and_two_propositions(kl_home):
+def test_enqueue_keeps_first_two_entity_targets(kl_home):
     push = _push(kl_home)
     queue = _enqueue(kl_home, push)
     items = queue.items(push["push_id"])
@@ -137,16 +137,14 @@ def test_enqueue_groups_two_cards_and_two_propositions(kl_home):
         "rating",
         "card_update",
         "card_update",
-        "proposition_update",
-        "proposition_update",
     ]
     assert items[0]["status"] == "active"
-    assert [item["status"] for item in items[1:]] == ["pending"] * 4
+    assert [item["status"] for item in items[1:]] == ["pending"] * 2
     assert len(items[1]["payload"]["proposals"]) == 1
     # Enqueue is idempotent per push.
     again = queue.enqueue_push(push)
     assert again["deduped"] is True
-    assert len(queue.items(push["push_id"])) == 5
+    assert len(queue.items(push["push_id"])) == 3
 
 
 def test_card_overflow_is_logged_not_enqueued(kl_home):
@@ -178,7 +176,7 @@ def test_card_overflow_is_logged_not_enqueued(kl_home):
     items = queue.items(push["push_id"])
     assert sum(1 for item in items if item["kind"] == "card_update") == 2
     events = [json.loads(line) for line in (kl_home / "queue" / "events.jsonl").read_text().splitlines()]
-    assert any(event["kind"] == "overflow" and event["reason"] == "card_limit" for event in events)
+    assert any(event["kind"] == "overflow" and event["reason"] == "target_limit" for event in events)
 
 
 def test_offline_replay_walks_rating_then_all_updates(kl_home):
@@ -196,7 +194,7 @@ def test_offline_replay_walks_rating_then_all_updates(kl_home):
     seen = 0
     while result.get("next_message_id"):
         seen += 1
-        assert seen <= 4
+        assert seen <= 2
         message_id = result["next_message_id"]
         result = handle_event(kl_home, _event(message_id, "agree_all"), offline=True)
         assert result["ok"] is True, result
@@ -205,16 +203,16 @@ def test_offline_replay_walks_rating_then_all_updates(kl_home):
     items = queue.items(push["push_id"])
     assert all(item["status"] == "answered" for item in items), [item["status"] for item in items]
     assert result["queue_empty"] is True
-    assert seen == 4
+    assert seen == 2
 
     archive = Archive(kl_home)
     assert "PBG deaminase" in archive.get_card("card_hmbs")["ontology"]
     assert "新证据" in archive.get_card("card_aip")["annotation"]
-    assert archive.get_prop("prop_hmbs_aip")["title"].endswith("（修订）")
-    assert archive.get_prop("prop_hmbs_mitochondria")["related_knowledge"] == [
-        "card_hmbs",
-        "card_heme_biosynthesis",
-    ]
+    # The two proposition proposals are over the shared limit and never asked.
+    assert not archive.get_prop("prop_hmbs_aip")["title"].endswith("（修订）")
+    assert all(
+        prop["id"] != "prop_hmbs_mitochondria" for prop in archive.list_props()
+    )
 
 
 def test_irrelevant_rating_drops_all_updates(kl_home):
@@ -229,7 +227,8 @@ def test_irrelevant_rating_drops_all_updates(kl_home):
     queue = QueueStore(kl_home)
     kinds = {item["kind"]: item["status"] for item in queue.items(push["push_id"])}
     assert kinds["rating"] == "answered"
-    assert all(kinds[k] == "dropped" for k in ("card_update", "proposition_update"))
+    assert kinds.get("card_update") == "dropped"
+    assert "proposition_update" not in kinds
     assert Archive(kl_home).get_card("card_hmbs")["ontology"] == before
 
 
@@ -351,7 +350,7 @@ def test_callback_action_value_routes_to_queue(kl_home):
     assert result["decision"] == "reject_all"
 
 
-def test_ndjson_replay_finishes_rating_and_four_updates(kl_home, tmp_path):
+def test_ndjson_replay_finishes_rating_and_two_updates(kl_home, tmp_path):
     push = _push(kl_home)
     _enqueue(kl_home, push)
     sent = send_rating(kl_home, push, "ou_demo", dry_run=True)
@@ -360,18 +359,16 @@ def test_ndjson_replay_finishes_rating_and_four_updates(kl_home, tmp_path):
         {"message_id": sent["message_id"], "action_name": "score_high", "operator_id": "ou_test"},
         {"message_id": f"{prefix}_card_card_hmbs", "action_name": "agree_all", "operator_id": "ou_test"},
         {"message_id": f"{prefix}_card_card_aip", "action_name": "agree_all", "operator_id": "ou_test"},
-        {"message_id": f"{prefix}_prop_prop_hmbs_aip", "action_name": "agree_all", "operator_id": "ou_test"},
-        {"message_id": f"{prefix}_prop_prop_hmbs_mitochondria", "action_name": "agree_all", "operator_id": "ou_test"},
     ]
     path = tmp_path / "events.ndjson"
     path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
     results = replay(kl_home, path, offline=True, identity="bot")
-    assert len(results) == 5
+    assert len(results) == 3
     assert all(result["ok"] for result in results), results
     assert results[-1]["queue_empty"] is True
     queue = QueueStore(kl_home)
     assert not queue.has_unfinished()
-    assert Archive(kl_home).get_prop("prop_hmbs_mitochondria")
+    assert Archive(kl_home).get_card("card_aip")["annotation"].endswith("可触发 AIP 表型。")
 
 
 def test_writer_push_enters_queue_and_approval_applies(kl_home, fixtures_dir, tmp_path):
@@ -404,7 +401,14 @@ def test_writer_push_enters_queue_and_approval_applies(kl_home, fixtures_dir, tm
     queue = QueueStore(kl_home)
     items = queue.items(push["push_id"])
     assert items[0]["kind"] == "rating"
-    assert len(items) == 1 + len({p["proposal_id"] for p in push["proposals"]})
+    targets = []
+    for proposal in push["proposals"]:
+        op = proposal.get("op")
+        target = proposal.get("target_id") or proposal.get("proposal_id")
+        key = ("card" if op in writer_tasks.CARD_OPS else "prop", target)
+        if key not in targets:
+            targets.append(key)
+    assert len(items) == 1 + min(2, len(targets))
 
     rating = handle_event(
         kl_home, _event(sent["rating_message_id"], "score_high"), offline=True
@@ -466,7 +470,7 @@ def test_empty_queue_spawns_pending_runner(kl_home, monkeypatch):
 def test_pending_request_coalesces_and_waits_for_empty_queue(kl_home):
     push = _push(kl_home)
     queue = _enqueue(kl_home, push)
-    first = queue.request_push("manual", "card_hmbs")
+    queue.request_push("manual", "card_hmbs")
     second = queue.request_push("scheduled")
     assert second["request"]["sources"] == ["manual", "scheduled"]
     assert second["request"]["count"] == 2
@@ -483,3 +487,23 @@ def test_pending_request_coalesces_and_waits_for_empty_queue(kl_home):
     assert started["start"] is True
     request = json.loads((kl_home / "queue" / "request.json").read_text())
     assert request["lease_until"]
+
+
+def test_proposition_updates_apply_when_they_fit_the_shared_limit(kl_home):
+    push = _push(kl_home)
+    push["proposals"] = push["proposals"][2:]
+    _enqueue(kl_home, push)
+    sent = send_rating(kl_home, push, "ou_demo", dry_run=True)
+    result = handle_event(kl_home, _event(sent["message_id"], "score_high"), offline=True)
+    assert result["ok"] is True
+    while result.get("next_message_id"):
+        result = handle_event(
+            kl_home, _event(result["next_message_id"], "agree_all"), offline=True
+        )
+        assert result["ok"] is True, result
+    archive = Archive(kl_home)
+    assert archive.get_prop("prop_hmbs_aip")["title"].endswith("（修订）")
+    assert archive.get_prop("prop_hmbs_mitochondria")["related_knowledge"] == [
+        "card_hmbs",
+        "card_heme_biosynthesis",
+    ]

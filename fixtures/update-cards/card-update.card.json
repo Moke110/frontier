@@ -4,17 +4,13 @@
     "update_multi": true,
     "width_mode": "default",
     "summary": {
-      "content": "知识更新 1/4：知识卡片 `card_hmbs` · HMBS"
+      "content": "知识更新 1/4：card_hmbs · HMBS"
     }
   },
   "header": {
     "title": {
       "tag": "plain_text",
-      "content": "知识更新 · 第 1 / 4 题"
-    },
-    "subtitle": {
-      "tag": "plain_text",
-      "content": "知识卡片 `card_hmbs` · HMBS"
+      "content": "知识卡片更新 · 第 1 / 4 题"
     },
     "template": "blue",
     "icon": {
@@ -27,6 +23,10 @@
     "padding": "12px 12px 20px 12px",
     "vertical_spacing": "10px",
     "elements": [
+      {
+        "tag": "markdown",
+        "content": "**`card_hmbs`** · HMBS"
+      },
       {
         "tag": "markdown",
         "content": "来源：**HMBS loss impairs heme biosynthesis and drives porphyrin accumulation in hepatocytes** · Journal of Inherited Metabolic Disease · 2026-10-16"

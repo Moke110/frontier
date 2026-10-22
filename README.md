@@ -1,6 +1,6 @@
 # frontier
 
-个人知识循环的**原型实现**：checkpoint（前沿）→ 检索 → 排序 → 长文 PDF 写作 → 飞书推送 → 评分。本阶段到评分收尾；知识图 / 命题审批与评分反哺留到下一阶段。
+个人知识循环：知识卡片 → 检索 → 排序 → 长文推送 → 飞书评分 → 卡片/命题更新。完整操作契约、格式与用户偏好见 [`skills/frontier-loop/SKILL.md`](skills/frontier-loop/SKILL.md)；评分仍不反哺排序。
 
 本仓库当前只有原型，不是生产系统。设计语义来自 `.scratch/knowledge-loop/`（spec + 决策票），实现进度见 `.scratch/frontier-prototypes/map.md`。
 
@@ -12,8 +12,8 @@
 | `frontier` | checkpoint 词汇表 → 检索式；评分反馈到权重（本阶段不启用） | `frontier.yaml` → `plan.json` |
 | `retriever` | 按计划取原文（fixture / arXiv / Europe PMC） | `plan.json` → `candidates.jsonl` |
 | `editor` | 排序候选；agent 做语义排序，脚本学偏好与校验 | candidates + ratings → `editor-task.json` → `selection.json` |
-| `writer` | agent 写长文 PDF（HTML 片段 + 图片）；脚本提供上下文、校验与渲染 | selection + archive 上下文 → `writer-task.json` → push JSON → PDF |
-| `publisher` | 飞书 PDF 推送、评分卡与回调 | push + PDF → 文件消息 / 评分卡 / `ratings.jsonl` |
+| `writer` | agent 写长文推送（HTML 片段 + 图片）；脚本提供上下文、校验与渲染 | selection + archive 上下文 → `writer-task.json` → push JSON → HTML（Phase 3） |
+| `publisher` | 飞书推送、评分/更新卡与回调 | push + 文件 → 消息 / 卡片 / `ratings.jsonl` / `decisions.jsonl` |
 
 模块之间**零 Python import**，只通过 `contracts/README.md` 定义的文件交换数据。唯一共享代码是根目录 `common.py`（纯 IO 工具，无领域逻辑）。因此每个模块都能单独跑、单独替换 —— 例如把 `writer` 换成 LLM 版本，或把 `retriever` 换成别的数据源，其它模块不用改。
 
@@ -130,10 +130,10 @@ listener 只负责关键词、owner 校验与串行排队，实际排序/写作�
 
 ## 设计要点（原型版）
 
-- **长文 PDF**：agent 写七段 HTML 片段与图片资产，固定模板 + WeasyPrint 渲染；原文图优先，取不到时用生成图并在图注标源。
+- **长文推送**：agent 写七段 HTML 片段与图片资产；Phase 3 起渲染为自包含 HTML（不再用 WeasyPrint 出 PDF）。原文图优先，取不到时用生成图并在图注标源。
 - **评分卡**：PDF 后紧跟一张小卡（质量差/不在关注领域 / 质量一般 / 质量优秀，每行一个按钮 + 可选评语）。评分与评语在同一次 `form` 提交里返回；按钮 `name` 决定 verdict。
-- **知识更新**：writer 仍会生成 `proposals`（全部 `draft`），但本阶段不发审批卡、不写知识图 / 命题；审批链路保留到下一阶段。
-- **更新提议**：`add_evidence` / `add_alias` / `add_proposition` / `update_summary`。正式流程由 agent 生成，全部标 `draft`，agent 永不直接改知识库；`writer write` 的术语共现启发式只作为离线 fallback。
+- **知识更新**：writer 生成 `proposals`（全部 `draft`），经统一队列逐题发飞书卡；同意后由 archive 落盘，拒绝只记决定。每篇推送最多 2 个实体目标（卡片 + 命题合计）。
+- **更新提议**：`add_card_ontology` / `update_card_annotation` / `create_card` / `create_proposition` / `update_proposition_title` / `update_proposition_related_knowledge` / `add_proposition_evidence` / `merge_proposition_evidence` / `update_proposition_review`。正式流程由 agent 生成，全部标 `draft`，agent 永不直接改知识库；`writer write` 的术语共现启发式只作为离线 fallback。
 - **反哺（本阶段不运行）**：`frontier` 维护 `ema` 与 `weight`（1–10）；`editor.fit` 维护 checkpoint / 来源偏好（Beta 平滑），`rank` 用四项加权：相关性 0.40、时效 0.15、偏好 0.30、权重 0.15。评分目前只落库。
 - **确定性**：同一输入重复运行结果一致（`stable_id` 用 FNV-1a），便于测试与复现。
 

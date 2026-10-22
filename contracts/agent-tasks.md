@@ -74,7 +74,7 @@ python -m editor.cli check --task editor-task.json --selection selection.json
   "archive_cli": "python -m archive.cli",
   "figure_command": "python -m writer.cli figures --selection <selection.json> --out <outbox>",
   "render_command": "python -m writer.cli render --push outbox/pushes/<push_id>.json --out <pdf>",
-  "limits": { "cards": 2, "propositions": 2, "per_entity": 1 },
+  "limits": { "targets": 2, "per_entity": 1 },
   "evidence_rules": {
     "paper_id": "must be one of push.paper_ids",
     "page": "integer >= 1, or null when the quote is from the abstract",
@@ -182,7 +182,7 @@ python -m writer.cli figures --selection selection.json --out outbox
 
 硬规则（`writer check` 会逐条校验）：
 
-1. 每篇推送最多 **2 个卡片目标 + 2 个命题目标**；同一目标的多个操作合并成一个更新题，不重复占名额。
+1. 每篇推送最多 **2 个实体目标**（知识卡片 + 命题合计，新建也占名额）；同一目标的多个操作合并成一个更新题，不重复占名额。
 2. `before` 必须等于任务快照里的当前值（防陈旧 diff）；`after` 必须等于 `diff.value`（或按上表推导），且必须发生变化。
 3. `evidence.paper_id` 必须是 `push.paper_ids` 之一；`page` 为 ≥1 整数或 `null`（摘要引文）；`quote` 8–500 字。
 4. `create_proposition.related_knowledge` ≥2 张**已存在**卡片；本次新建的卡片不能在同一 push 里被新命题引用。

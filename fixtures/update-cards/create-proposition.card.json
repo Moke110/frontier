@@ -10,11 +10,7 @@
   "header": {
     "title": {
       "tag": "plain_text",
-      "content": "知识更新 · 第 3 / 4 题"
-    },
-    "subtitle": {
-      "tag": "plain_text",
-      "content": "新建命题"
+      "content": "命题证据更新 · 第 3 / 4 题"
     },
     "template": "violet",
     "icon": {
@@ -27,6 +23,10 @@
     "padding": "12px 12px 20px 12px",
     "vertical_spacing": "10px",
     "elements": [
+      {
+        "tag": "markdown",
+        "content": "**新建命题**"
+      },
       {
         "tag": "markdown",
         "content": "来源：**HMBS loss impairs heme biosynthesis and drives porphyrin accumulation in hepatocytes** · Journal of Inherited Metabolic Disease · 2026-10-16"
