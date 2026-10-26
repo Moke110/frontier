@@ -8,10 +8,36 @@ Issues, specs, and wayfinder maps live in the **GitHub repository** `Moke110/fro
 
 - Repository: `Moke110/frontier` (public). Use `gh`; it must be authenticated (`gh auth status`).
 - **Issue** = one GitHub issue in that repo.
-- **Spec / PRD**: an issue labeled `spec`. The issue body is canonical; long-form material may also live under `docs/specs/<slug>.md` and be linked from the spec issue.
+- **Spec / PRD**: an issue labeled `spec`. Specs and tickets live only in GitHub Issues; do not create local spec/ticket drafts or mirrors under `docs/specs/` or `.scratch/`. Existing historical files may remain. Temporary files used with `gh --body-file` are transport only, not a tracker.
 - **Comments / history**: GitHub issue comments and timeline. Do not append a `## Comments` section to issue bodies.
 - **State**: open/closed via GitHub. No `Status:` line in the body.
 - **Triage labels**: see `docs/agents/triage-labels.md`; create them once with the bootstrap command below.
+
+**PRs as a request surface: no.** _(Set to `yes` if external PRs should enter the triage queue; `/triage` reads this flag.)_
+
+## Basic operations
+
+`gh` infers the repo from the clone's `origin`, so `--repo Moke110/frontier` is optional inside this worktree; keep it explicit in scripts and cross-repo calls.
+
+```bash
+# create (multi-line body: write a temp file, then --body-file; delete the temp file after)
+gh issue create --repo Moke110/frontier --title "..." --label spec --body-file body.md
+
+# read
+gh issue view <n> --repo Moke110/frontier --json number,title,body,labels,comments
+
+# list
+gh issue list --repo Moke110/frontier --state open --label ready-for-agent \
+  --json number,title,body,labels \
+  --jq '[.[] | {number, title, body, labels: [.labels[].name]}]'
+
+# comment / label / close
+gh issue comment <n> --repo Moke110/frontier --body-file comment.md
+gh issue edit <n> --repo Moke110/frontier --add-label ready-for-agent --remove-label needs-triage
+gh issue close <n> --repo Moke110/frontier
+```
+
+GitHub shares one number space across issues and PRs: resolve a bare `#42` with `gh pr view 42`, falling back to `gh issue view 42`.
 
 Bootstrap labels (safe to re-run; skip ones that already exist):
 
@@ -56,16 +82,22 @@ gh issue create --repo Moke110/frontier \
   --body-file ticket.md
 ```
 
-Attach it as a sub-issue of the map:
+Attach it as a sub-issue of the map (this machine runs `gh` 2.101):
 
 ```bash
-# gh >= 2.94
-gh issue edit <ticket> --repo Moke110/frontier --set-parent <map>
+# native flags (gh >= 2.94)
+gh issue edit <ticket> --repo Moke110/frontier --parent <map>
+# or attach at creation time
+gh issue create --repo Moke110/frontier --title "<ticket title>" --label wayfinder:prototype --parent <map> --body-file ticket.md
+# or from the parent side
+gh issue edit <map> --repo Moke110/frontier --add-sub-issue <ticket>,<ticket>
 
 # older gh: use the REST API with the issue's internal id (not its number)
 CHILD_ID=$(gh api repos/Moke110/frontier/issues/<ticket> --jq .id)
 gh api --method POST repos/Moke110/frontier/issues/<map>/sub_issues -F sub_issue_id="$CHILD_ID"
 ```
+
+Sub-issues are enabled on this repo (maps #1, #7 and spec #29 already carry children), so no `Part of #<map>` fallback is needed.
 
 Ticket body is only the question / brief. The answer is posted later as a resolution comment.
 
@@ -82,7 +114,7 @@ gh issue edit <ticket> --repo Moke110/frontier --add-assignee @me
 Use GitHub's **blocked by** relationship, not a body convention:
 
 ```bash
-# gh >= 2.94
+# native flags (gh >= 2.94; also supports --add-blocking for the inverse edge)
 gh issue edit <ticket> --repo Moke110/frontier --add-blocked-by <blocker>
 
 # older gh
@@ -134,3 +166,10 @@ Every map and ticket is an issue with a title. In narration and in the map's Dec
 
 - Existing `.scratch/knowledge-loop/` and `.scratch/frontier-prototypes/` content predates this migration and is kept for history. New efforts must use GitHub Issues.
 - `docs/agents/triage-labels.md` still lists the canonical label strings; they now map to GitHub labels of the same name.
+- `docs/specs/*.md` are **not** tracker entries: they are implementation contracts that `contracts/README.md` and module docstrings cite. Leave them in place; the spec *issue* (label `spec`) stays the canonical entry point and links here.
+- `docs/acceptance/`, `docs/research/`, `docs/migrations/`, `docs/prototypes/` are project documentation, not a tracker.
+
+## Environment
+
+- `gh` 2.101.0 (`gh --version`), authenticated as `Moke110` with `repo` scope — `gh auth status` must stay green before any tracker write.
+- Sub-issues and issue dependencies are enabled on `Moke110/frontier`, so use the native flags (`--parent`, `--add-sub-issue`, `--add-blocked-by`) rather than body conventions.

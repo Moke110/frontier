@@ -6,7 +6,7 @@ Personal frontier repo — workspace for the mattpocock/skills engineering workf
 
 ### Issue tracker
 
-Issues, specs, and wayfinder maps live in GitHub Issues of `Moke110/frontier`. See `docs/agents/issue-tracker.md`. `.scratch/` is legacy/read-only.
+Issues, specs, tickets, and wayfinder maps live only in GitHub Issues of `Moke110/frontier`; do not create local spec/ticket drafts or mirrors. See `docs/agents/issue-tracker.md`. `.scratch/` is legacy/read-only.
 
 ### Triage labels
 
