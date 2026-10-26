@@ -39,7 +39,7 @@ def _offline_library(root: Path) -> tuple[Library, object, object]:
     return Library(root, drive=drive, base=base, settings=settings), base, drive
 
 
-def _offline_setup(root: Path) -> dict:
+def _offline_setup(root: Path, *, dry_run: bool = False) -> dict:
     from library.offline import BASE_REL, DRIVE_REL, JsonBase, JsonDrive
     from library.setup import setup
 
@@ -56,7 +56,7 @@ def _offline_setup(root: Path) -> dict:
         )
     base = JsonBase(root / BASE_REL)
     drive = JsonDrive(root / DRIVE_REL)
-    return setup(root, client=base, drive=drive)
+    return setup(root, dry_run=dry_run, client=base, drive=drive)
 
 
 def _report_path(lib: Library, name: str) -> Path:
@@ -88,17 +88,25 @@ def _backfill(lib: Library, manifest: Path, *, limit: int | None, dry_run: bool)
         if not record.get("url") and record.get("doi"):
             record["url"] = f"https://doi.org/{record['doi']}"
         pdf = Path(path).expanduser()
-        if not pdf.is_file():
+        try:
+            if not pdf.is_file():
+                results.append(
+                    {
+                        "paper_id": paper_id,
+                        "status": "missing_file",
+                        "path": path,
+                        "registered": lib.register_source(
+                            paper_id, status=NO_SOURCE, record=record
+                        ),
+                    }
+                )
+                continue
+            results.append(lib.put_source(paper_id, pdf, record=record, dry_run=dry_run))
+        except Exception as exc:  # noqa: BLE001 - one bad row must not abort the batch
             results.append(
-                {
-                    "paper_id": paper_id,
-                    "status": "missing_file",
-                    "path": path,
-                    "registered": lib.register_source(paper_id, status=NO_SOURCE, record=record),
-                }
+                {"paper_id": paper_id, "status": "failed", "path": path,
+                 "reason": str(exc)}
             )
-            continue
-        results.append(lib.put_source(paper_id, pdf, record=record, dry_run=dry_run))
     lib.batch_usage = None
     if not dry_run:
         lib.maybe_alert(reason="backfill")
@@ -228,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "setup":
             if args.offline:
-                emit(_offline_setup(root))
+                emit(_offline_setup(root, dry_run=args.dry_run))
             else:
                 emit(setup_mod.setup(root, dry_run=args.dry_run, base_token=args.base_token))
             return 0
