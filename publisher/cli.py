@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from common import emit, home, read_json
+from publisher import alerts as alert_service
 from publisher.cards import build_rating_card
 from publisher.feishu import FeishuError
 from publisher.service import deliver_next, listen, replay, send_push, send_rating
@@ -51,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("listen", help="consume real card callbacks")
     p.add_argument("--max-events", type=int, default=1)
     p.add_argument("--timeout", default="10m")
+    p.add_argument("--as", dest="identity", default="bot", choices=["bot", "user"])
+
+    p = sub.add_parser("alerts", help="deliver pending library quota alerts as text")
+    p.add_argument("--to", required=True, help="owner open_id (ou_...)")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--max", type=int, default=5)
     p.add_argument("--as", dest="identity", default="bot", choices=["bot", "user"])
 
     sub.add_parser("pending")
@@ -122,6 +129,15 @@ def main(argv: list[str] | None = None) -> int:
                 emit(result)
         elif args.cmd == "listen":
             return listen(root, args.identity, args.max_events, args.timeout)
+        elif args.cmd == "alerts":
+            return _emit_result(
+                alert_service.deliver(
+                    root, args.to,
+                    dry_run=args.dry_run,
+                    identity=args.identity,
+                    max_alerts=args.max,
+                )
+            )
         elif args.cmd == "pending":
             emit(PublisherStore(root).pending_proposals())
         else:  # pragma: no cover

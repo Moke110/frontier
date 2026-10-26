@@ -41,7 +41,8 @@ PROMPT = """使用 frontier skill（{repo}/SKILL.md）执行一次检索推送�
 8. 你亲自写 push（七段 HTML + assets）；python -m writer.cli check ...
 9. python -m writer.cli render --push ... --out /tmp/<push_id>.html
 10. python -m archive.cli add-push --file ...
-11. python -m publisher.cli send --push ... --html ... --to "$FRONTIER_OWNER_ID"
+11. python -m library.cli ensure-source --paper <push 里的 paper_id>（原文入库；无 PDF 会登记为无原件，不阻断推送）
+12. python -m publisher.cli send --push ... --html ... --to "$FRONTIER_OWNER_ID"
 
 如果 publisher send 返回非零（尤其 reason=duplicate_paper），立即停止，不要换论文重试、不要重复 add-push；输出「推送发送失败：<reason>」并结束。
 {checkpoint_line}

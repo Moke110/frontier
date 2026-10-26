@@ -204,3 +204,46 @@ def test_send_push_accepts_a_self_contained_html_file(kl_home, tmp_path):
         json.loads(path.read_text()).get("file_type") == "html"
         for path in outbox.glob("*.json")
     )
+
+
+def test_library_alerts_are_delivered_as_copyable_text(kl_home):
+    from publisher import alerts
+    from common import read_json, write_json
+
+    alert = {
+        "schema_version": 1,
+        "level": "warn",
+        "used_bytes": 4 * 1024**3,
+        "limit_bytes": 5 * 1024**3,
+        "percent": 80.0,
+        "candidates": {"count": 3, "bytes": 200 * 1024**2},
+        "instruction": "清理 frontier 原文库：把 3 篇下载到 ~/frontier-offline/2026-10-26/。",
+    }
+    write_json(kl_home / "library" / "alerts" / "a1.json", alert)
+
+    result = alerts.deliver(kl_home, "ou_owner", dry_run=True)
+    assert result["ok"] is True
+    assert result["count"] == 1
+    assert alerts.alert_paths(kl_home)  # dry-run keeps the alert for a real send
+
+    outbox = list((kl_home / "publisher" / "outbox").glob("alert_a1.json"))
+    assert outbox
+    text = read_json(outbox[0])["text"]
+    assert "80.0%" in text
+    assert "4.00 GB / 5.00 GB" in text
+    assert "清理 frontier 原文库" in text
+
+
+def test_put_push_is_skipped_without_library_config(kl_home, tmp_path):
+    from publisher.service import _spawn_put_push
+
+    html = tmp_path / "push.html"
+    html.write_text("<html></html>", encoding="utf-8")
+    assert _spawn_put_push(kl_home, {"push_id": "p1"}, html) == {
+        "ok": True,
+        "skipped": "no_config",
+    }
+    assert _spawn_put_push(kl_home, {"push_id": "p1"}, tmp_path / "p.pdf") == {
+        "ok": True,
+        "skipped": "legacy_pdf",
+    }

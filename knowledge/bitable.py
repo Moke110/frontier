@@ -53,15 +53,24 @@ class LarkBitableClient:
         return payload
 
     def list(self, table: str) -> list[dict]:
-        payload = self._run("base", "+record-list", "--table-id", table)
-        data = payload.get("data") or {}
-        names = data.get("fields") or []
-        rows = data.get("data") or []
-        ids = data.get("record_id_list") or []
-        return [
-            {"record_id": rid, "fields": dict(zip(names, row))}
-            for rid, row in zip(ids, rows)
-        ]
+        out: list[dict] = []
+        offset = 0
+        while True:
+            payload = self._run(
+                "base", "+record-list", "--table-id", table,
+                "--limit", "200", "--offset", str(offset),
+            )
+            data = payload.get("data") or {}
+            names = data.get("fields") or []
+            rows = data.get("data") or []
+            ids = data.get("record_id_list") or []
+            out.extend(
+                {"record_id": rid, "fields": dict(zip(names, row))}
+                for rid, row in zip(ids, rows)
+            )
+            if not data.get("has_more") or not ids:
+                return out
+            offset += len(ids)
 
     def create(self, table: str, rows: list[dict]) -> list[str]:
         if not rows:
@@ -79,6 +88,10 @@ class LarkBitableClient:
             "base", "+record-batch-update", "--table-id", table,
             "--json", json.dumps({"update_records": updates}, ensure_ascii=False),
         )
+
+    def field_names(self, table: str) -> list[str]:
+        payload = self._run("base", "+field-list", "--table-id", table)
+        return [f.get("name") for f in payload["data"].get("fields") or []]
 
     def ensure_options(self, table: str, field: str, values: list[str]) -> None:
         """Add any missing multi-select options before writing values."""
@@ -194,7 +207,9 @@ def _plan_cards(local: list[dict], remote: list[dict]) -> tuple[list[dict], dict
     return creates, updates
 
 
-def _plan_papers(local: list[dict], remote: list[dict]) -> tuple[list[dict], list[str]]:
+def _plan_papers(
+    local: list[dict], remote: list[dict], source_ids: dict[str, str] | None = None
+) -> tuple[list[dict], list[str]]:
     by_key = {_paper_key(row["fields"]): row for row in remote}
     creates, ids = [], []
     for prop in local:
@@ -211,6 +226,8 @@ def _plan_papers(local: list[dict], remote: list[dict]) -> tuple[list[dict], lis
                     "quote": paper.get("quote", ""),
                     "added_at": _dt(paper.get("added_at")),
                 }
+                if source_ids is not None:
+                    row["原文"] = _links([source_ids.get(paper.get("paper_id"))])
                 creates.append(row)
     return creates, ids
 
@@ -250,12 +267,30 @@ def sync(home: Path, client=None, *, dry_run: bool = False) -> dict:
     if not dry_run and card_updates:
         client.update(tables["cards"], card_updates)
 
-    paper_creates, _ = _plan_papers(props, remote_papers)
+    source_ids = None
+    if tables.get("sources"):
+        field_names = getattr(client, "field_names", lambda table: [])(tables["papers"])
+        if "原文" in field_names:
+            source_ids = {
+                str(row["fields"].get("原文 ID")): row["record_id"]
+                for row in client.list(tables["sources"])
+                if row["fields"].get("原文 ID")
+            }
+    paper_creates, _ = _plan_papers(props, remote_papers, source_ids)
     report["created"]["papers"] = len(paper_creates)
     if not dry_run and paper_creates:
         client.create(tables["papers"], paper_creates)
         remote_papers = client.list(tables["papers"])
     paper_ids = {_paper_key(row["fields"]): row["record_id"] for row in remote_papers}
+    paper_updates = {}
+    if source_ids is not None:
+        for row in remote_papers:
+            link = _links([source_ids.get(row["fields"].get("paper_id"))])
+            if set(_link_ids(row["fields"].get("原文"))) != {item["id"] for item in link}:
+                paper_updates[row["record_id"]] = {"原文": link}
+        report["updated"]["papers"] = len(paper_updates)
+        if not dry_run and paper_updates:
+            client.update(tables["papers"], paper_updates)
 
     card_ids = {row["fields"].get("卡片 ID"): row["record_id"] for row in remote_cards}
     evidence_by_id = _index(remote_evidence, "证据 ID")

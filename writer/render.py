@@ -274,9 +274,20 @@ def render_html(push_path: Path, out_path: Path | None = None) -> dict:
     }
 
 
-def render_push(push_path: Path, out_path: Path | None = None) -> dict:
+def render_push(
+    push_path: Path, out_path: Path | None = None, *, fmt: str | None = None
+) -> dict:
+    """Render one push. ``fmt`` wins; otherwise infer from the output suffix.
+
+    The CLI defaults to self-contained HTML; calling without either argument
+    keeps the legacy PDF behaviour for older callers.
+    """
     push_path = Path(push_path).resolve()
-    if out_path is not None and Path(out_path).suffix.lower() in (".html", ".htm"):
+    if fmt == "html":
+        return render_html(push_path, Path(out_path) if out_path else None)
+    if fmt == "pdf":
+        out_path = Path(out_path) if out_path else push_path.with_suffix(".pdf")
+    elif out_path is not None and Path(out_path).suffix.lower() in (".html", ".htm"):
         return render_html(push_path, Path(out_path))
     push = read_json(push_path)
     if not push:

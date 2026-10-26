@@ -21,11 +21,13 @@
 ## 2. 云盘布局
 
 ```
-飞书云盘/frontier/原文/<paper_id>.pdf
+飞书云盘/frontier/原文/<paper_id>.pdf              # ≤ 19 MB
+飞书云盘/frontier/原文/<paper_id>.pdf.part01       # 超出单文件上限时按序分片
 飞书云盘/frontier/推送/<push_id>.html
 ```
 
 - 扁平、只用业务 ID 命名。不做年月分目录：移动文件可能换 token，Base 链接会失效。
+- **租户单文件上限**：当前租户的 Drive API 对超过 20 MB 的文件返回 `1061043 file size beyond limit`。因此 >19 MB 的 PDF 切成 19 MB 分片，顺序与 token 记在「原文」的 `分片` 列；读取时拼接后按 md5 校验。
 - 文件名即主键，不含标题 —— 标题会改，ID 不会。
 - 两个目录的 token 存「配置」表；本地不写死。
 
@@ -50,7 +52,8 @@
 | 入库日期 | 日期 | 首次在库时间 |
 | 云盘链接 | URL | 空 = 无原件或已离线归档 |
 | 文件大小 | 数字 | 字节；配额只算这个 |
-| md5 | 文本 | 缓存命中与备份校验的依据 |
+| md5 | 文本 | 拼接后的完整文件 md5；缓存命中与备份校验的依据 |
+| 分片 | 文本 | JSON 数组 `[{i,name,token,url,size}]`；空 = 单文件 |
 | 状态 | 单选 | 待上传 / 在库 / 无原件 / 已离线归档 |
 | 备份位置 | 文本 | 本地绝对路径，仅已离线归档时填 |
 | 报道 | 关联 | →「报道」，反向 |
@@ -69,6 +72,7 @@
 | 评语 | 长文本 | 用户可空 |
 | 云盘链接 | URL | 推送库文件 |
 | 文件大小 | 数字 | |
+| md5 | 文本 | 幂等键的第二段；内容变了就是冲突 |
 | 入库日期 | 日期 | 发送成功的时间 |
 | 状态 | 单选 | 在库 / 已离线归档 / 回填 |
 
@@ -132,7 +136,7 @@
 `library.resolve(paper_id) -> Path`：
 
 1. `$KL_HOME/cache/raw/<paper_id>.pdf` 存在且 md5 与 Base 一致 → 命中。
-2. 否则从云盘下载、校验 md5；不一致 → 删除重下，二次失败报 `corrupt`。
+2. 否则从云盘下载（有 `分片` 则按 `i` 顺序拼接），校验 md5；不一致 → 删除重下，二次失败报 `corrupt`。
 3. `状态=已离线归档` → 从 `备份位置` 复制并校验 md5；备份也不在 → 报 `missing`，提示用户重下或恢复。
 4. `状态=无原件` → 报 `no_source`，调用方退化为摘要锚定。
 
@@ -144,7 +148,7 @@
 - 用量 = Σ `文件大小`，范围是「原文」+「推送日志」中 `状态=在库` 的行。
 - 检查时机：每次 `put-*` 前预检（只读 Base，不扫目录）；每日一次全量对账顺带校正。
 - 阈值：`用量 / 上限 ≥ 80%` → 提醒一次；`≥ 100%` → 每次尝试都提醒，且拒绝新原文。
-- 冷却：同一状态 24 小时内最多一条；跨阈值（80%→100%）立即发。
+- 冷却：同一状态 24 小时内最多一条；跨阈值（80%→100%）立即发；**100% 时每次入库尝试都发**（这是唯一会持续打扰你的状态）。
 - alert 文件：
 
 ```json
@@ -168,7 +172,7 @@
 
 清理（`library.cli evict`，**永不自动执行**）：
 
-1. 候选排序：未被报道引用 → 被引用（入库最老优先）；推送件默认不选。
+1. 候选排序：未被报道引用 → 被引用（入库最老优先）。推送件不参与自动清理（它们才是推送库的本体）。
 2. 下载到 `~/frontier-offline/<YYYY-MM-DD>/`，校验 md5。
 3. Base 改 `状态=已离线归档` + `备份位置`。
 4. 删云盘文件。
@@ -194,7 +198,7 @@
 
 1. 列出两个云盘目录（分页取全量）。
 2. 与 Base 比对，输出 `orphan / broken / duplicate / mismatch` 四类。
-3. 自动动作仅限：孤儿补行（状态取文件名推断，md5 重新计算）、断链置 `待上传`。
+3. 自动动作仅限：孤儿补行（单文件原文与有本地 push JSON 的推送件；下载后算 md5）、断链改状态（原文 `待上传` / 推送件 `回填`）。
 4. `duplicate` 与 `mismatch` 只报告，不自动处理。
 5. 报告写到 `$KL_HOME/library/reports/reconcile-<ts>.json`；有差异时退出码 1。
 
@@ -205,13 +209,14 @@ python -m library.cli put-source --file <pdf> --paper <paper_id> [--dry-run]
 python -m library.cli put-push --push <push_id> --html <path> [--dry-run]
 python -m library.cli resolve --paper <paper_id>
 python -m library.cli quota
-python -m library.cli reconcile [--dry-run]
-python -m library.cli evict --candidates [--limit N] [--dry-run]
+python -m library.cli reconcile [--dry-run] [--verify]
+python -m library.cli evict --candidates [--limit N]
+python -m library.cli evict --execute [--backup-root ~/frontier-offline]   # 备份的是拼接后的整份 PDF
 python -m library.cli restore --paper <paper_id>
 python -m library.cli cache prune --max-size 2G
 ```
 
-`--dry-run` 与 `--offline`（`FixtureDrive`）必须对全部子命令可用。
+`--dry-run` 对全部写操作可用；全局 `--offline` 把 Drive/Base 换成 `$KL_HOME/library/offline-*.json` 的持久化夹具，不调用 `lark-cli`（`setup --offline` 会建一套假的四表与目录）。
 
 ## 11. 迁移清单
 

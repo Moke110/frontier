@@ -161,6 +161,59 @@ def _spawn_sync(home: Path, owner: str) -> dict:
     return {"ok": True, "pid": proc.pid}
 
 
+def _run_cli(home: Path, module: str, *args: str, timeout: int = 600) -> dict:
+    """Run another module's CLI synchronously and return its JSON result."""
+    repo = Path(__file__).resolve().parents[1]
+    home = Path(home)
+    cmd = [sys.executable, "-m", module, "--home", str(home), *args]
+    env = {**os.environ, "KL_HOME": str(home)}
+    proc = subprocess.run(
+        cmd, cwd=str(repo), env=env, capture_output=True, text=True, timeout=timeout,
+    )
+    try:
+        result = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        result = {"ok": False, "error": (proc.stdout or proc.stderr)[-500:]}
+    if proc.returncode != 0 and result.get("ok") is not False:
+        result["ok"] = False
+    result["exit_code"] = proc.returncode
+    if proc.returncode != 0 and not result.get("error"):
+        result["error"] = (proc.stderr or "").strip()[-500:]
+    return result
+
+
+def _library_tables(home: Path) -> dict:
+    config = read_json(Path(home) / "knowledge" / "base.json") or {}
+    return (config.get("tables") or {})
+
+
+def _spawn_put_push(home: Path, push: dict, file_path: Path) -> dict:
+    if Path(file_path).suffix.lower() not in (".html", ".htm"):
+        return {"ok": True, "skipped": "legacy_pdf"}
+    if not _library_tables(home).get("pushes"):
+        return {"ok": True, "skipped": "no_config"}
+    try:
+        return _run_cli(
+            home, "library.cli",
+            "put-push", "--push", str(push.get("push_id")), "--html", str(file_path),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _spawn_log(home, {"schema_version": 1, "at": now(),
+                          "kind": "put_push_failed", "error": str(exc)})
+        return {"ok": False, "error": str(exc)}
+
+
+def _spawn_decisions(home: Path) -> dict:
+    if not _library_tables(home).get("decisions"):
+        return {"ok": True, "skipped": "no_config"}
+    try:
+        return _run_cli(home, "library.cli", "decisions", "sync")
+    except (OSError, subprocess.SubprocessError) as exc:
+        _spawn_log(home, {"schema_version": 1, "at": now(),
+                          "kind": "decisions_failed", "error": str(exc)})
+        return {"ok": False, "error": str(exc)}
+
+
 def _deliver_next(
     home: Path,
     store: PublisherStore,
@@ -314,6 +367,23 @@ def _handle_queue_event(
     if result.get("deduped"):
         return {"ok": True, "deduped": True, "item_id": item_id}
     approved = action in {"agree_all", "adopt"}
+    proposals = item.get("payload", {}).get("proposals") or []
+    if proposals:
+        comment = str(_parse_form(event).get("comment") or "")
+        for proposal in proposals:
+            append_jsonl(
+                Path(home) / "publisher" / "decision_rows.jsonl",
+                {
+                    "schema_version": 1,
+                    "question_id": item_id,
+                    "push_id": item.get("push_id"),
+                    "proposal_id": proposal.get("proposal_id"),
+                    "target_id": proposal.get("target_id"),
+                    "action": "采纳" if approved else "拒绝",
+                    "comment": comment,
+                    "at": now(),
+                },
+            )
     decision_card = build_decision_card("approve" if approved else "reject", len(
         item.get("payload", {}).get("proposal_ids") or []
     ))
@@ -323,6 +393,8 @@ def _handle_queue_event(
         feishu.update_card(token, decision_card, identity)
     delivered = _deliver_next(home, store, target, offline, identity)
     if not offline:
+        if proposals:
+            _spawn_decisions(home)
         if approved:
             _spawn_sync(home, operator or mapping.get("target") or "")
         for review in result.get("reviews") or []:
@@ -444,6 +516,11 @@ def send_push(
         file_message_id = sent["message_id"]
 
     store.record_message(file_message_id, "push_file", push["push_id"], target=to_user)
+    library = (
+        {"ok": True, "skipped": "dry_run"}
+        if dry_run
+        else _spawn_put_push(home, push, file_path)
+    )
     queue = _queue(home)
     queue.enqueue_push(push)
     delivered = _deliver_next(home, store, to_user, dry_run, identity, push_override=push)
@@ -456,6 +533,7 @@ def send_push(
         "file_message_id": file_message_id,
         "rating_message_id": delivered["message_id"] if delivered else None,
         "first_item_id": delivered["item_id"] if delivered else None,
+        "library": library,
     }
     if is_html:
         result["html"] = str(file_path)

@@ -4,7 +4,7 @@
 
 本仓库当前只有原型，不是生产系统。设计语义来自 `.scratch/knowledge-loop/`（spec + 决策票），实现进度见 `.scratch/frontier-prototypes/map.md`。
 
-## 六个模块（互不 import）
+## 模块（互不 import）
 
 | 模块 | 职责 | 输入 → 输出 |
 |---|---|---|
@@ -15,8 +15,9 @@
 | `writer` | agent 写长文推送（HTML 片段 + 图片）；脚本提供上下文、校验与渲染 | selection + archive 上下文 → `writer-task.json` → push JSON → HTML（Phase 3） |
 | `publisher` | 飞书推送、评分/更新卡与回调 | push + 文件 → 消息 / 卡片 / `ratings.jsonl` / `decisions.jsonl` |
 | `knowledge` | 知识层 ↔ Bitable 镜像、手工编辑回拉、漂移比对 | `KnowledgeStore` → Base 五表 / `knowledge/state.json` |
+| `library` | 云盘原文/推送件 + 「原文」「推送日志」「决定」「配置」四表；配额、对账、离线清理 | PDF/HTML + Base → 云盘文件 / `library/reports` |
 
-`library`（规划中，ADR 0003）：云盘原文/推送文件 + 「原文」「推送日志」「决定」「配置」四表 + 配额与对账；落地后 `archive` 只管本地缓存与物化视图。见 `docs/specs/lark-storage.md`。
+`library` 落地后 `archive` 只管本地缓存与物化视图：原文与推送件的唯一真相在飞书（ADR 0003）。见 `docs/specs/lark-storage.md`。
 
 模块之间**零 Python import**，只通过 `contracts/README.md` 定义的文件交换数据。唯一共享代码是根目录 `common.py`（纯 IO 工具，无领域逻辑）。因此每个模块都能单独跑、单独替换 —— 例如把 `writer` 换成 LLM 版本，或把 `retriever` 换成别的数据源，其它模块不用改。
 
@@ -109,6 +110,15 @@ python -m writer.cli check --task writer-task.json --outbox outbox
 
 # archive：推送入库
 python -m archive.cli add-push --file outbox/pushes/2026-10-20_hmbs_01.json
+
+# library：建表建目录 / 入库 / 取回 / 配额 / 对账 / 清理
+python -m library.cli setup --dry-run
+python -m library.cli put-source --paper pdf_2025_x --file ~/arc/x.pdf
+python -m library.cli put-push --push 2026-10-26_hmbs_01 --html outbox/pushes/2026-10-26_hmbs_01.html
+python -m library.cli resolve --paper pdf_2025_x
+python -m library.cli quota
+python -m library.cli reconcile
+python -m library.cli evict --candidates
 
 # publisher：预览 / 发送 / 收评分
 python -m publisher.cli preview --push outbox/pushes/2026-10-20_hmbs_01.json

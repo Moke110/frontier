@@ -41,9 +41,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--task", required=True)
     p.add_argument("--outbox", required=True)
 
-    p = sub.add_parser("render", help="render a push JSON into HTML (or legacy PDF)")
+    p = sub.add_parser("render", help="render a push JSON into self-contained HTML")
     p.add_argument("--push", required=True)
-    p.add_argument("--out", help="PDF path (default: next to the push)")
+    p.add_argument("--out", help="output path (default: next to the push)")
+    p.add_argument(
+        "--format",
+        choices=["html", "pdf"],
+        default="html",
+        help="html (default, self-contained) or legacy pdf",
+    )
 
     p = sub.add_parser("review-task", help="build an agent review packet for a proposition")
     p.add_argument("--prop", required=True)
@@ -114,7 +120,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if result["ok"] else 1
         elif args.cmd == "render":
             try:
-                result = render_push(Path(args.push), Path(args.out) if args.out else None)
+                result = render_push(
+                    Path(args.push),
+                    Path(args.out) if args.out else None,
+                    fmt=args.format,
+                )
             except RenderError as exc:
                 emit({"ok": False, "error": str(exc)})
                 return 1

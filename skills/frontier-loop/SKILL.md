@@ -154,7 +154,10 @@ Phase 3 起渲染为**自包含 HTML**（不再是 PDF）：
 python -m writer.cli check --task writer-task.json --outbox outbox
 python -m writer.cli render --push outbox/pushes/<push_id>.json --out outbox/<push_id>.html
 python -m archive.cli add-push --file outbox/pushes/<push_id>.json
+python -m library.cli ensure-source --paper <push 里的 paper_id>
 ```
+
+`ensure-source` 把原文 PDF 传进云盘「原文」库并在 Base 登记；付费墙拿不到 PDF 时记 `无原件`，不阻断推送。推送件在 `publisher send` 成功后自动入库。
 
 ### 3.5 入队与发送
 

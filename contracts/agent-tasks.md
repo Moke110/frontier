@@ -203,7 +203,7 @@ python -m writer.cli check --task writer-task.json --outbox outbox
 渲染：
 
 ```bash
-python -m writer.cli render --push outbox/pushes/<push_id>.json --out outbox/<push_id>.pdf
+python -m writer.cli render --push outbox/pushes/<push_id>.json --out outbox/<push_id>.html
 ```
 
 渲染器负责固定模板、中文字体、页眉页脚、图注与「原文图 / 生成图」标记；agent 不写 CSS。
@@ -212,12 +212,13 @@ python -m writer.cli render --push outbox/pushes/<push_id>.json --out outbox/<pu
 
 ```bash
 python -m archive.cli add-push --file outbox/pushes/<push_id>.json
+python -m library.cli ensure-source --paper <push 里的 paper_id>
 ```
 
 入库后交给 publisher 入队并发送当前题：
 
 ```bash
-python -m publisher.cli send --push outbox/pushes/<push_id>.json --pdf outbox/<push_id>.pdf --to ou_xxx
+python -m publisher.cli send --push outbox/pushes/<push_id>.json --html outbox/<push_id>.html --to ou_xxx
 # 或只发评分/队首题：python -m publisher.cli rating --push ... --to ou_xxx
 python -m question_queue.cli status
 ```

@@ -1,6 +1,6 @@
 # frontier 原型 · 文件契约
 
-六个模块之间**不 import 彼此**，只通过下面这些文件交换数据。任何模块都可以被替换，只要仍读写同样的形状。
+各模块之间**不 import 彼此**，只通过下面这些文件交换数据。任何模块都可以被替换，只要仍读写同样的形状。
 所有 JSON 顶层带 `schema_version: 1`，时间统一 ISO-8601（本地时区，秒级，如 `2026-10-20T09:30:00+08:00`）。
 
 > editor / writer 的 agent 任务包（`editor-task.json`、`writer-task.json`）与校验规则见 [`agent-tasks.md`](agent-tasks.md)。
@@ -24,9 +24,11 @@ $KL_HOME/
 │   ├── index/*.jsonl             # 各层索引（可 reindex 重建）
 │   ├── applied/<proposal_id>.json# 已应用的更新记录
 │   └── legacy/v1-<ts>/           # v1 迁移备份（可 rollback）
+├── cache/                        # library 按需下载，可随时删（ADR 0003）
+│   └── raw/<paper_id>.pdf        # 以 Base md5 判命中；分片原文在这里拼回整份
 ├── ratings.jsonl                 # publisher 写，editor/frontier 读
 ├── knowledge/                    # Bitable 镜像（Phase 3a）
-│   ├── base.json                 # base_token / base_url / 五表 id
+│   ├── base.json                 # base_token / base_url / 知识五表 id；library.setup 追加原文/推送日志/决定/配置四表 id
 │   └── state.json                # 文本列基线，用于识别手工编辑
 ├── queue/                        # 统一问题队列（docs/specs/unified-question-queue.md）
 │   ├── state.json                # 队列表 + 单 active
@@ -34,10 +36,16 @@ $KL_HOME/
 │   ├── request.json              # 合并后的待推请求
 │   ├── lock                      # 队列状态排他锁
 │   └── start.lock                # 检索启动租约（预留）
+├── library/                      # 云盘库的本地状态（全部可删）
+│   ├── cache/config.json         # 「配置」表缓存（10 分钟）
+│   ├── alerts/<ts>.json          # 待发送的配额提醒（publisher alerts 发送后移入 sent/）
+│   ├── reports/*.json            # 对账 / 回填报告
+│   └── state.json                # 同类提醒 24h 冷却
 └── publisher/
     ├── messages.jsonl            # message_id → push/queue item，用于回调路由
     ├── pending/<proposal_id>.json# 旧审批链路的待审批副本（v2 不再新增）
-    ├── decisions.jsonl           # 用户同意/拒绝
+    ├── decisions.jsonl           # 用户同意/拒绝（旧审批链路）
+    ├── decision_rows.jsonl       # 提议级决定暂存（采纳/拒绝 + 评语），library decisions sync 写入「决定」表
     ├── trigger.lock              # 手动补推串行锁
     ├── trigger.log               # 手动补推事件日志
     └── outbox/                   # 离线模式生成的卡片 JSON（调试用）

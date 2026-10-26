@@ -187,3 +187,35 @@ def test_pull_applies_text_edits_and_flags_invalid_ones(kl_home):
     assert updated["changelog"][-1]["source"]["kind"] == "bitable"
     flagged = _record(client, "evidence", "证据 ID", "ev_virtual_cell_perturbation_01")
     assert "1..200" in (flagged["fields"].get("待修正") or "")
+
+
+class SourceAwareClient(FakeClient):
+    def field_names(self, table):
+        return ["原文"]
+
+
+def test_sync_links_reports_to_the_matching_source_row(kl_home):
+    _config(kl_home)
+    path = kl_home / "knowledge" / "base.json"
+    config = json.loads(path.read_text())
+    config["tables"]["sources"] = "sources"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    store = Archive(kl_home)
+    paper_ids = sorted(
+        {
+            paper["paper_id"]
+            for prop in store.list_props()
+            for ev in prop.get("evidence", [])
+            for paper in ev.get("papers", [])
+        }
+    )
+    client = SourceAwareClient()
+    client.create("sources", [{"原文 ID": pid} for pid in paper_ids])
+
+    result = bitable.sync(kl_home, client)
+    assert result["updated"]["papers"] == 0
+
+    sources = {row["fields"]["原文 ID"]: row["record_id"] for row in client.list("sources")}
+    for row in client.list("papers"):
+        assert row["fields"]["原文"] == [{"id": sources[row["fields"]["paper_id"]]}]

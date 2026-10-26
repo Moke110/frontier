@@ -148,3 +148,25 @@ def test_render_produces_standalone_responsive_html(tmp_path):
     assert "file://" not in text
     assert "clamp(16px, 1.1vw + 12px, 20px)" in text
     assert "prefers-color-scheme: dark" in text
+
+
+def test_render_cli_defaults_to_self_contained_html(tmp_path):
+    from writer.cli import main
+
+    path = _push(tmp_path)
+    assert main(["render", "--push", str(path)]) == 0
+    out = path.with_suffix(".html")
+    assert out.exists()
+    text = out.read_text(encoding="utf-8")
+    assert 'src="http' not in text
+    assert "<link" not in text
+    assert "data:image/svg+xml;base64," in text
+
+
+def test_render_html_is_byte_stable(tmp_path):
+    path = _push(tmp_path)
+    first = tmp_path / "a.html"
+    second = tmp_path / "b.html"
+    render_push(path, first, fmt="html")
+    render_push(path, second, fmt="html")
+    assert first.read_bytes() == second.read_bytes()
