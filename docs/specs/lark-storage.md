@@ -223,7 +223,7 @@ python -m library.cli cache prune --max-size 2G
 1. 建三张表（原文 / 推送日志 / 决定）+ 配置行；`papers` 改名「报道」并加原文关联。
 2. 建两个云盘目录，token 写入配置。
 3. 174 篇 PDF：`put-source` 批量导入，记录 `skipped / uploaded / failed` 报告。
-4. 证据中指向测试推送的 `push_id` 置空（一次性脚本），`paper_id` 保留。
+4. 证据中指向测试推送的 `push_id` 置空：`python scripts/migrate_drop_test_push_refs.py`，`paper_id` 保留；Base 里对应的旧报道行删除（测试阶段产物）。
 5. 双写 3 天：`publisher` 发送成功后仍写 `archive/`，同时调 `put-push`；每日对账零差异。
 6. 第 4 天切读：`archive` 停止写 `raw/`、`pushes/` 权威文件；`resolve` 走缓存。
 7. 15 条测试推送与本地产物按需清理，不入库。
