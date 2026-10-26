@@ -449,10 +449,15 @@ python -m knowledge.cli ledger      # 重建文本基线
 python -m library.cli put-source --file <pdf> --paper <paper_id>
 python -m library.cli put-push --push <push_id> --html <path>   # publisher 发送成功后调用
 python -m library.cli resolve --paper <paper_id>                # 缓存路径，按 md5 校验
-python -m library.cli quota
+python -m library.cli quota --check
 python -m library.cli reconcile
 python -m library.cli evict --candidates
+python -m library.cli evict --execute          # 先备份+校验 md5，再删
+python -m library.cli restore --paper <id>
+python -m library.cli decisions sync           # 提议级决定写入「决定」表
 ```
+
+全局 `--offline` 用 `$KL_HOME/library/offline-*.json` 的夹具跑完整流程，不碰真实租户。
 
 - 「原文」「推送日志」「决定」「配置」四张表的字段与状态机见 spec §3；`papers` 表语义是「报道」，不是论文。
 - 配额默认 5GB（Base「配置」表可改）；100% 时只拦新原文，不拦推送；永不自动删除。
