@@ -80,8 +80,8 @@
 | 资源 | 值 |
 |---|---|
 | Base | `B39TbRl04asx1fs57eQczWmLnpf`（租户 `ncnuh1ao6njt`） |
-| 9 张表 | cards / propositions / evidence / papers / logs / sources / pushes / decisions / config |
-| 原文目录、推送目录 | token 存在 Base「配置」表（不在本地文件里） |
+| 表（key → 实际名 / 转移时条数） | `cards` 知识卡片 10 · `propositions` 命题 6 · `evidence` 证据 5 · `papers` 报道 10 · `logs` 变更日志 6 · `sources` 原文 175 · `pushes` 推送日志 0 · `decisions` 决定 0 · `config` 配置 1 |
+| 原文目录、推送目录 | token 存在 Base「配置」表（不在本地文件里），所以目录不用单独交接 |
 | 事件订阅 | `card.action.trigger`、`im.message.receive_v1`（WebSocket，bot 身份，无需公网 URL） |
 | 本机凭据 | `~/.lark-cli/config.json`（user + bot 身份）、`~/.config/frontier/env`（owner open_id） |
 
@@ -139,13 +139,14 @@
 python3 -m pytest -q            # 138 passed
 python3 -m compileall -q .      # ok
 python3 -c "from trigger import service; service.build_prompt(...)"   # 两个 prompt 都能渲染，无残留 {…}
+lark-cli base +table-list --base-token <BASE_TOKEN> --as user          # 9 张表都在，云端未受影响
 ```
 
 `scripts/demo.py` **仍然不能完整跑通**：fixtures 里的推送是 v2 版式（只有 `body_md`），过不了 v3 的 `writer check`。这是 demo 与 fixtures 的陈旧，不影响 pytest 与主链路，本次不修。
 
 ### 3.4 交接凭据
 
-以下两项**只在本会话终端打印过，没有落盘、没有进 git**：
+以下两项**只在本会话终端打印过，没有落盘、没有进 git**（翻上面的历史即可）：
 
 - `FRONTIER_OWNER_ID`（飞书 open_id）
 - `base_token` + 9 个 `table_id`，形如：
