@@ -7,7 +7,6 @@ renders and sends it, archive applies approved groups.
 
 from __future__ import annotations
 
-import fcntl
 import re
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -15,7 +14,7 @@ from pathlib import Path
 from typing import Iterator
 
 from archive.store import Archive, ArchiveError
-from common import append_jsonl, ensure_dir, now, read_json, write_json
+from common import append_jsonl, ensure_dir, file_lock, now, read_json, write_json
 
 TERMINAL = {"answered", "dropped"}
 CARD_OPS = {
@@ -66,12 +65,8 @@ class QueueStore:
     @contextmanager
     def locked(self) -> Iterator[None]:
         ensure_dir(self.root)
-        with self.lock_path.open("a+") as fh:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        with file_lock(self.lock_path):
+            yield
 
     # --------------------------------------------------------------- state
     def _save(self, state: dict) -> None:

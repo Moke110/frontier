@@ -1,0 +1,10 @@
+# Runtime dependencies (Python 3.11+). Everything else is stdlib.
+PyYAML>=6.0
+
+# Tests only:
+#   pip install pytest
+
+# Optional, legacy PDF pushes only (`python -m writer.cli render --format pdf`).
+# The default push format is self-contained HTML, which needs no extra package.
+# On Windows WeasyPrint additionally needs the GTK3 runtime.
+#   WeasyPrint>=60

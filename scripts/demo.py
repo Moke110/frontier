@@ -44,7 +44,7 @@ def run(args: list[str], env: dict, quiet: bool = False) -> dict:
 
 
 def main() -> int:
-    home = Path(tempfile.mkdtemp(prefix="kl-demo-", dir="/tmp"))
+    home = Path(tempfile.mkdtemp(prefix="kl-demo-"))
     shutil.copytree(ROOT / "fixtures" / "home", home, dirs_exist_ok=True)
     env = {**os.environ, "KL_HOME": str(home)}
     print(f"KL_HOME = {home}")
@@ -144,10 +144,17 @@ def main() -> int:
     print(chosen["body_md"])
 
     step("8. publisher: 发评分卡（dry-run，不发网络请求）")
+    push_path = home / "outbox" / "pushes" / f"{chosen['push_id']}.json"
+    html_path = home / "outbox" / f"{chosen['push_id']}.html"
+    run(
+        [PY, "-m", "writer.cli", "render", "--push", str(push_path),
+         "--format", "html", "--out", str(html_path)],
+        env,
+    )
     send = run(
         [
-            PY, "-m", "publisher.cli", "send", "--push",
-            str(home / "outbox" / "pushes" / f"{chosen['push_id']}.json"),
+            PY, "-m", "publisher.cli", "send", "--push", str(push_path),
+            "--html", str(html_path),
             "--to", "ou_demo", "--dry-run",
         ],
         env,

@@ -99,7 +99,7 @@ class LarkDrive:
         return token
 
     def upload(self, folder_token: str, name: str, path: Path) -> dict:
-        # lark-cli only accepts files under cwd / /tmp / ~/files, so upload
+        # lark-cli only accepts files under cwd / temp / ~/files, so upload
         # with cwd at the file's directory and pass the bare file name.
         path = Path(path).resolve()
         data = self._run(
@@ -120,7 +120,7 @@ class LarkDrive:
     def download(self, token: str, output: Path, *, kind: str = "file") -> dict:
         output = Path(output)
         output.parent.mkdir(parents=True, exist_ok=True)
-        # Same allowlist applies to --output: download into /tmp and move.
+        # Same allowlist applies to --output: download into temp and move.
         with tempfile.NamedTemporaryFile(delete=False) as fh:
             tmp = Path(fh.name)
         try:

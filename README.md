@@ -25,7 +25,7 @@
 
 ## 安装（由你的 agent 执行）
 
-要求：已安装一个 agent（opencode / Claude Code / Codex / Cursor…）、已安装并**登录** `lark-cli`、Python 3.11+ + PyYAML + WeasyPrint，以及至少一种中文字体（Noto CJK）。
+要求：已安装一个 agent（opencode / Claude Code / Codex / Cursor…）、已安装并**登录** `lark-cli`、Python 3.11+ + PyYAML（`pip install -r requirements.txt`）。WeasyPrint 与中文字体只在渲染 legacy PDF 时需要。
 
 安装方式不是运行安装脚本，而是把 [`INSTALL.md`](INSTALL.md) 开头的任务说明发给你的 agent。agent 会：
 
@@ -34,6 +34,8 @@
 3. 把仓库软链到你所用 agent 的 skills 目录（opencode / Claude Code / Codex / Cursor / `~/.agents/skills`）；
 4. 初始化数据根并跑测试与 `frontier validate`；
 5. 汇报安装路径，提示你重启 agent。
+
+**Windows 原生环境**（不是 WSL）不要照 `INSTALL.md` 走：systemd、`fc-list`、软链都不适用，见 [`WINDOWS-TRANSFER.md`](WINDOWS-TRANSFER.md)。
 
 技能说明在 [`SKILL.md`](SKILL.md)，安装后 agent 会直接读到。
 

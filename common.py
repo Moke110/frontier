@@ -9,10 +9,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import unicodedata
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 import yaml
 
@@ -35,6 +37,71 @@ def today() -> str:
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def temp_dir() -> Path:
+    """Scratch directory for intermediate files.
+
+    Agent prompts quote this path, so it must exist on every platform: `/tmp`
+    is POSIX-only and is not writable on Windows.
+    """
+    return Path(tempfile.gettempdir())
+
+
+def _acquire(handle, blocking: bool) -> None:
+    if os.name == "nt":  # pragma: no cover - exercised only on Windows
+        import msvcrt
+
+        # msvcrt locks a byte range, not the whole file, so the lock file must
+        # contain at least one byte before the range can be claimed.
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+
+
+def _release(handle) -> None:
+    if os.name == "nt":  # pragma: no cover - exercised only on Windows
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def file_lock(path: Path, *, blocking: bool = True) -> Iterator[bool]:
+    """Exclusive advisory lock on `path`, portable across POSIX and Windows.
+
+    `fcntl` does not exist on Windows, so the POSIX and msvcrt flavours are
+    imported lazily. Yields True when the lock was taken; with blocking=False a
+    busy lock yields False instead of raising, leaving the policy to the caller.
+    """
+    path = Path(path)
+    ensure_dir(path.parent)
+    handle = path.open("a+b")
+    acquired = False
+    try:
+        try:
+            _acquire(handle, blocking)
+            acquired = True
+        except OSError:
+            if blocking:
+                raise
+        yield acquired
+    finally:
+        if acquired:
+            _release(handle)
+        handle.close()
 
 
 def read_json(path: Path, default: Any = None) -> Any:

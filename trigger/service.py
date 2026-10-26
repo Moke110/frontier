@@ -6,17 +6,17 @@ invokes a headless agent. It does not rank, write, or touch the knowledge base.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import math
 import os
+import shutil
 import signal
 import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from common import append_jsonl, now, read_json, read_jsonl
+from common import append_jsonl, file_lock, now, read_json, read_jsonl, temp_dir, today
 from publisher import feishu
 from question_queue.store import LEASE_MINUTES, QueueStore
 from trigger.keywords import parse, resolve_checkpoint
@@ -27,22 +27,22 @@ PROMPT = """使用 frontier skill（{repo}/SKILL.md）执行一次检索推送�
 - 工作目录 {repo}；数据根 KL_HOME={home}；
 - 只允许执行「检索 → 排序 → 写作 → 渲染 → 推送」这一条正向链路；
 - 评分题与更新题由统一队列发送，不要手写审批卡；不要运行 frontier record / editor fit；
-- 收件人固定为 $FRONTIER_OWNER_ID，推送前不用再次询问；
+- 收件人固定为 {owner}，推送前不用再次询问；
 - 论文必须来自本次检索候选，不得编造；没有新候选就直接结束并输出「今天没有新的」。
 
 步骤：
 1. python -m frontier.cli validate
-2. python -m frontier.cli plan --date "$(date +%%F)" --days 7 --out /tmp/frontier-plan.json
-3. python -m retriever.cli fetch --plan /tmp/frontier-plan.json --out /tmp/frontier-candidates.jsonl --source live
+2. python -m frontier.cli plan --date {date} --days 7 --out {tmp}/frontier-plan.json
+3. python -m retriever.cli fetch --plan {tmp}/frontier-plan.json --out {tmp}/frontier-candidates.jsonl --source live
 4. 逐条 python -m archive.cli add-paper --file <临时 json>（自动去重）
-5. python -m editor.cli task --candidates /tmp/frontier-candidates.jsonl --date "$(date +%%F)" --out /tmp/editor-task.json
-6. 你亲自读 task、写 /tmp/selection.json，并 python -m editor.cli check ...
+5. python -m editor.cli task --candidates {tmp}/frontier-candidates.jsonl --date {date} --out {tmp}/editor-task.json
+6. 你亲自读 task、写 {tmp}/selection.json，并 python -m editor.cli check ...
 7. 从 selection 里只选 1 篇；python -m writer.cli task ...；python -m writer.cli figures ...
 8. 你亲自写 push（七段 HTML + assets）；python -m writer.cli check ...
-9. python -m writer.cli render --push ... --out /tmp/<push_id>.html
+9. python -m writer.cli render --push ... --out {tmp}/<push_id>.html
 10. python -m archive.cli add-push --file ...
 11. python -m library.cli ensure-source --paper <push 里的 paper_id>（原文入库；无 PDF 会登记为无原件，不阻断推送）
-12. python -m publisher.cli send --push ... --html ... --to "$FRONTIER_OWNER_ID"
+12. python -m publisher.cli send --push ... --html ... --to {owner}
 
 如果 publisher send 返回非零（尤其 reason=duplicate_paper），立即停止，不要换论文重试、不要重复 add-push；输出「推送发送失败：<reason>」并结束。
 {checkpoint_line}
@@ -60,13 +60,13 @@ REVIEW_PROMPT = """使用 frontier-loop skill（{repo}/skills/frontier-loop/SKIL
 - 校验失败就修正后重试，不要绕过 review-check。
 
 步骤：
-1. python -m writer.cli review-task --prop {prop_id} --item {item_id} --out /tmp/frontier-review-task-{item_id}.json
-2. 你亲自读 task，写 /tmp/frontier-review-{prop_id}.json（schema_version=1, kind=proposition-review,
-   prop_id, review, body_html, proposal{op=update_proposition_review,...}）；
-3. python -m writer.cli review-check --task /tmp/frontier-review-task-{item_id}.json --review /tmp/frontier-review-{prop_id}.json
-4. python -m writer.cli review-render --review /tmp/frontier-review-{prop_id}.json --out /tmp/frontier-review-{prop_id}.html
-5. python -m question_queue.cli review-ready --item {item_id} --review /tmp/frontier-review-{prop_id}.json --html /tmp/frontier-review-{prop_id}.html
-6. python -m publisher.cli deliver --to "$FRONTIER_OWNER_ID"
+1. python -m writer.cli review-task --prop {prop_id} --item {item_id} --out {tmp}/frontier-review-task-{item_id}.json
+2. 你亲自读 task，写 {tmp}/frontier-review-{prop_id}.json（schema_version=1, kind=proposition-review,
+   prop_id, review, body_html, proposal{{op=update_proposition_review,...}}）；
+3. python -m writer.cli review-check --task {tmp}/frontier-review-task-{item_id}.json --review {tmp}/frontier-review-{prop_id}.json
+4. python -m writer.cli review-render --review {tmp}/frontier-review-{prop_id}.json --out {tmp}/frontier-review-{prop_id}.html
+5. python -m question_queue.cli review-ready --item {item_id} --review {tmp}/frontier-review-{prop_id}.json --html {tmp}/frontier-review-{prop_id}.html
+6. python -m publisher.cli deliver --to {owner}
 
 完成后输出一句：已发送命题综述 {prop_id}。"""
 
@@ -97,20 +97,8 @@ def load_owner(explicit: str | None = None) -> str:
 @contextmanager
 def job_lock(home: Path):
     path = Path(home) / "publisher" / "trigger.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("a+")
-    acquired = False
-    try:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-        except BlockingIOError:
-            acquired = False
+    with file_lock(path, blocking=False) as acquired:
         yield acquired
-    finally:
-        if acquired:
-            fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()
 
 
 def lease_minutes(config: Config) -> int:
@@ -143,8 +131,46 @@ def build_prompt(config: Config, checkpoint: str | None) -> str:
     return PROMPT.format(
         repo=config.repo,
         home=config.home,
+        owner=config.owner,
+        date=today(),
+        tmp=temp_dir(),
         checkpoint_line=line,
     ).strip()
+
+
+def _agent_argv(prompt: str) -> list[str]:
+    """argv for the headless agent run.
+
+    `opencode` ships a native binary (also on Windows). Only an npm shim
+    (.cmd/.bat) needs cmd.exe, because CreateProcess cannot exec a batch file.
+    """
+    argv = ["opencode", "run", "--auto", prompt]
+    if os.name != "nt":  # pragma: no cover - POSIX/Popen handles PATH itself
+        return argv
+    exe = shutil.which(argv[0]) or argv[0]  # pragma: no cover - Windows only
+    if exe.lower().endswith((".cmd", ".bat")):  # pragma: no cover - Windows only
+        return ["cmd", "/c", exe, *argv[1:]]
+    return [exe, *argv[1:]]  # pragma: no cover - Windows only
+
+
+def _kill_tree(proc) -> None:
+    """Kill the agent and its descendants.
+
+    A timed-out opencode run can leave grandchildren that keep writing pushes,
+    so a bare proc.kill() is not enough on either platform.
+    """
+    if os.name == "nt":  # pragma: no cover - Windows only
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+            check=False,
+        )
+        proc.kill()
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
 
 
 def run_agent(config: Config, prompt: str) -> subprocess.CompletedProcess:
@@ -153,24 +179,26 @@ def run_agent(config: Config, prompt: str) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["KL_HOME"] = str(config.home)
     env["FRONTIER_OWNER_ID"] = config.owner
+    session_kwargs: dict = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt"
+        else {"start_new_session": True}
+    )
     proc = subprocess.Popen(
-        ["opencode", "run", "--auto", prompt],
+        _agent_argv(prompt),
         cwd=str(config.repo),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        start_new_session=True,
+        **session_kwargs,
     )
     try:
         stdout, stderr = proc.communicate(timeout=config.timeout)
     except subprocess.TimeoutExpired:
         # Kill the whole process group, not just the direct child: a timed-out
         # opencode run can leave grandchildren that keep writing pushes.
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
+        _kill_tree(proc)
         stdout, stderr = proc.communicate()
         raise subprocess.TimeoutExpired(
             proc.args, config.timeout, output=stdout, stderr=stderr
@@ -319,6 +347,8 @@ def run_review(config: Config, item_id: str, runner=run_agent) -> dict:
         prompt = REVIEW_PROMPT.format(
             repo=config.repo,
             home=config.home,
+            owner=config.owner,
+            tmp=temp_dir(),
             item_id=item_id,
             prop_id=prop_id,
         )

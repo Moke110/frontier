@@ -4,6 +4,8 @@
 
 > 请安装 frontier。先从 https://github.com/Moke110/frontier 获取代码，克隆到 `~/frontier`，然后严格按仓库里的 `INSTALL.md` 执行：检查 `lark-cli` 是否已安装并登录，把仓库接入当前 agent 的 skills 目录，初始化数据，最后做一次验证。任何一步失败就停下来告诉我原因，不要跳过检查。
 
+> **Windows 原生环境（非 WSL）不要照本文件走**，见 [`WINDOWS-TRANSFER.md`](WINDOWS-TRANSFER.md)：systemd 单元、`fc-list`、WeasyPrint 依赖都不适用。
+
 ---
 
 ## 给 agent 的执行步骤
@@ -47,11 +49,11 @@ lark-cli event consume im.message.receive_v1 --as bot --timeout 3s
 git --version
 python3 --version              # 需要 >= 3.11
 python3 -c "import yaml"       # 需要 PyYAML
-python3 -c "import weasyprint" # 需要 WeasyPrint（PDF 渲染）
-fc-list :lang=zh | head -1     # 至少一种中文字体
+python3 -c "import weasyprint" # 可选：仅 legacy PDF 推送需要（默认 HTML 不需要）
+fc-list :lang=zh | head -1     # 至少一种中文字体（仅 PDF 渲染需要）
 ```
 
-缺 PyYAML / WeasyPrint 时先问用户是否允许安装（`pip install pyyaml weasyprint`），不要擅自改系统环境。缺中文字体时提醒用户安装 Noto CJK（否则 PDF 会缺字）。
+缺 PyYAML 时先问用户是否允许安装（`pip install pyyaml`），不要擅自改系统环境。WeasyPrint 与中文字体只服务 `writer render --format pdf`；默认推送是自包含 HTML，不装也能跑完整流程。
 
 ### 3. 从 GitHub 获取代码与技能文档
 
