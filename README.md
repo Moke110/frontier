@@ -16,6 +16,8 @@
 | `publisher` | 飞书推送、评分/更新卡与回调 | push + 文件 → 消息 / 卡片 / `ratings.jsonl` / `decisions.jsonl` |
 | `knowledge` | 知识层 ↔ Bitable 镜像、手工编辑回拉、漂移比对 | `KnowledgeStore` → Base 五表 / `knowledge/state.json` |
 
+`library`（规划中，ADR 0003）：云盘原文/推送文件 + 「原文」「推送日志」「决定」「配置」四表 + 配额与对账；落地后 `archive` 只管本地缓存与物化视图。见 `docs/specs/lark-storage.md`。
+
 模块之间**零 Python import**，只通过 `contracts/README.md` 定义的文件交换数据。唯一共享代码是根目录 `common.py`（纯 IO 工具，无领域逻辑）。因此每个模块都能单独跑、单独替换 —— 例如把 `writer` 换成 LLM 版本，或把 `retriever` 换成别的数据源，其它模块不用改。
 
 **editor 与 writer 不内置模型调用。** 它们把需要判断的部分打包成任务文件（`editor-task.json` / `writer-task.json`），由宿主 agent 读取、推理、写回，脚本只做取数与校验。任务契约见 [`contracts/agent-tasks.md`](contracts/agent-tasks.md)。`editor rank` / `writer write` 保留为确定性 fallback，供离线 demo 与测试使用。

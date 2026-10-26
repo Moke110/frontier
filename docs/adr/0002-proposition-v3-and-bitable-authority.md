@@ -1,7 +1,7 @@
 # ADR 0002：命题 v3（evidence / review）与 Bitable 权威存储
 
 - 日期：2026-10-22
-- 状态：已接受
+- 状态：已接受；第 3 条中"原文、推送仍存本地"部分由 ADR 0003 取代
 - 相关决策：每篇推送 2 个实体名额；HTML 推送；更新 skill（`skills/frontier-loop`）
 
 ## 背景
