@@ -2,6 +2,9 @@ data/
 __pycache__/
 *.pyc
 .pytest_cache/
+pytest-of-*/
 .scratch/
+# Install workspace pointer and privately installed CLI (ADR 0007).
+.frontier/
 # Retired development agent: keep regenerated local metadata out of Git.
 .workbuddy/

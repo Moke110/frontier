@@ -66,6 +66,14 @@ _Avoid_: author, editor, generator
 The host project folder that contains the code directory and the data root as separate children.
 _Avoid_: repo root, project root, workspace root
 
+**Host（运行宿主）**:
+The agent application that installs and runs frontier on the user's machine: it executes local commands, loads the runtime skill, and wakes itself when a planned run is due.
+_Avoid_: machine, runtime, bot
+
+**Host schedule（宿主定时任务）**:
+A schedule owned by the host rather than the operating system that starts one frontier run at the planned time; creating it is not evidence that it fired.
+_Avoid_: cron job, service, daemon
+
 **Code directory（代码目录）**:
 The frontier repository checkout, kept separate from research data.
 _Avoid_: workspace, install directory, app folder
