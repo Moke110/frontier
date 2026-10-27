@@ -100,6 +100,15 @@ The agent role that reads a paper and proposes knowledge-card / proposition upda
 
 ## 存储与档案
 
+**安装工作区（installation workspace）**:
+宿主 agent 中用于安装与运行 frontier 的项目源文件夹，记为 `<root>`；包含相互独立的代码目录与默认数据根。
+
+**代码目录（repository root）**:
+frontier 仓库副本所在目录，与用户数据根分开。
+
+**数据根（data root）**:
+一次 frontier 安装的本地配置、运行状态、缓存与离线备份的存放位置。可重建缓存与必须保留的离线备份是不同类别，不能将整个数据根视为可删除缓存。
+
 **原文（source document）**:
 一篇论文的 PDF 原件，主键 `paper_id`。一条原文记录对应云盘里至多一个文件 —— 同一篇论文永远只有一份原件。
 _Avoid_: 文献、资料、PDF 文件、附件
