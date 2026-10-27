@@ -52,7 +52,7 @@ STEPS = (
 STEP_NOTES = {
     "host": "宿主产品、版本、本机执行、内置调度与实际权限",
     "workspace": "代码目录与数据根分离，已有副本检查与续接",
-    "dependencies": "私有 uv、解释器、PyYAML/PyMuPDF 与仓库副本",
+    "dependencies": "数据根私有 uv、解释器、PyYAML/PyMuPDF 导入探针与仓库副本",
     "skill": "frontier-run 入口指针及参考文件可读",
     "lark_cli": "飞书 CLI 由显式私有路径解析（仅可执行，未证明已登录）",
     "identity": "飞书 user / bot 身份与登录有效期",
@@ -183,6 +183,7 @@ def probe_dependencies(
     *,
     python: str | None = None,
     platform: str | None = None,
+    home: str | Path | None = None,
 ) -> dict:
     """The *recorded* interpreter, PyYAML and a usable repository checkout."""
     repo = Path(repo)
@@ -190,6 +191,10 @@ def probe_dependencies(
     facts = _interpreter_facts(str(python))
     version = facts["version"]
     has_yaml = facts["yaml"]
+    python_path = Path(str(python))
+    outside_repo = not python_path.is_relative_to(repo) if python_path.is_absolute() else False
+    expected = (Path(home) / workspace_mod.ENV_DIRNAME) if home else None
+    in_data_root = bool(expected) and python_path.is_relative_to(expected)
     require = [
         "skills/frontier-run/SKILL.md",
         "skills/frontier-run/references/installation.md",
@@ -217,6 +222,8 @@ def probe_dependencies(
             "platform": platform or sys.platform,
             "repo": str(repo),
             "yaml": has_yaml,
+            "outside_repo": outside_repo,
+            "in_data_root": in_data_root,
         },
     }
 
@@ -436,9 +443,14 @@ def check(
             update_config(home, paths={"python": ws["python"]})
         if ws.get("uv"):
             update_config(home, paths={"uv": ws["uv"]})
+        if ws.get("venv"):
+            update_config(home, paths={"venv": ws["venv"]})
 
     results["dependencies"] = probe_dependencies(
-        repo_path, python=python or config["paths"].get("python"), platform=platform
+        repo_path,
+        python=python or config["paths"].get("python"),
+        platform=platform,
+        home=home,
     )
     lark_result = probe_lark_cli(home, lark_cli or config["paths"].get("lark_cli"))
     results["lark_cli"] = lark_result

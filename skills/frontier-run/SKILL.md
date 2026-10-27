@@ -9,13 +9,13 @@ description: "Install, run, pause or recover frontier on a local host agent. Dep
 
 ## 定位运行环境
 
-安装时生成的入口指针包含仓库、数据根、解释器和安装记录的绝对路径；以这些路径为准，不要根据本文件所在位置推断仓库。所有模块命令以仓库根为工作目录，数据根每次显式传 `--home <绝对路径>`。使用安装配置中记录的 Python 与飞书 CLI 完整路径，不依赖 `python3` 或全局 PATH；Windows 可用进程参数 `-X utf8`。
+安装时生成的入口指针包含仓库、数据根、uv、私有环境、解释器和安装记录的绝对路径；以这些路径为准，不要根据本文件所在位置推断仓库。所有模块命令以仓库根为工作目录，数据根每次显式传 `--home <绝对路径>`。使用安装配置中记录的 Python 与飞书 CLI 完整路径，不依赖 `python3` 或全局 PATH；Windows 可用进程参数 `-X utf8`。
 
-代码目录与数据根分开：代码默认 `<workspace>/frontier`，数据根默认 `<workspace>/frontier-archive`。不修改系统/用户环境变量、PATH、注册表，不创建服务、系统任务或常驻进程。
+代码目录与数据根分开：代码默认 `<workspace>/frontier`，数据根默认 `<workspace>/frontier-archive`。uv 管理的私有环境与解释器在数据根内（`<home>/.venv`），代码目录只保留代码；uv 优先从工作区外解析。不修改系统/用户环境变量、PATH、注册表，不创建服务、系统任务或常驻进程。
 
 ## 按请求执行
 
-- **安装或继续安装**：读取 [installation.md](references/installation.md)，按顺序执行工作区、私有 uv/解释器、`frontier-run` 入口指针、飞书 CLI/登录、设施命名与创建、关键词临时闭环、清理、正式知识初始化、两类任务。用户安装入口是 [README.md](../../README.md)。只声明实际验证过的能力。
+- **安装或继续安装**：读取 [installation.md](references/installation.md)，按顺序执行工作区、数据根私有 uv/解释器、`frontier-run` 入口指针、飞书 CLI/登录、设施命名与创建、关键词临时闭环、清理、正式知识初始化、两类任务。用户安装入口是 [README.md](../../README.md)。只声明实际验证过的能力。
 - **检索推送**：先执行 `python -m hostrun.cli --home <home> run --intent daily`。按返回的闸门与续接状态决定是否继续；获准写作时读取 [workflow.md](references/workflow.md)，由当前宿主完成排序、写作和校验，只推送一篇后报告实际完成结果。
 - **反馈处理**：执行 `run --intent feedback`。它处理已提交答案、未完成工作和当天首次维护，**从不**创建检索请求；维护不受待答问题阻塞。
 - **临时验收**：用 `smoke` 以用户关键词跑一次带标记的真实闭环（检索、推送、飞书评分、采纳写入），再用 `cleanup` 按测试 ID 删除并读回确认。只有测试成功且清理通过才开放正式知识初始化。
