@@ -69,6 +69,15 @@ def _card(card_id="card_virtual_cell", label="虚拟细胞"):
     }
 
 
+def _intake(home, tmp_path, *, text="虚拟细胞研究笔记，包含可读的全文内容。"):
+    """A real intake: one readable text file plus non-empty requirements."""
+    path = tmp_path / "notes.txt"
+    path.write_text(text, encoding="utf-8")
+    return initialize.intake(
+        home, texts=[str(path)], requirements="关注虚拟细胞与类器官的边界"
+    )
+
+
 def test_intake_text_index_and_gaps(tmp_path, monkeypatch):
     home, base, _ = _home(tmp_path)
     text = tmp_path / "notes.txt"
@@ -133,9 +142,10 @@ def test_readable_pdf_text_is_cached_for_the_agent(tmp_path, monkeypatch):
 
 def test_propose_rejects_cards_that_violate_the_model(tmp_path):
     home, base, _ = _home(tmp_path)
+    _intake(home, tmp_path)
     bad = {"id": "nope", "label": "", "ontology": [], "annotation": ""}
 
-    result = initialize.propose(home, [bad])
+    result = initialize.propose(home, [bad], client=base)
 
     assert result["ok"] is False
     assert result["reason"] == "invalid_cards"
@@ -144,8 +154,9 @@ def test_propose_rejects_cards_that_violate_the_model(tmp_path):
 def test_apply_requires_test_and_cleanup_gate(tmp_path):
     home, base, _ = _home(tmp_path, gate=False)
     (home / "install").mkdir(parents=True, exist_ok=True)
+    _intake(home, tmp_path)
 
-    initialize.propose(home, [_card()])
+    initialize.propose(home, [_card()], client=base)
     initialize.confirm(home, confirmed_by_user=True)
 
     with pytest.raises(HostRunError):
@@ -154,7 +165,8 @@ def test_apply_requires_test_and_cleanup_gate(tmp_path):
 
 def test_apply_requires_confirmation_of_the_current_draft(tmp_path):
     home, base, _ = _home(tmp_path)
-    initialize.propose(home, [_card()])
+    _intake(home, tmp_path)
+    initialize.propose(home, [_card()], client=base)
 
     result = initialize.apply_draft(home, client=base)
 
@@ -162,7 +174,7 @@ def test_apply_requires_confirmation_of_the_current_draft(tmp_path):
     assert result["reason"] == "needs_user_confirmation"
 
     initialize.confirm(home, confirmed_by_user=True)
-    initialize.propose(home, [_card(label="改名后的卡片")])
+    initialize.propose(home, [_card(label="改名后的卡片")], client=base)
 
     stale = initialize.apply_draft(home, client=base)
     assert stale["ok"] is False
@@ -171,8 +183,8 @@ def test_apply_requires_confirmation_of_the_current_draft(tmp_path):
 
 def test_confirmed_cards_are_written_to_base_and_retrieval_runs(tmp_path):
     home, base, _ = _home(tmp_path)
-    initialize.intake(home, texts=[], requirements="关注虚拟细胞") if False else None
-    initialize.propose(home, [_card()], rationale="来自用户要求")
+    _intake(home, tmp_path)
+    initialize.propose(home, [_card()], rationale="来自用户要求", client=base)
     initialize.confirm(home, confirmed_by_user=True)
 
     result = initialize.apply_draft(home, client=base)
@@ -191,7 +203,8 @@ def test_confirmed_cards_are_written_to_base_and_retrieval_runs(tmp_path):
 
 def test_apply_is_idempotent_and_does_not_duplicate_cards(tmp_path):
     home, base, _ = _home(tmp_path)
-    initialize.propose(home, [_card()])
+    _intake(home, tmp_path)
+    initialize.propose(home, [_card()], client=base)
     initialize.confirm(home, confirmed_by_user=True)
     first = initialize.apply_draft(home, client=base)
     second = initialize.apply_draft(home, client=base)
@@ -228,7 +241,8 @@ def test_existing_base_cards_are_imported_not_rebuilt(tmp_path):
 
 def test_standard_retrieval_refuses_leftover_smoke_card(tmp_path):
     home, base, _ = _home(tmp_path)
-    initialize.propose(home, [_card()])
+    _intake(home, tmp_path)
+    initialize.propose(home, [_card()], client=base)
     initialize.confirm(home, confirmed_by_user=True)
     initialize.apply_draft(home, client=base)
     smoke_card = home / "archive" / "cards" / "card_smoke_leftover.json"
@@ -256,3 +270,105 @@ def test_status_next_action_mentions_cleanup_when_gate_is_closed(tmp_path):
 
     assert result["gate"]["test_and_cleanup_passed"] is False
     assert "临时闭环" in result["next"]
+
+
+# ------------------------------------------------- intake gate and draft binding
+def test_propose_requires_a_real_readable_intake(tmp_path, monkeypatch):
+    home, base, _ = _home(tmp_path)
+
+    missing = initialize.propose(home, [_card()], client=base)
+    assert missing["ok"] is False
+    assert missing["reason"] == "intake_missing"
+    assert missing["note"]
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    monkeypatch.setattr(
+        initialize,
+        "_extract_pdf",
+        lambda path: {
+            "readable": False,
+            "reason": "PDF 提取器不可用：no fitz",
+            "pages": 0,
+            "chars": 0,
+        },
+    )
+    initialize.intake(home, pdfs=[str(pdf)], requirements="virtual cell")
+
+    unreadable = initialize.propose(home, [_card()], client=base)
+    assert unreadable["ok"] is False
+    assert unreadable["reason"] == "intake_not_readable"
+    assert any("PDF" in gap["reason"] for gap in unreadable["gaps"])
+
+    index = tmp_path / "index.json"
+    index.write_text(json.dumps([{"title": "A paper"}]), encoding="utf-8")
+    initialize.intake(home, indexes=[str(index)], requirements="virtual cell")
+
+    no_fulltext = initialize.propose(home, [_card()], client=base)
+    assert no_fulltext["ok"] is False
+    assert no_fulltext["reason"] == "intake_no_fulltext"
+
+    _intake(home, tmp_path)
+    ok = initialize.propose(home, [_card()], client=base)
+    assert ok["ok"] is True
+
+
+def test_apply_refuses_a_card_that_existed_before_the_draft(tmp_path):
+    home, base, _ = _home(tmp_path)
+    _intake(home, tmp_path)
+    config = json.loads((home / "knowledge" / "base.json").read_text(encoding="utf-8"))
+    cards_table = config["tables"]["cards"]
+    base.create(
+        cards_table,
+        [
+            {
+                "卡片 ID": "card_virtual_cell",
+                "label": "既有正式卡片",
+                "ontology": ["已有本体"],
+                "annotation": "既有注释",
+            }
+        ],
+    )
+    initialize.propose(home, [_card(label="新标签")], client=base)
+    initialize.confirm(home, confirmed_by_user=True)
+
+    refused = initialize.apply_draft(home, client=base)
+
+    assert refused["ok"] is False
+    assert refused["reason"] == "pre_existing_card"
+    assert refused["conflicts"] == ["card_virtual_cell"]
+    rows = base.list(cards_table)
+    assert [row["fields"]["label"] for row in rows] == ["既有正式卡片"]
+    assert not (home / "archive" / "cards" / "card_virtual_cell.json").exists()
+
+    overwritten = initialize.apply_draft(home, client=base, overwrite=True)
+
+    assert overwritten["ok"] is True
+    rows = base.list(cards_table)
+    assert [row["fields"]["label"] for row in rows] == ["新标签"]
+
+
+def test_apply_detects_a_tampered_remote_card_on_read_back(tmp_path, monkeypatch):
+    home, base, _ = _home(tmp_path)
+    _intake(home, tmp_path)
+    initialize.propose(home, [_card()], client=base)
+    initialize.confirm(home, confirmed_by_user=True)
+    config = json.loads((home / "knowledge" / "base.json").read_text(encoding="utf-8"))
+    cards_table = config["tables"]["cards"]
+    from knowledge import bitable
+
+    real_sync = bitable.sync
+
+    def tampering_sync(home_path, *, client):
+        result = real_sync(home_path, client=client)
+        row = client.list(cards_table)[0]
+        client.update(cards_table, {row["record_id"]: {"label": "远程被篡改"}})
+        return result
+
+    monkeypatch.setattr(bitable, "sync", tampering_sync)
+
+    result = initialize.apply_draft(home, client=base)
+
+    assert result["ok"] is False
+    assert result["reason"] == "base_readback_mismatch"
+    assert result["mismatched"] == ["card_virtual_cell"]
