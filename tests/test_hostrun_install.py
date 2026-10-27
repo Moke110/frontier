@@ -101,10 +101,11 @@ def test_probe_dependencies_reports_the_missing_piece(tmp_path, monkeypatch):
     empty.mkdir()
     result = install.probe_dependencies(empty, python="python")
     assert result["status"] == "blocked"
-    assert "SKILL.md" in result["note"]
+    assert "skills/frontier/SKILL.md" in result["note"]
 
     good = Path(__file__).resolve().parents[1]
     result = install.probe_dependencies(good)
+    assert result["status"] == "ok"
     assert result["evidence"]["python_version"].count(".") == 2
     assert isinstance(result["evidence"]["yaml"], bool)
 

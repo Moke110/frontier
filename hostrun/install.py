@@ -125,7 +125,13 @@ def probe_dependencies(
     repo = Path(repo)
     python = python or sys.executable
     version = tuple(sys.version_info[:3])
-    require = ["SKILL.md", "contracts/README.md", "common.py"]
+    require = [
+        "skills/frontier/SKILL.md",
+        "skills/frontier/references/installation.md",
+        "skills/frontier/references/workflow.md",
+        "contracts/README.md",
+        "common.py",
+    ]
     missing = [name for name in require if not (repo / name).exists()]
     try:
         import yaml  # noqa: F401

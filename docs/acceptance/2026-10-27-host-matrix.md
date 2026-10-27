@@ -58,7 +58,7 @@ python -m hostrun.cli --home /tmp/kl-evidence install check \
 | 时区 + 启用确认后配置三个任务 | **未实测** | 只产出 `schedules plan`（可读计划）与 `confirm`（需 `--yes` + 宿主真正创建）；本会话未在宿主自动化里创建并触发任务 |
 | 权限实际作用域与无人值守行为 | **未实测** | 能确认的是「本会话内可执行本地命令」；后台无人值守时的权限边界没有证据 |
 | 实测一次本地定时执行 + 持久反馈续接 | **未实测** | 依赖 `lark-cli` 登录与宿主调度，本机缺 `lark-cli` |
-| 在线要求、暂停与切换说明 | **通过（文档）** | `INSTALL.md` §5–§6；`executor handover --force`、`feedback rebuild` 有测试覆盖 |
+| 在线要求、暂停与切换说明 | **通过（文档）** | [README 使用与恢复说明](../../README.md)；`executor handover --force`、`feedback rebuild` 有测试覆盖 |
 
 ### #37 ChatGPT
 
@@ -69,7 +69,7 @@ python -m hostrun.cli --home /tmp/kl-evidence install check \
 | 三个任务写到宿主调度 | **未实测** | 同上 |
 | 权限范围 | **未实测** | 同上 |
 | 真实定时 + 离线反馈 + 稳定续接 | **未实测** | 同上 |
-| 开机/在线条件、暂停切换 | **通过（文档）** | `INSTALL.md` §5–§6 |
+| 开机/在线条件、暂停切换 | **通过（文档）** | [README 使用与恢复说明](../../README.md) |
 
 ## 为什么没有硬凑通过
 

@@ -21,7 +21,7 @@ from publisher import feishu
 from question_queue.store import LEASE_MINUTES, QueueStore
 from trigger.keywords import parse, resolve_checkpoint
 
-PROMPT = """使用 frontier skill（{repo}/SKILL.md）执行一次检索推送，只处理一篇论文。
+PROMPT = """使用 frontier skill（{repo}/skills/frontier/SKILL.md）执行一次检索推送，只处理一篇论文。
 
 硬约束：
 - 工作目录 {repo}；数据根 KL_HOME={home}；
@@ -50,7 +50,7 @@ PROMPT = """使用 frontier skill（{repo}/SKILL.md）执行一次检索推送�
 
 CHECKPOINT_LINE = "- 本次只处理知识卡片：{checkpoint}"
 
-REVIEW_PROMPT = """使用 frontier-loop skill（{repo}/skills/frontier-loop/SKILL.md）处理一条命题综述更新题：{item_id}。
+REVIEW_PROMPT = """使用 frontier skill（{repo}/skills/frontier/SKILL.md），按其 references/workflow.md 处理一条命题综述更新题：{item_id}。
 
 硬约束：
 - 工作目录 {repo}；数据根 KL_HOME={home}；

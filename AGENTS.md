@@ -1,6 +1,6 @@
 # frontier
 
-Personal frontier repo — workspace for the mattpocock/skills engineering workflow.
+Research knowledge base and paper-report delivery system. This file is the development guide; `CONTEXT.md` is the project glossary. Maintain these through the Matt Pocock skills as working rules and terminology are resolved.
 
 ## Development responsibilities
 
@@ -36,9 +36,11 @@ Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `
 
 Single-context layout (`CONTEXT.md` + `docs/adr/` at the repo root). See `docs/agents/domain.md`.
 
-### frontier loop
+### Runtime and user documentation
 
-The daily workflow (checkpoints → retrieval → editor/writer agent tasks → Lark push → ratings → knowledge-graph/proposition updates) is documented in `SKILL.md`. Installation is a task for the user's agent: `INSTALL.md`; contracts live in `contracts/`.
+`README.md` is the user-facing installation and usage guide. The product's host agent loads `skills/frontier/SKILL.md`; its installation and workflow references are runtime instructions, not development skills. Module contracts live in `contracts/`; current acceptance evidence and blockers live in `docs/acceptance/` and GitHub Issues. Keep root documentation limited to `AGENTS.md`, `CONTEXT.md` and `README.md`, with `LICENSE` retained at the root.
+
+For development checks, use an independent Python environment with PyYAML, pytest and PyMuPDF. The old `.venv` points to a retired WorkBuddy interpreter; rebuild it before using it. On Windows, use `python -X utf8 -m pytest -q` to avoid locale-dependent reads without persistent environment changes.
 
 ### Skill pack
 

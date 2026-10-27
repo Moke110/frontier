@@ -1,6 +1,6 @@
 # 【已归档】systemd / WSL 时代的安装说明
 
-> **不要再按本文件安装。** 现行入口是仓库根目录的 [`INSTALL.md`](../../INSTALL.md)：由宿主 agent（WorkBuddy / ChatGPT 桌面端）在本机执行安装、调度与恢复，不装 systemd、不装常驻监听、不写持久环境变量。
+> **不要再按本文件安装。** 现行入口是仓库根目录的 [`README.md`](../../README.md)：由宿主 agent（WorkBuddy / ChatGPT 桌面端）在本机执行安装、调度与恢复，不装 systemd、不装常驻监听、不写持久环境变量。
 >
 > 保留本文件只为两件事：查历史决策，以及**识别并清理**你机器上仍然存在的旧单元（见文末「清理」）。文中的 `deploy/*.service.in` 与 `deploy/*.timer.in` 现已标注为 legacy，不再被任何现行流程引用。
 
@@ -10,7 +10,7 @@
 
 > 请安装 frontier。先从 https://github.com/Moke110/frontier 获取代码，克隆到 `~/frontier`，然后严格按仓库里的 `INSTALL.md` 执行：检查 `lark-cli` 是否已安装并登录，把仓库接入当前 agent 的 skills 目录，初始化数据，最后做一次验证。任何一步失败就停下来告诉我原因，不要跳过检查。
 
-> **Windows 原生环境（非 WSL）不要照本文件走**，见 [`WINDOWS-TRANSFER.md`](WINDOWS-TRANSFER.md)：systemd 单元、`fc-list`、WeasyPrint 依赖都不适用。
+> **Windows 原生环境（非 WSL）不要照本文件走**，见 [Windows 转移历史](https://github.com/Moke110/frontier/blob/18a687d/WINDOWS-TRANSFER.md)：systemd 单元、`fc-list`、WeasyPrint 依赖都不适用。
 
 ---
 
