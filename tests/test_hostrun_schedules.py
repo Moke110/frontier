@@ -1,12 +1,14 @@
 """Two host tasks, hourly maintenance, and real-trigger evidence."""
 
 import json
+import os
+import shlex
 from pathlib import Path
 
 import pytest
 
 from hostrun import install, intents, schedules
-from hostrun.base import HostRunError
+from hostrun.base import HostRunError, update_config
 from question_queue.store import QueueStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -262,3 +264,102 @@ def test_pause_stops_trigger_recording_and_resume_requires_tasks(tmp_path):
     resumed = schedules.resume(home, confirmed_by_user=True)
     assert resumed["ok"] is True
     assert schedules.status(home)["enabled"] is True
+
+
+# --------------------------------------------- recorded absolute command paths
+def _quoted(path: Path) -> str:
+    text = str(path)
+    if os.name == "nt":
+        return f'"{text}"' if any(char in text for char in " \t") else text
+    return shlex.quote(text)
+
+
+def test_plan_refuses_without_a_recorded_absolute_interpreter(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+
+    update_config(home, paths={"python": ""})
+    empty = schedules.plan(home, timezone_name="Asia/Shanghai")
+
+    assert empty["ok"] is False
+    assert empty["reason"] == "interpreter_not_absolute"
+    assert "install toolchain" in empty["note"]
+    assert "tasks" not in empty
+
+    update_config(home, paths={"python": "python"})
+    relative = schedules.plan(home, timezone_name="Asia/Shanghai")
+
+    assert relative["ok"] is False
+    assert relative["reason"] == "interpreter_not_absolute"
+    assert "tasks" not in relative
+
+
+def test_plan_refuses_when_the_recorded_interpreter_is_gone(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    update_config(home, paths={"python": str(tmp_path / "gone" / "python")})
+
+    blocked = schedules.plan(home, timezone_name="Asia/Shanghai")
+
+    assert blocked["ok"] is False
+    assert blocked["reason"] == "interpreter_missing"
+    assert "install toolchain" in blocked["note"]
+    assert "tasks" not in blocked
+
+
+def test_plan_embeds_the_recorded_absolute_interpreter_in_both_commands(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    interpreter = tmp_path / "env with space" / (
+        "python.exe" if os.name == "nt" else "bin/python"
+    )
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("", encoding="utf-8")
+    repo = tmp_path / "frontier"
+    repo.mkdir()
+    skill = repo / "skills" / "frontier-run" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: frontier-run\n---\n", encoding="utf-8")
+    update_config(
+        home,
+        paths={
+            "python": str(interpreter),
+            "repo": str(repo),
+            "skill": str(skill),
+        },
+    )
+
+    spec = schedules.plan(home, timezone_name="Asia/Shanghai")
+
+    assert spec["ok"] is True
+    assert [task["id"] for task in spec["tasks"]] == [
+        "frontier-daily",
+        "frontier-feedback",
+    ]
+    for task in spec["tasks"]:
+        command = task["command"]
+        assert command.startswith(_quoted(interpreter))
+        assert str(home) in command
+        assert str(repo) in command
+        assert f"--intent {task['intent']}" in command
+        assert task["load_skill"] == str(skill)
+        assert "python -m hostrun.cli" not in command
+    assert "maintenance" not in {task["intent"] for task in spec["tasks"]}
+
+
+def test_confirm_refuses_to_create_tasks_without_a_recorded_interpreter(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    update_config(home, paths={"python": ""})
+
+    result = schedules.confirm(
+        home,
+        confirmed_by_user=True,
+        host_created=True,
+        task_ids={"frontier-daily": "d1", "frontier-feedback": "f1"},
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "interpreter_not_absolute"
+    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
+    assert not (config.get("schedules") or {}).get("tasks")
