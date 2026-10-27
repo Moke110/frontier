@@ -276,3 +276,64 @@ def test_status_without_any_facility_is_pending(tmp_path):
 
     assert result["ok"] is False
     assert result["status"] == "pending"
+
+
+# --------------------------------------------- field read-back and stable IDs
+def test_precreated_table_with_missing_fields_blocks_with_exact_names(
+    configured_home, offline_base
+):
+    result = facilities.create(
+        configured_home,
+        names=_names(),
+        confirmed=True,
+        admin=FakeAdmin(offline_base),
+        client=offline_base,
+        drive=FixtureDrive(),
+    )
+
+    assert result["ok"] is False
+    assert "annotation" in result["missing_fields"]["cards"]
+    state = json.loads(
+        (configured_home / "install" / "state.json").read_text(encoding="utf-8")
+    )
+    assert state["steps"]["facilities"]["status"] == "blocked"
+    assert "annotation" in state["steps"]["facilities"]["note"]
+    assert "知识卡片" in state["steps"]["facilities"]["note"]
+
+    status = facilities.status(configured_home, client=offline_base)
+
+    assert status["ok"] is False
+    assert status["status"] == "blocked"
+    assert "annotation" in status["missing_fields"]["cards"]
+
+
+def test_second_create_with_changed_display_names_creates_nothing_new(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    base = _fresh_base(tmp_path)
+    drive = FixtureDrive()
+    admin = FakeAdmin(base)
+    facilities.create(
+        home, names=_names(), confirmed=True, admin=admin, client=base, drive=drive
+    )
+    record = facilities.load_facilities(home)
+    cards_id = record["tables"]["cards"]["id"]
+    table_count = len(base.list_tables())
+    root_entries = len(drive.list(drive.root))
+
+    changed = _names(
+        tables={"cards": "改名卡片", "sources": "改名原文"},
+        folders={"root": "新根目录", "source": "新原文目录", "push": "新推送目录"},
+    )
+    second = facilities.create(
+        home, names=changed, confirmed=True, admin=admin, client=base, drive=drive
+    )
+
+    assert second["ok"] is True
+    assert admin.created == 1
+    assert len(base.list_tables()) == table_count
+    assert len(drive.list(drive.root)) == root_entries
+    saved = facilities.load_facilities(home)
+    assert saved["tables"]["cards"]["id"] == cards_id
+    assert saved["tables"]["cards"]["name"] == facilities.DEFAULT_TABLES["cards"]
+    assert any("facilities rename" in action for action in second["actions"])
