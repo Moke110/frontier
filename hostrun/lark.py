@@ -19,6 +19,7 @@ import json
 import os
 import re
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from common import ensure_dir, now
@@ -26,11 +27,34 @@ from hostrun.base import HostRunError, base_config, resolve_executable, run_json
 
 SCHEMA_VERSION = 1
 CLI_NAMES = ["lark-cli", "lark-cli.cmd", "lark-cli.exe", "lark-cli.bat"]
+# Current lark-cli grants granular scopes; older deployments granted one broad
+# scope per domain.  Requiring the granular names would mislabel a working
+# installation as blocked, so a broad grant still covers the narrow names.
 REQUIRED_SCOPES = {
-    "base": ["bitable:app"],
-    "drive": ["drive:drive"],
-    "messages": ["im:message:send_as_bot"],
+    "base": [
+        "base:app:read",
+        "base:table:read",
+        "base:field:read",
+        "base:record:read",
+        "base:record:create",
+        "base:record:update",
+        "base:record:delete",
+    ],
+    "drive": [
+        "drive:file:upload",
+        "drive:file:download",
+        "space:folder:create",
+        "space:document:delete",
+    ],
+    "messages": ["im:message"],
 }
+LEGACY_BROAD_SCOPES = {
+    "bitable:app": ("base:",),
+    "drive:drive": ("drive:", "space:"),
+    "im:message:send_as_bot": ("im:message",),
+}
+READY_STATUSES = {"valid", "ready"}
+REFRESHABLE_STATUSES = {"needs_refresh"}
 SCOPE_KEYS = (
     "scopes",
     "scope",
@@ -57,6 +81,24 @@ def _run(argv: list[str], *, runner=subprocess.run, timeout: int = 120) -> dict:
 
 def _tail(text: str, limit: int = 400) -> str:
     return " ".join((text or "").split())[-limit:]
+
+
+def _refresh_window_open(value) -> bool:
+    """Whether a reported refresh expiry is still in the future.
+
+    A missing timestamp counts as open: the CLI only reports it for a logged-in
+    identity, and treating an absent field as expired would hide a working
+    installation.  A present timestamp decides the answer.
+    """
+    if not value:
+        return True
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment > datetime.now(timezone.utc)
 
 
 def private_bin(root: str | Path) -> Path:
@@ -179,16 +221,26 @@ def parse_auth(payload: dict) -> dict:
 
     def facts(entry: dict) -> dict:
         status = str(entry.get("tokenStatus") or entry.get("status") or "").lower()
+        refresh_at = entry.get("refreshExpiresAt") or entry.get("refresh_expires_at")
+        refreshable = _refresh_window_open(refresh_at)
         available = (
             bool(entry.get("available"))
             if "available" in entry
-            else status in {"valid", "ready"}
+            else status in READY_STATUSES | REFRESHABLE_STATUSES
+        )
+        # `needs_refresh` is not a failure: the CLI renews the access token on
+        # the next user call, and only a closed refresh window makes it expire.
+        ready = available and (
+            status in READY_STATUSES
+            or (status in REFRESHABLE_STATUSES and refreshable)
         )
         return {
             "available": available,
             "status": status,
-            "ready": available and status in {"valid", "ready"},
-            "expired": status in {"expired", "invalid"},
+            "ready": ready,
+            "expired": status in {"expired", "invalid"}
+            or (status in REFRESHABLE_STATUSES and not refreshable),
+            "refreshable": refreshable,
         }
 
     user_facts, bot_facts = facts(user), facts(bot)
@@ -237,22 +289,44 @@ def identity(cli: str | None, *, runner=subprocess.run, timeout: int = 30) -> di
     facts = parse_auth(result["payload"])
     ready = [name for name in ("user", "bot") if facts[name]["ready"]]
     missing = [name for name in ("user", "bot") if not facts[name]["ready"]]
+    stale = [
+        name
+        for name in ("user", "bot")
+        if facts[name]["ready"] and facts[name]["status"] in REFRESHABLE_STATUSES
+    ]
+    note = (
+        "user 与 bot 身份均可用"
+        if not missing
+        else "需要用户完成飞书登录/授权：" + "、".join(missing)
+    )
+    if stale and not missing:
+        note += "（" + "、".join(stale) + " 的访问令牌将在下次调用时自动刷新）"
     return {
         "status": "ok" if not missing else "blocked",
-        "note": (
-            "user 与 bot 身份均可用"
-            if not missing
-            else "需要用户完成飞书登录/授权：" + "、".join(missing)
-        ),
+        "note": note,
         "evidence": {
             "ready": ready,
             "missing": missing,
             "expired": any(facts[name]["expired"] for name in ("user", "bot")),
+            "refresh_pending": stale,
             "tenant_matches": facts["tenant_matches"],
             "scope_count": len(facts["scopes"]),
         },
         "scopes": facts["scopes"],
     }
+
+
+def _scope_covered(required: str, granted: str | set[str]) -> bool:
+    """A requirement holds when granted, or when a legacy broad grant covers it."""
+    present = {granted} if isinstance(granted, str) else set(granted)
+    if required in present:
+        return True
+    for broad, prefixes in LEGACY_BROAD_SCOPES.items():
+        if broad in present and required.startswith(tuple(prefixes)):
+            return True
+        if required == broad and any(item.startswith(tuple(prefixes)) for item in present):
+            return True
+    return False
 
 
 def authorization(
@@ -277,16 +351,25 @@ def authorization(
             "source": source,
         }
     granted = sorted({str(item) for item in scopes})
+    present = set(granted)
     if required:
-        missing = [scope for scope in required if scope not in granted]
+        missing = [scope for scope in required if not _scope_covered(scope, present)]
+        broad_only = [
+            scope
+            for scope in required
+            if scope not in present and _scope_covered(scope, present)
+        ]
         status = "ok" if not missing else "blocked"
         note = (
             "所需授权范围已具备"
             if not missing
             else "缺少授权范围：" + "、".join(missing)
         )
+        if broad_only and not missing:
+            note += "（由更宽的历史授权覆盖：" + "、".join(broad_only) + "）"
     else:
         missing = []
+        broad_only = []
         status = "ok"
         note = "已取得授权范围列表；具体资源访问另行验证"
     return {

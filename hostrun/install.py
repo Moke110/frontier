@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from common import ensure_dir, now, read_json, write_json
+from hostrun import lark as lark_mod
 from hostrun import workspace as workspace_mod
 from hostrun.base import (
     HostRunError,
@@ -241,20 +242,27 @@ def probe_lark_cli(home: Path, spec: str | None, *, names: list[str] | None = No
 
 
 def parse_auth_status(payload: dict) -> dict:
-    """Booleans only: the raw payload can carry tokens."""
-    identities = (payload or {}).get("identities") or {}
-    user = identities.get("user") or {}
-    bot = identities.get("bot") or {}
-    user_status = str(user.get("tokenStatus") or "").lower()
-    bot_status = str(bot.get("tokenStatus") or "").lower()
+    """Booleans only: the raw payload can carry tokens.
+
+    Shares one readiness rule with ``hostrun.lark`` so the install report and
+    ``lark status`` never disagree: a refreshable identity is usable, an
+    expired one is not.
+    """
+    facts = lark_mod.parse_auth(payload)
     return {
-        "user_available": bool(user.get("available")),
-        "user_ready": bool(user.get("available")) and user_status in {"valid", "ready"},
-        "bot_available": bool(bot.get("available")),
-        "bot_ready": bool(bot.get("available")) and bot_status in {"valid", "ready"},
-        "user_status": user_status,
-        "bot_status": bot_status,
-        "user_open_id_present": bool(user.get("userOpenId") or user.get("openId")),
+        "user_available": facts["user"]["available"],
+        "user_ready": facts["user"]["ready"],
+        "bot_available": facts["bot"]["available"],
+        "bot_ready": facts["bot"]["ready"],
+        "user_status": facts["user"]["status"],
+        "bot_status": facts["bot"]["status"],
+        "user_open_id_present": facts["user_open_id_present"],
+        "refresh_pending": [
+            name
+            for name in ("user", "bot")
+            if facts[name]["ready"]
+            and facts[name]["status"] in lark_mod.REFRESHABLE_STATUSES
+        ],
     }
 
 
