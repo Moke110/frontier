@@ -140,6 +140,12 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--file", dest="file_ids", action="append", default=[],
                     help="uploaded file token; repeat for source and push files")
     sr.add_argument("--source", dest="source_id")
+    sr.add_argument("--candidates", type=int,
+                    help="retrieved: number of candidates returned by the real retrieval (>0)")
+    sr.add_argument("--plan", dest="plan",
+                    help="retrieved: path/reference of the temporary retrieval plan")
+    sr.add_argument("--paper", dest="paper_ids", action="append", default=[],
+                    help="written: selected paper id; repeat for each selected paper")
     sv = ssub.add_parser("verify", help="read the Base and require the accepted change")
     sv.add_argument("--target-key", required=True, choices=["cards", "propositions", "evidence"])
     sv.add_argument("--target-id", required=True)
@@ -761,6 +767,9 @@ def _smoke(args, root: Path, offline: bool) -> tuple[int, dict]:
             decision=args.decision,
             file_id=args.file_ids,
             source_id=args.source_id,
+            candidates=args.candidates,
+            plan=args.plan,
+            papers=args.paper_ids,
         )
         return 0, result
     if args.action == "verify":

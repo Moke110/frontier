@@ -155,19 +155,16 @@ def start(
     try:
         base_config(home)
     except HostRunError as exc:
-        state = {
-            "schema_version": 1,
-            "test_id": _test_id(),
-            "keyword": keyword,
-            "owner": owner,
-            "repo": str(repo) if repo else "",
-            "status": "failed",
-            "created_at": now(),
-            "card": {},
-            "artifacts": {},
-            "steps": {},
+        # Nothing was created and no test identity exists, so this is a plain
+        # retryable refusal: persisting a failed smoke record would make the
+        # retry after facilities creation look like a duplicate test.
+        return {
+            "ok": False,
+            "reason": "facilities_missing",
+            "retryable": True,
+            "note": str(exc),
+            "next": "先完成设施创建（facilities plan/create），再重新运行 smoke start；本次未生成测试记录",
         }
-        return _fail(home, state, "facilities_missing", note=str(exc))
 
     test_id = _test_id()
     card = _temp_card(test_id, keyword)
@@ -273,9 +270,13 @@ def brief(home: Path) -> dict:
         f'python -m hostrun.cli --home "{home}" smoke plan --out "{home / PLAN_REL}"',
         f'python -m retriever.cli fetch --plan "{home / PLAN_REL}" --out '
         f'"<临时目录>/{test_id}-candidates.jsonl" --source live',
+        f'python -m hostrun.cli --home "{home}" smoke record --step retrieved '
+        f'--candidates <候选数，需大于 0> --plan "{home / PLAN_REL}"',
         "python -m archive.cli add-paper --file <候选 json>（逐条，自动去重）",
         f'python -m editor.cli task --candidates <候选> --date <today> --out "<临时目录>/{test_id}-editor.json"',
         "你亲自写 selection.json，并 python -m editor.cli check ...",
+        f'python -m hostrun.cli --home "{home}" smoke record --step written '
+        "--paper <选中 paper_id>（可重复）",
         f'python -m writer.cli task ... --card {card_id} ...',
         "python -m writer.cli figures ...；你亲自写七段 HTML 与 assets",
         "python -m writer.cli check ...",
@@ -326,6 +327,9 @@ def record(
     decision: str | None = None,
     file_id: str | list[str] | None = None,
     source_id: str | None = None,
+    candidates: int | None = None,
+    plan: str | None = None,
+    papers: list[str] | str | None = None,
 ) -> dict:
     """Record one ordered step; rerunning the same step is a no-op."""
     home = Path(home).expanduser().resolve()
@@ -345,6 +349,34 @@ def record(
     )
     if expected != step:
         raise HostRunError(f"步骤顺序错误：下一步是 {expected or '已完成'}，不能先记录 {step}")
+
+    # A step is evidence, not an assertion: retrieved/written must carry the
+    # real retrieval count and the selected papers, like sent carries ids.
+    candidate_count = 0
+    if step == "retrieved":
+        raw = candidates
+        if raw is None and evidence:
+            raw = evidence.get("candidates", evidence.get("candidate_count"))
+        try:
+            candidate_count = int(raw) if raw is not None else 0
+        except (TypeError, ValueError):
+            candidate_count = 0
+        if candidate_count <= 0:
+            raise HostRunError(
+                "retrieved 步骤需要真实检索证据：用 --candidates <候选数，需大于 0> 记录检索结果"
+                "（可用 --plan 记录检索计划路径）"
+            )
+    selected = [
+        str(paper).strip()
+        for paper in (
+            [papers] if isinstance(papers, str) else (papers or [])
+        )
+        if str(paper or "").strip()
+    ]
+    if step == "written" and not selected:
+        raise HostRunError(
+            "written 步骤需要至少一个选中的论文 ID：用 --paper <paper_id>（可重复）"
+        )
     if step == "sent" and not (push and message and question):
         raise HostRunError("sent 步骤需要 --push、--message 与 --question，记录本次副作用归属")
     if step == "rated" and (not item or verdict not in ("irrelevant", "ok", "great")):
@@ -353,6 +385,14 @@ def record(
         raise HostRunError("decided 步骤需要 --item 和 --decision")
 
     artifacts = state.setdefault("artifacts", {})
+    if step == "retrieved":
+        artifacts["candidates"] = candidate_count
+        if plan:
+            artifacts["plan"] = plan
+    if step == "written":
+        for paper in selected:
+            if paper not in artifacts.setdefault("paper_ids", []):
+                artifacts["paper_ids"].append(paper)
     file_ids = file_id if isinstance(file_id, list) else ([file_id] if file_id else [])
     for key, values in (
         ("push_ids", [push]),
@@ -379,6 +419,9 @@ def record(
             **({"decision": decision} if decision else {}),
             **({"source": source_id} if source_id else {}),
             **({"files": file_ids} if file_ids else {}),
+            **({"candidates": candidate_count} if step == "retrieved" else {}),
+            **({"plan": plan} if step == "retrieved" and plan else {}),
+            **({"papers": selected} if step == "written" else {}),
         },
     }
     if step == "sent":
