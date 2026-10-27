@@ -2,6 +2,29 @@
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下为 2026-10-27 已记录证据的归并；未重新执行飞书或宿主实测。代码通过离线测试不等于产品通过真实验收。
 
+## 2026-10-27 首次 Windows 真实安装（进行中，未改动飞书数据）
+
+目标宿主为 [DeepSeek Harness 44.7.0](../adr/0006-deepseek-harness-as-a-host.md)（第三款运行宿主）；飞书 CLI 复用用户已配置的 `@larksuite/cli` 1.0.98（[ADR 0007](../adr/0007-reuse-configured-lark-cli.md)），实际可执行文件在 npx 缓存中。代码目录 `E:\Desktop\frontier`（`dev`），数据根 `E:\Desktop\frontier-archive`。
+
+已取得的真实只读证据：
+
+| 项目 | 证据 |
+|---|---|
+| CLI 可执行 | `lark-cli 1.0.98` 可运行；全局 `lark-cli.cmd` 首次运行自装平台二进制失败（`EPERM` 写 `D:\nodejs`），不影响显式指定缓存路径 |
+| 身份 | `auth status --json --verify`：`verified: true`；bot ready；user 状态 `needs_refresh` 但刷新窗口到 2026-11-03，实际调用自动续期；DPoP 密钥 `available` |
+| 授权范围 | 租户授予细粒度 scope（`base:*`、`drive:file:*`、`im:message` 等），覆盖 frontier 所需能力 |
+| Drive 读取 | `drive files list --as user` 成功；根目录含「frontier」目录与两个 bitable |
+| Base 读取 | `base +table-list` 成功 |
+| 既有租户设施 | Base「frontier 知识库」`B39T…`：知识卡片 10、命题 6、证据 5、报道 10、变更日志 6、原文 175、推送日志 0、决定 0、配置 1；缺「问题/反馈/更正」三张反馈表。云盘「frontier」`TtbM…` 下有「原文」「推送」两个目录 |
+
+代码改动（已提交 `dev`）：`lark status` 与安装报告改用当前细粒度 scope 判定，兼容旧宽授权；`needs_refresh` 在刷新窗口内视为可用；两处身份判定合并为同一规则。离线结果：**270 passed, 3 skipped**。
+
+阻塞（未执行任何写操作的原因）：当前宿主沙箱对**位于工作区内部的可执行文件**施加写入限制。实测：仓库 `.venv` 的 `python.exe` 与复制进仓库的 `python.exe` 只能写 `E:\Desktop\frontier`，创建 `E:\Desktop\frontier-archive`、写 `%USERPROFILE%\.lark-cli` 均返回 `WinError 5`；而 `C:\Python314\python.exe`、`D:\uv` 的基础解释器不受此限制。影响：按 [ADR 0005](../adr/0005-agent-owned-execution.md) 放在"仓库内"的 uv 环境无法创建数据根、也无法驱动 lark-cli 的令牌存储，`install workspace` 在写 `.frontier` 指针时即失败。
+
+待决定（尚未执行，不在此宣称方案）：私有环境与数据根的相对位置如何在该宿主下成立——改用工作区外解释器、把环境移出代码目录、或由用户在宿主外执行安装命令。任一选择都需要先确认是否符合 ADR 0005 的"代码与数据分离"和不改用户环境的约束。
+
+本轮**未**创建 Base、未发送消息、未建定时任务；`install` 各阶段仍为 pending，真实 `smoke`/`cleanup`/`init`/`schedules` 均未实测。
+
 ## 2026-10-27 安装增量（#41 的子票据）
 
 本轮实现了工作区/uv、飞书 CLI 预检、设施创建、关键词临时闭环、精确清理、正式知识初始化和两类宿主任务。离线证据：

@@ -193,3 +193,50 @@ def test_login_is_guidance_not_a_fake_success(tmp_path):
     assert guidance["status"] == "action_required"
     assert "auth login" in guidance["command"]
     assert "凭据" in guidance["storage"]
+
+
+def test_granular_scopes_satisfy_the_default_requirements():
+    granted = [scope for scopes in lark.REQUIRED_SCOPES.values() for scope in scopes]
+
+    result = lark.authorization(granted, required=granted)
+
+    assert result["status"] == "ok"
+    assert result["missing"] == []
+
+
+def test_legacy_broad_grant_covers_granular_requirements():
+    result = lark.authorization(
+        ["bitable:app", "drive:drive", "im:message:send_as_bot"],
+        required=lark.REQUIRED_SCOPES["base"] + lark.REQUIRED_SCOPES["messages"],
+    )
+
+    assert result["status"] == "ok"
+    assert "更宽的历史授权覆盖" in result["note"]
+
+
+def test_legacy_requirement_is_covered_by_a_granular_grant():
+    result = lark.authorization(["base:record:read", "im:message"], required=["bitable:app"])
+
+    assert result["status"] == "ok"
+
+
+def test_needs_refresh_with_an_open_window_is_ready():
+    payload = _auth_payload()
+    payload["identities"]["user"]["tokenStatus"] = "needs_refresh"
+    payload["identities"]["user"]["refreshExpiresAt"] = "2999-01-01T00:00:00+08:00"
+
+    facts = lark.parse_auth(payload)
+
+    assert facts["user"]["ready"] is True
+    assert facts["user"]["expired"] is False
+
+
+def test_needs_refresh_past_the_window_is_expired():
+    payload = _auth_payload()
+    payload["identities"]["user"]["tokenStatus"] = "needs_refresh"
+    payload["identities"]["user"]["refreshExpiresAt"] = "2000-01-01T00:00:00+08:00"
+
+    facts = lark.parse_auth(payload)
+
+    assert facts["user"]["ready"] is False
+    assert facts["user"]["expired"] is True

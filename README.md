@@ -27,6 +27,7 @@ frontier 依赖一款能在本机执行命令、使用技能并创建定时任�
 |---|---|---|
 | ChatGPT Windows 桌面端 | 本地执行 + 内置定时任务 | 完整安装与真实调度尚未实测 |
 | WorkBuddy Windows 桌面端 | 本地会话 + 内置自动化 | 本地命令与项目访问有历史记录；真实定时触发和无人值守权限仍待验收 |
+| DeepSeek Harness（本机会话） | 本地命令 + 技能 + 会话内定时 | 2026-10-27 起作为第三款运行宿主（[ADR 0006](docs/adr/0006-deepseek-harness-as-a-host.md)）；首次 Windows 安装验收执行中 |
 
 具体版本、账号权限和证据见 [宿主验收记录](docs/acceptance/README.md)。电脑须开机、宿主运行且能访问飞书；网页云任务不能代替对本机依赖和凭据的访问。OpenCode 不在首批定时部署支持范围。
 
