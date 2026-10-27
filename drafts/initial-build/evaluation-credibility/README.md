@@ -1,6 +1,6 @@
 # 初始构建样例：评测、基线与可信度
 
-保留给初始构建 CLI 和测试使用，安装时不自动写入用户知识库。`cards.jsonl`、`propositions.jsonl`、`sources.jsonl` 是旧 v2 格式样例；正式领域规则见 [CONTEXT.md](../../../CONTEXT.md) 与 [任务契约](../../../contracts/agent-tasks.md)，不要把样例格式当作当前命题结构。
+保留给初始构建 CLI 和测试使用，安装时不自动写入用户知识库。`cards.jsonl`、`propositions.jsonl`、`sources.jsonl` 是旧 v2 格式样例；正式领域词汇见 [GLOSSARY.md](../../../GLOSSARY.md) 与 [任务契约](../../../contracts/agent-tasks.md)，不要把样例格式当作当前命题结构。
 
 - 样例含 5 张卡片、5 条候选命题、8 篇来源；可用 `python scripts/build_initial_theme_sample.py` 重建。
 - 2026-10-21 用户确认过首批构建，实际接受 5 卡、4 命题。`prop_systematic_variation_inflates_scores` 的两条证据来自同一论文，未满足至少两篇独立论文的当时门槛，留作候选。

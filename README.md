@@ -61,4 +61,4 @@ frontier 依赖一款能在本机执行命令、使用技能并创建定时任�
 
 数据根默认在工作区的 `frontier-archive`，代码默认在工作区的 `frontier`；安装时 agent 会记录实际位置。中断后可要求“继续 frontier 安装”，不必从头创建知识库。存量迁移和云端恢复的限制见 [恢复验收记录](docs/acceptance/README.md)。
 
-运行时技能由宿主加载 [skills/frontier-run/SKILL.md](skills/frontier-run/SKILL.md)。开发指引在 [AGENTS.md](AGENTS.md)，项目术语在 [CONTEXT.md](CONTEXT.md)。许可证见 [MIT License](LICENSE)。
+运行时技能由宿主加载 [skills/frontier-run/SKILL.md](skills/frontier-run/SKILL.md)。开发指引在 [AGENTS.md](AGENTS.md)，项目术语在 [GLOSSARY.md](GLOSSARY.md)。许可证见 [MIT License](LICENSE)。

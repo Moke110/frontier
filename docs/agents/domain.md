@@ -1,13 +1,58 @@
-# Domain documentation
+# Domain Docs
 
-Single context: root `CONTEXT.md` is the project glossary; `docs/adr/` holds the decision history. These are maintained through Matt Pocock's `domain-modeling` workflow, reached while using `grill-with-docs` or resolving domain decisions.
+How the engineering skills should consume this repo's domain documentation when exploring the codebase.
 
-Before exploring or planning, read `CONTEXT.md` and the ADRs relevant to the work. If a document is absent, proceed; create entries lazily when a term or meaningful decision is resolved.
+## Before exploring, read these
 
-- Use canonical glossary terms in issues, code and discussion. Clarify conflicting meanings and update the resolved definition immediately.
-- Keep the glossary about vocabulary; schemas and implementation rules belong in `contracts/`, plans in GitHub Issues.
-- Keep existing ADR history and supersession links. Flag a proposal that conflicts with an accepted ADR instead of silently overriding it.
-- Record an ADR only for a decision with a meaningful trade-off, a real cost to reverse and context a future reader would otherwise miss. Use the skill's format and next sequential number.
-- Put development instructions in `AGENTS.md`, user instructions in `README.md`, and runtime instructions in `skills/frontier-run/`. Keep each rule authoritative in one place.
+- **`GLOSSARY.md`** at the repo root, or
+- **`GLOSSARY-MAP.md`** at the repo root if it exists: it points at one `GLOSSARY.md` per context. Read each one relevant to the topic.
+- **`docs/adr/`**: read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
 
-Do not introduce a multi-context map unless the project actually grows separate domain contexts and the user agrees to the layout change.
+If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
+
+## File structure
+
+Single-context repo (this repo):
+
+```
+/
+├── GLOSSARY.md
+├── docs/adr/
+│   ├── 0001-knowledge-cards-and-ids.md
+│   └── 0002-proposition-v3-and-bitable-authority.md
+└── ...
+```
+
+Multi-context repo (presence of `GLOSSARY-MAP.md` at the root):
+
+```
+/
+├── GLOSSARY-MAP.md
+├── docs/adr/                          ← system-wide decisions
+└── src/
+    ├── ordering/
+    │   ├── GLOSSARY.md
+    │   └── docs/adr/                  ← context-specific decisions
+    └── billing/
+        ├── GLOSSARY.md
+        └── docs/adr/
+```
+
+## Use the glossary's vocabulary
+
+When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `GLOSSARY.md`. Don't drift to synonyms the glossary explicitly avoids.
+
+If the concept you need isn't in the glossary yet, that's a signal: either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
+
+## Flag ADR conflicts
+
+If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
+
+> _Contradicts ADR-0007 (event-sourced orders), but worth reopening because…_
+
+## Repository notes
+
+- Single context: root `GLOSSARY.md`; there is no `GLOSSARY-MAP.md`.
+- The glossary defines vocabulary only. Field schemas, state machines and compatibility rules live in `contracts/`; current acceptance evidence and gaps live in `docs/acceptance/README.md`.
+- Existing ADRs are kept as historical records. New ADRs follow the current short format: title, one-paragraph context/decision/why, with optional status, considered options or consequences only when they add value.
+- Development rules are in `AGENTS.md`; user installation and usage are in `README.md`; host runtime instructions are in `skills/frontier-run/`.

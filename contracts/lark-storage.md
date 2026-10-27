@@ -4,7 +4,7 @@
 
 - 决策：`docs/adr/0003-lark-as-only-storage.md`
 - 状态：定稿（供 `library` 模块实现）
-- 术语：见 `CONTEXT.md` §存储与档案；知识五表契约见 `contracts/README.md` §10.5
+- 术语：见 `GLOSSARY.md`（Installation and storage）；知识五表契约见 `contracts/README.md` §10.5
 
 ## 1. 所有权
 
