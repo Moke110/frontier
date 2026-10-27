@@ -147,6 +147,19 @@ def _tables_snapshot(client, configured: dict, names: dict) -> tuple[dict, list[
     return tables, missing
 
 
+def _field_gaps(client, tables: dict) -> tuple[dict[str, list[str]], list[str]]:
+    """Contract field gaps for the tables that are present, plus read errors."""
+    table_ids = {
+        key: value.get("id")
+        for key, value in (tables or {}).items()
+        if value.get("id")
+    }
+    try:
+        return kb.missing_required_fields(client, table_ids), []
+    except Exception as exc:  # noqa: BLE001 - a read failure must not look ready
+        return {}, [f"字段读回失败：{exc}"]
+
+
 def _folders_from_config(home: Path, client) -> dict:
     """Read folder tokens from the 配置 row without requiring a folder listing."""
     base = read_json(Path(home) / "knowledge" / "base.json") or {}
@@ -187,7 +200,12 @@ def _finish(
     actions: list[str],
     reused: bool,
     missing: list[str] | None = None,
+    missing_fields: dict[str, list[str]] | None = None,
+    problems: list[str] | None = None,
 ) -> dict:
+    missing = missing or []
+    missing_fields = missing_fields or {}
+    problems = problems or []
     payload = {
         "schema_version": 1,
         "names": names,
@@ -196,11 +214,13 @@ def _finish(
         "folders": folders,
         "actions": actions,
         "reused": reused,
-        "missing": missing or [],
+        "missing": missing,
+        "missing_fields": missing_fields,
+        "problems": problems,
         "created_at": load_facilities(home).get("created_at") or now(),
     }
     save_facilities(home, payload)
-    ok = not (missing or [])
+    ok = not (missing or missing_fields or problems)
     if ok:
         _record_ok(
             home,
@@ -213,12 +233,68 @@ def _finish(
             f"设施已就绪：{base.get('name')}（{len(tables)} 表）",
         )
     else:
+        details: list[str] = []
+        if missing:
+            details.append("缺表：" + "、".join(names["tables"][key] for key in missing))
+        if missing_fields:
+            details.append(
+                "缺字段："
+                + "、".join(
+                    f"{names['tables'][key]}（{','.join(fields)}）"
+                    for key, fields in missing_fields.items()
+                )
+            )
+        details.extend(problems)
+        note = "设施未就绪：" + "；".join(details)
         _record_blocked(
             home,
-            "设施缺项：" + "、".join(names["tables"][key] for key in missing),
-            {"missing": missing, "base_token": base.get("token")},
+            note,
+            {
+                "missing": missing,
+                "missing_fields": missing_fields,
+                "base_token": base.get("token"),
+            },
         )
-    return {"ok": ok, **payload, "path": str(Path(home) / FACILITIES_REL)}
+    return {
+        "ok": ok,
+        **payload,
+        "path": str(Path(home) / FACILITIES_REL),
+    }
+
+
+def _lock_recorded_names(record: dict, resolved: dict) -> tuple[dict, list[str]]:
+    """Re-runs keep recorded display names; tables change names via ``rename``.
+
+    A facilities record means those stable IDs and their current display names
+    are already live.  Re-applying a changed name during ``create`` would make
+    the creator look for a table that no longer exists by that name and build a
+    duplicate, so recorded names win and the caller is told how to rename.
+    """
+    locked: list[str] = []
+    if not record:
+        return resolved, locked
+    recorded_names = record.get("names") or {}
+    recorded_base = recorded_names.get("base")
+    if (record.get("base") or {}).get("token") and recorded_base:
+        if resolved["base"] != recorded_base:
+            locked.append(f"Base {resolved['base']} → {recorded_base}")
+        resolved["base"] = recorded_base
+    for key, entry in (record.get("tables") or {}).items():
+        recorded_name = (entry or {}).get("name")
+        if not recorded_name:
+            continue
+        if resolved["tables"].get(key) != recorded_name:
+            locked.append(f"表 {key} {resolved['tables'].get(key)} → {recorded_name}")
+        resolved["tables"][key] = recorded_name
+    recorded_folders = recorded_names.get("folders") or {}
+    for key in DEFAULT_FOLDERS:
+        if recorded_folders.get(key):
+            if resolved["folders"].get(key) != recorded_folders[key]:
+                locked.append(
+                    f"目录 {key} {resolved['folders'].get(key)} → {recorded_folders[key]}"
+                )
+            resolved["folders"][key] = recorded_folders[key]
+    return resolved, locked
 
 
 def create(
@@ -255,16 +331,22 @@ def create(
                 + " / ".join(resolved["folders"].values()),
             ],
         }
+    record = load_facilities(home)
+    resolved, locked_names = _lock_recorded_names(record, resolved)
     confirm_names(home, resolved)
 
     admin = admin or LarkAdminClient(bin=cli_bin)
     drive = drive or LarkDrive(bin=cli_bin)
     actions: list[str] = []
+    if locked_names:
+        actions.append(
+            "reuse recorded names for existing facilities（表改名请用 facilities rename）："
+            + "；".join(locked_names)
+        )
     base_config = read_json(home / "knowledge" / "base.json") or {}
     base_token = base_config.get("base_token") or ""
     reused = bool(base_token)
     base_info: dict = {}
-    record = load_facilities(home)
     if not base_token and (record.get("base") or {}).get("token"):
         base_token = record["base"]["token"]
         kb.register_base(
@@ -373,7 +455,12 @@ def create(
         actions.append(f"partial: {exc}")
         config = read_json(home / "knowledge" / "base.json") or {}
         tables, missing = _tables_snapshot(client, config.get("tables") or {}, resolved)
-        _record_blocked(home, f"创建表/目录中断：{exc}", {"actions": actions, "missing": missing})
+        missing_fields, field_problems = _field_gaps(client, tables)
+        _record_blocked(
+            home,
+            f"创建表/目录中断：{exc}",
+            {"actions": actions, "missing": missing, "missing_fields": missing_fields},
+        )
         return {
             "ok": False,
             "reason": "facility_create_partial",
@@ -381,11 +468,14 @@ def create(
             "base": base_info,
             "tables": tables,
             "missing": missing,
+            "missing_fields": missing_fields,
+            "problems": field_problems,
             "actions": actions,
         }
     actions.extend(created.get("actions") or [])
     config = read_json(home / "knowledge" / "base.json") or {}
     tables, missing = _tables_snapshot(client, config.get("tables") or {}, resolved)
+    missing_fields, field_problems = _field_gaps(client, tables)
     library_report = created.get("library") or {}
     folders = {
         "root": "",
@@ -403,6 +493,8 @@ def create(
         actions=actions,
         reused=reused,
         missing=missing,
+        missing_fields=missing_fields,
+        problems=field_problems,
     )
 
 
@@ -448,6 +540,7 @@ def attach(
         actions.extend(created.get("actions") or [])
     config = read_json(home / "knowledge" / "base.json") or {}
     tables, missing = _tables_snapshot(client, config.get("tables") or {}, resolved)
+    missing_fields, field_problems = _field_gaps(client, tables)
     base_info = {
         "token": config.get("base_token"),
         "url": config.get("base_url") or "",
@@ -463,6 +556,8 @@ def attach(
         actions=actions,
         reused=True,
         missing=missing,
+        missing_fields=missing_fields,
+        problems=field_problems,
     )
     result["attached"] = True
     result["has_user_data"] = attached.get("has_user_data")
@@ -485,6 +580,7 @@ def status(home: Path, *, client=None) -> dict:
         tables, missing = _tables_snapshot(client, config.get("tables") or {}, names)
     except Exception as exc:  # noqa: BLE001 - permission/network problems are results
         return {"ok": False, "status": "blocked", "note": f"读取设施失败：{exc}", "names": names}
+    missing_fields, field_problems = _field_gaps(client, tables)
     folders = {**(_folders_from_config(home, client) or {}), **(record.get("folders") or {})}
     missing_folders = [key for key in ("source", "push") if not folders.get(key)]
     try:
@@ -497,13 +593,30 @@ def status(home: Path, *, client=None) -> dict:
         ) if tables else False
     except Exception:  # noqa: BLE001 - a read failure is not "empty"
         has_user_data = None
-    ok = not missing and not missing_folders
+    ok = not missing and not missing_fields and not missing_folders and not field_problems
+    details: list[str] = []
+    if missing:
+        details.append("缺表：" + "、".join(names["tables"][key] for key in missing))
+    if missing_fields:
+        details.append(
+            "缺字段："
+            + "、".join(
+                f"{names['tables'][key]}（{','.join(fields)}）"
+                for key, fields in missing_fields.items()
+            )
+        )
+    if missing_folders:
+        details.append("缺云盘目录：" + "、".join(missing_folders))
+    details.extend(field_problems)
+    note = "设施结构完整" if ok else "设施未就绪：" + "；".join(details)
     return {
         "ok": ok,
         "status": "ok" if ok else "blocked",
+        "note": note,
         "base": {**(record.get("base") or {}), "token": config.get("base_token")},
         "tables": tables,
         "missing": missing,
+        "missing_fields": missing_fields,
         "folders": folders,
         "missing_folders": missing_folders,
         "names": names,
