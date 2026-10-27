@@ -31,7 +31,7 @@ PREFIX_KEYS = {
 }
 ID_KEYS = {
     "cards": ("卡片 ID",),
-    "papers": ("push_id",),
+    "papers": ("paper_id", "push_id"),
     "pushes": ("推送 ID",),
     "sources": ("原文 ID",),
     "decisions": ("问题 ID",),
@@ -62,6 +62,15 @@ def inventory(
     push_ids = set(artifacts.get("push_ids") or [])
     question_ids = set(artifacts.get("question_ids") or [])
     source_ids = set(artifacts.get("source_ids") or [])
+    paper_ids = {str(value) for value in (artifacts.get("paper_ids") or []) if value}
+    # 报道 rows are selected by the recorded selected paper ids, plus ids that
+    # are derivable from this test's identity; a row created by archive
+    # add-paper may carry no push id at all.
+    paper_scope = set(paper_ids)
+    paper_scope.update({test_id, f"paper_{test_id}"})
+    for push_id in push_ids:
+        paper_scope.update({push_id, f"paper_{push_id}"})
+    paper_scope = {value for value in paper_scope if value}
     config = _config(home)
     tables = config.get("tables") or {}
     records: dict[str, dict] = {}
@@ -87,7 +96,7 @@ def inventory(
             fields = ID_KEYS[key]
             dynamic = {
                 "cards": {card_id},
-                "papers": push_ids,
+                "papers": paper_scope,
                 "pushes": push_ids,
                 "sources": source_ids,
                 "decisions": question_ids,
@@ -132,6 +141,8 @@ def inventory(
         "file_ids": list(dict.fromkeys(artifacts.get("file_ids") or [])),
         "message_ids": list(dict.fromkeys(artifacts.get("message_ids") or [])),
         "source_ids": sorted(source_ids),
+        "paper_ids": sorted(paper_ids),
+        "paper_scope": sorted(paper_scope),
         "notes": notes,
     }
 
