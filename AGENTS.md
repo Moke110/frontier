@@ -42,7 +42,7 @@ Single-context layout (`GLOSSARY.md` + `docs/adr/` at the repo root). See `docs/
 
 Keep `docs/adr/` for Matt-maintained decisions, `docs/agents/` for Matt skill configuration, and `docs/acceptance/README.md` for concise evidence and outstanding acceptance gaps. Put schemas/state machines in `contracts/`, sample/generated documentation beside its fixtures, and historical process logs in Git history rather than duplicate local trackers or reports.
 
-For development checks, use an independent Python environment with PyYAML, pytest and PyMuPDF. The old `.venv` points to a retired WorkBuddy interpreter; rebuild it before using it. On Windows, use `python -X utf8 -m pytest -q` to avoid locale-dependent reads without persistent environment changes.
+For development checks, use an independent Python environment with PyYAML, pytest and PyMuPDF. The repository `.venv` is a uv-managed CPython 3.13 environment and passes the suite (270 passed, 3 skipped on 2026-10-27); rebuild it with `uv` only if its interpreter disappears. On Windows, use `python -X utf8 -m pytest -q` to avoid locale-dependent reads without persistent environment changes.
 
 ### Skill pack
 
