@@ -180,3 +180,24 @@ def test_render_html_is_byte_stable(tmp_path):
     render_push(path, first, fmt="html")
     render_push(path, second, fmt="html")
     assert first.read_bytes() == second.read_bytes()
+
+
+def test_render_labels_original_and_generated_figures(tmp_path):
+    paper_dir = tmp_path / "paper-push"
+    paper_dir.mkdir()
+    paper_out = tmp_path / "paper.html"
+    render_push(_push(paper_dir, asset_source="paper"), paper_out)
+    paper_html = paper_out.read_text(encoding="utf-8")
+    assert "原文图" in paper_html
+    assert "生成图" not in paper_html
+    assert 'class="source-pill"' in paper_html
+    assert "source-pill generated" not in paper_html
+
+    generated_dir = tmp_path / "generated-push"
+    generated_dir.mkdir()
+    generated_out = tmp_path / "generated.html"
+    render_push(_push(generated_dir, asset_source="generated"), generated_out)
+    generated_html = generated_out.read_text(encoding="utf-8")
+    assert "生成图" in generated_html
+    assert "原文图" not in generated_html
+    assert "source-pill generated" in generated_html

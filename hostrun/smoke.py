@@ -281,6 +281,8 @@ def brief(home: Path) -> dict:
         "python -m writer.cli figures ...；你亲自写七段 HTML 与 assets",
         "python -m writer.cli check ...",
         f'python -m writer.cli render --push <push> --out "<临时目录>/{test_id}.html"',
+        f'python -m hostrun.cli --home "{home}" smoke record --step rendered '
+        "--push <push_id> --html <渲染文件路径>",
         "python -m archive.cli add-push --file <push json>",
         "python -m library.cli ensure-source --paper <paper_id>",
         f'python -m publisher.cli send --push <push> --html <html> --to {state.get("owner") or "<owner>"}',
@@ -294,7 +296,7 @@ def brief(home: Path) -> dict:
         f'python -m hostrun.cli --home "{home}" smoke record --step decided --item <id> --decision <decision>',
         "python -m hostrun.cli feedback process",
         f'python -m hostrun.cli --home "{home}" smoke verify --target-key cards '
-        f"--target-id {card_id} --field <字段> --expected <值>",
+        f"--target-id {card_id} --field <字段>=<值>（每个采纳字段重复一次）",
     ]
     return {
         "ok": True,
@@ -330,6 +332,7 @@ def record(
     candidates: int | None = None,
     plan: str | None = None,
     papers: list[str] | str | None = None,
+    html: str | None = None,
 ) -> dict:
     """Record one ordered step; rerunning the same step is a no-op."""
     home = Path(home).expanduser().resolve()
@@ -377,6 +380,10 @@ def record(
         raise HostRunError(
             "written 步骤需要至少一个选中的论文 ID：用 --paper <paper_id>（可重复）"
         )
+    if step == "rendered" and not (push or html):
+        raise HostRunError(
+            "rendered 步骤需要推送件证据：用 --push <push_id> 或 --html <渲染文件路径> 记录渲染结果"
+        )
     if step == "sent" and not (push and message and question):
         raise HostRunError("sent 步骤需要 --push、--message 与 --question，记录本次副作用归属")
     if step == "rated" and (not item or verdict not in ("irrelevant", "ok", "great")):
@@ -393,6 +400,8 @@ def record(
         for paper in selected:
             if paper not in artifacts.setdefault("paper_ids", []):
                 artifacts["paper_ids"].append(paper)
+    if step == "rendered" and html:
+        artifacts["push_html"] = html
     file_ids = file_id if isinstance(file_id, list) else ([file_id] if file_id else [])
     for key, values in (
         ("push_ids", [push]),
@@ -422,6 +431,7 @@ def record(
             **({"candidates": candidate_count} if step == "retrieved" else {}),
             **({"plan": plan} if step == "retrieved" and plan else {}),
             **({"papers": selected} if step == "written" else {}),
+            **({"html": html} if step == "rendered" and html else {}),
         },
     }
     if step == "sent":
@@ -450,22 +460,62 @@ def _find_row(client, table: str, key: str, value: str) -> dict | None:
     return None
 
 
+def _normalize_checks(checks, field, expected) -> list[tuple[str, str]]:
+    """Accept a checks list, ``name=value`` strings, or legacy field/expected."""
+    pairs: list[tuple[str, str]] = []
+    if checks:
+        items = list(checks.items()) if isinstance(checks, dict) else list(checks)
+        for item in items:
+            if isinstance(item, str):
+                if "=" not in item:
+                    raise HostRunError(f"检查项需为 field=value：{item}")
+                name, value = item.split("=", 1)
+                pairs.append((name.strip(), value))
+            elif isinstance(item, dict) and item.get("field"):
+                pairs.append((str(item["field"]), str(item.get("expected"))))
+            elif isinstance(item, (tuple, list)) and len(item) == 2:
+                pairs.append((str(item[0]), str(item[1])))
+            else:
+                raise HostRunError(f"无法解析检查项：{item!r}")
+    if field:
+        if "=" in field:
+            name, value = field.split("=", 1)
+            pairs.append((name.strip(), value))
+        else:
+            pairs.append((field, "" if expected is None else str(expected)))
+    elif expected is not None:
+        raise HostRunError("--expected 需要配合 --field 使用，或用 --field name=value")
+    return [(name, value) for name, value in pairs if name]
+
+
 def verify(
     home: Path,
     *,
     target_key: str,
     target_id: str,
-    field: str,
-    expected: str,
+    field: str | None = None,
+    expected: str | None = None,
+    checks=None,
     client=None,
 ) -> dict:
-    """Read the authoritative Base and require the accepted change to be there."""
+    """Read the authoritative Base and require every checked field to match.
+
+    Repeated calls keep every per-field read-back check in
+    ``steps["verified"]["checks"]``; a single mismatch fails the test but keeps
+    the checks that were already verified.
+    """
     home = Path(home).expanduser().resolve()
     state = load(home)
     if not state:
         raise HostRunError("没有临时测试记录")
     if any(name not in (state.get("steps") or {}) for name in STEPS):
         raise HostRunError("还有步骤未记录，不能先做写入核对")
+    pairs = _normalize_checks(checks, field, expected)
+    if not pairs:
+        raise HostRunError(
+            "verify 需要至少一个检查项：用 --field <字段>=<值>（可重复），"
+            "或 --field <字段> --expected <值>"
+        )
     test_id = state.get("test_id") or ""
     card_id = (state.get("card") or {}).get("id") or ""
     if target_id not in {card_id} and not target_id.startswith(f"card_{test_id}") and not target_id.startswith(
@@ -490,29 +540,64 @@ def verify(
     row = _find_row(client, table_id, key_field, target_id)
     if not row:
         return _fail(home, state, "verification_target_missing", target_id=target_id)
-    actual = (row.get("fields") or {}).get(field)
-    if isinstance(actual, list):
-        actual = actual[0] if len(actual) == 1 else actual
-    same = str(actual) == str(expected)
-    if not same:
+
+    results: list[dict] = []
+    failure: dict | None = None
+    for name, wanted in pairs:
+        actual = (row.get("fields") or {}).get(name)
+        if isinstance(actual, list):
+            actual = actual[0] if len(actual) == 1 else actual
+        ok = str(actual) == str(wanted)
+        entry = {"field": name, "expected": wanted, "actual": actual, "ok": ok}
+        results.append(entry)
+        if not ok and failure is None:
+            failure = entry
+    if failure is not None:
         return _fail(
             home,
             state,
             "verification_mismatch",
             target_id=target_id,
-            field=field,
-            expected=expected,
-            actual=actual,
+            field=failure["field"],
+            expected=failure["expected"],
+            actual=failure["actual"],
+            checks=len(results),
         )
 
+    previous = (state.get("steps") or {}).get("verified") or {}
+    merged: list[dict] = [
+        dict(entry)
+        for entry in (previous.get("checks") or [])
+        if isinstance(entry, dict) and entry.get("field")
+    ]
+    if not merged:
+        # Older state stored a single field under ``evidence``; keep it.
+        evidence = previous.get("evidence") or {}
+        if evidence.get("field"):
+            merged.append(
+                {
+                    "field": evidence["field"],
+                    "expected": evidence.get("expected"),
+                    "actual": None,
+                    "ok": True,
+                }
+            )
+    by_field = {entry["field"]: index for index, entry in enumerate(merged)}
+    for entry in results:
+        index = by_field.get(entry["field"])
+        if index is None:
+            by_field[entry["field"]] = len(merged)
+            merged.append(entry)
+        else:
+            merged[index] = entry
     state.setdefault("steps", {})["verified"] = {
         "ok": True,
         "at": now(),
+        "checks": merged,
         "evidence": {
             "target_key": target_key,
             "target_id": target_id,
-            "field": field,
-            "expected": expected,
+            "checks": merged,
         },
     }
     complete = all(name in state["steps"] for name in STEPS)
@@ -541,6 +626,7 @@ def verify(
         "status": state["status"],
         "steps": sorted(state["steps"]),
         "verified": True,
+        "checks": merged,
         "next": state["next"],
     }
 

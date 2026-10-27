@@ -141,7 +141,7 @@ def test_steps_are_ordered_and_success_needs_a_real_read_back(tmp_path):
         smoke.record(home, "sent", push="push_1", message="om_1", question="q_1")
     smoke.record(home, "retrieved", candidates=3, plan="install/smoke-plan.json")
     smoke.record(home, "written", papers=["paper_1"])
-    smoke.record(home, "rendered")
+    smoke.record(home, "rendered", push="push_1", html="out/push_1.html")
     with pytest.raises(HostRunError):
         smoke.record(home, "sent", push="push_1")
     smoke.record(home, "sent", push="push_1", message="om_1", question="q_1")
@@ -178,7 +178,7 @@ def test_verification_mismatch_fails_and_never_opens_formal_init(tmp_path):
     started = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
     smoke.record(home, "retrieved", candidates=2)
     smoke.record(home, "written", papers=["paper_1"])
-    smoke.record(home, "rendered")
+    smoke.record(home, "rendered", push="push_1", html="out/push_1.html")
     smoke.record(home, "sent", push="p", message="m", question="q")
     smoke.record(home, "rated", item="q", verdict="ok")
     smoke.record(home, "decided", item="q", decision="adopt")
@@ -208,7 +208,7 @@ def test_verification_refuses_to_touch_formal_knowledge(tmp_path):
     smoke.start(home, "虚拟细胞", confirmed=True, client=base)
     smoke.record(home, "retrieved", candidates=2)
     smoke.record(home, "written", papers=["paper_1"])
-    smoke.record(home, "rendered")
+    smoke.record(home, "rendered", push="push_1", html="out/push_1.html")
     smoke.record(home, "sent", push="p", message="m", question="q")
     smoke.record(home, "rated", item="q", verdict="ok")
     smoke.record(home, "decided", item="q", decision="adopt")
@@ -377,3 +377,179 @@ def test_cli_record_accepts_retrieval_and_selection_evidence(tmp_path):
     state = smoke.load(home)
     assert state["artifacts"]["paper_ids"] == ["paper_1"]
     assert state["steps"]["retrieved"]["evidence"]["candidates"] == 2
+
+
+# ------------------------------------------------- rendered / verify evidence
+def _run_to_applied(home, base):
+    started = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    smoke.record(home, "retrieved", candidates=2)
+    smoke.record(home, "written", papers=["paper_1"])
+    smoke.record(home, "rendered", push="push_1", html="out/push_1.html")
+    smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
+    smoke.record(home, "rated", item="q_1", verdict="great")
+    smoke.record(home, "decided", item="q_1", decision="agree_all")
+    smoke.record(home, "applied")
+    return started
+
+
+def _accepted_card(config, base):
+    cards_table = config["tables"]["cards"]
+    row = base.list(cards_table)[0]
+    base.update(
+        cards_table,
+        {
+            row["record_id"]: {
+                "label": "[已采纳] 虚拟细胞",
+                "annotation": "[已采纳] 注释",
+            }
+        },
+    )
+    return row
+
+
+def test_rendered_requires_a_push_artifact(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    smoke.record(home, "retrieved", candidates=2)
+    smoke.record(home, "written", papers=["paper_1"])
+
+    with pytest.raises(HostRunError):
+        smoke.record(home, "rendered")
+
+    result = smoke.record(
+        home, "rendered", push="push_1", html="out/push_1.html"
+    )
+
+    assert result["ok"] is True
+    state = smoke.load(home)
+    assert state["artifacts"]["push_ids"] == ["push_1"]
+    assert state["artifacts"]["push_html"] == "out/push_1.html"
+    assert state["steps"]["rendered"]["evidence"]["html"] == "out/push_1.html"
+
+
+def test_decided_cannot_be_recorded_before_the_user_rates(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    smoke.record(home, "retrieved", candidates=2)
+    smoke.record(home, "written", papers=["paper_1"])
+    smoke.record(home, "rendered", push="push_1", html="out/push_1.html")
+    smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
+
+    with pytest.raises(HostRunError):
+        smoke.record(home, "decided", item="q_1", decision="agree_all")
+
+    smoke.record(home, "rated", item="q_1", verdict="great")
+    smoke.record(home, "decided", item="q_1", decision="agree_all")
+
+    assert "decided" in smoke.load(home)["steps"]
+
+
+def test_verify_retains_every_field_check_and_fails_on_a_later_mismatch(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    config = _seed_tables(home, base)
+    started = _run_to_applied(home, base)
+    card_id = started["card"]["id"]
+    _accepted_card(config, base)
+
+    first = smoke.verify(
+        home,
+        target_key="cards",
+        target_id=card_id,
+        field="label",
+        expected="[已采纳] 虚拟细胞",
+        client=base,
+    )
+    second = smoke.verify(
+        home,
+        target_key="cards",
+        target_id=card_id,
+        checks=[("annotation", "[已采纳] 注释")],
+        client=base,
+    )
+
+    assert first["ok"] is True and second["ok"] is True
+    checks = smoke.load(home)["steps"]["verified"]["checks"]
+    assert [check["field"] for check in checks] == ["label", "annotation"]
+    assert all(check["ok"] for check in checks)
+
+    mismatch = smoke.verify(
+        home,
+        target_key="cards",
+        target_id=card_id,
+        checks=[("annotation", "不同值")],
+        client=base,
+    )
+
+    assert mismatch["ok"] is False
+    state = smoke.load(home)
+    assert state["status"] == "failed"
+    assert [check["field"] for check in state["steps"]["verified"]["checks"]] == [
+        "label",
+        "annotation",
+    ]
+
+
+def test_cli_verify_accepts_repeated_field_checks(tmp_path):
+    from hostrun import cli
+
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    config = _seed_tables(home, base)
+    started = _run_to_applied(home, base)
+    card_id = started["card"]["id"]
+    _accepted_card(config, base)
+
+    code = cli.main(
+        [
+            "--home",
+            str(home),
+            "--offline",
+            "smoke",
+            "verify",
+            "--target-key",
+            "cards",
+            "--target-id",
+            card_id,
+            "--field",
+            "label=[已采纳] 虚拟细胞",
+            "--field",
+            "annotation=[已采纳] 注释",
+        ]
+    )
+
+    assert code == 0
+    checks = smoke.load(home)["steps"]["verified"]["checks"]
+    assert [check["field"] for check in checks] == ["label", "annotation"]
+    assert [check["expected"] for check in checks] == [
+        "[已采纳] 虚拟细胞",
+        "[已采纳] 注释",
+    ]
+
+    # legacy --field/--expected remains accepted and updates that field in place
+    assert (
+        cli.main(
+            [
+                "--home",
+                str(home),
+                "--offline",
+                "smoke",
+                "verify",
+                "--target-key",
+                "cards",
+                "--target-id",
+                card_id,
+                "--field",
+                "label",
+                "--expected",
+                "[已采纳] 虚拟细胞",
+            ]
+        )
+        == 0
+    )
+    checks = smoke.load(home)["steps"]["verified"]["checks"]
+    assert len(checks) == 2
