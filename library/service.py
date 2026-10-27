@@ -1,6 +1,6 @@
 """Library service: source PDFs and push artifacts in Drive, registered in Base.
 
-Invariants (docs/specs/lark-storage.md):
+Invariants (contracts/lark-storage.md):
   * File first, Base row second. An orphan file is harmless; a dangling row is not.
   * Idempotency key is (library, business id, md5); same id + different md5 is a
     conflict, never an overwrite.

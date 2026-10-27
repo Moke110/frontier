@@ -1,5 +1,7 @@
 # 飞书唯一存储：原文库 / 推送库 / 配额
 
+实现契约：用于字段、状态机和兼容行为，不是本地任务规格。开发计划与验收以 GitHub Issues 为准；现行宿主调度与持久反馈见 `contracts/README.md` §12 和 `skills/frontier/SKILL.md`。下文旧 listener / systemd 路径仅描述兼容实现，不授权启动旧部署。
+
 - 决策：`docs/adr/0003-lark-as-only-storage.md`
 - 状态：定稿（供 `library` 模块实现）
 - 术语：见 `CONTEXT.md` §存储与档案；知识五表契约见 `contracts/README.md` §10.5

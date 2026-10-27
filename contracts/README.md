@@ -30,7 +30,7 @@ $KL_HOME/
 ├── knowledge/                    # Bitable 镜像（Phase 3a）
 │   ├── base.json                 # base_token / base_url / 知识五表 id；library.setup 追加原文/推送日志/决定/配置四表 id
 │   └── state.json                # 文本列基线，用于识别手工编辑
-├── queue/                        # 统一问题队列（docs/specs/unified-question-queue.md）
+├── queue/                        # 统一问题队列（contracts/question-queue.md）
 │   ├── state.json                # 队列表 + 单 active
 │   ├── events.jsonl              # 只追加的审计/重建日志
 │   ├── request.json              # 合并后的待推请求
@@ -364,7 +364,7 @@ python -m archive.cli migrate-v3 [--dry-run] [--rollback <backup>]
 
 ## 9. 更新提议 `proposal`
 
-嵌在 push 里；v2 每篇推送最多 **2 个实体目标**（知识卡片 + 命题合计，新建也占名额），同一目标的多个操作在入队时合并成一个更新题（见 `docs/specs/unified-question-queue.md`）。
+嵌在 push 里；v2 每篇推送最多 **2 个实体目标**（知识卡片 + 命题合计，新建也占名额），同一目标的多个操作在入队时合并成一个更新题（见 `contracts/question-queue.md`）。
 
 ```json
 {
@@ -441,7 +441,7 @@ python -m knowledge.cli ledger      # 重建文本基线
 - `pull` 只接受 title / review / annotation / conclusion；结构列（id、关联、日期、计数）不回拉。
 - `sync` 成功后刷新 `knowledge/state.json`；`pull` 结束后同样刷新。
 
-## 10.6 原文/推送库（Phase 4，见 `docs/specs/lark-storage.md`）
+## 10.6 原文/推送库（Phase 4，见 `contracts/lark-storage.md`）
 
 自 ADR 0003 起，云盘 + Base 是原文与推送的唯一真相；`archive/raw/**`、`archive/pushes/**` 降级为本地缓存与物化视图：
 
@@ -465,7 +465,7 @@ python -m library.cli decisions sync           # 提议级决定写入「决定�
 
 ## 11. 统一问题队列
 
-状态机、边界用例与恢复策略见 [`docs/specs/unified-question-queue.md`](../docs/specs/unified-question-queue.md)；实现在 `question_queue/`。
+状态机、边界用例与恢复策略见 [`contracts/question-queue.md`](question-queue.md)；实现在 `question_queue/`。
 
 ```bash
 python -m question_queue.cli status
