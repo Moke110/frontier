@@ -27,7 +27,6 @@ from hostrun.base import (
     HostRunError,
     load_config,
     redact,
-    resolve_executable,
     run_json,
     save_config,
     update_config,
@@ -65,6 +64,9 @@ STEP_NOTES = {
     "scheduled_run": "至少一次真实到点的本地定时触发",
 }
 MIN_PYTHON = (3, 11)
+REQUIRED_PERMISSION_SCOPES = [
+    scope for scopes in lark_mod.REQUIRED_SCOPES.values() for scope in scopes
+]
 
 
 def state_path(home: Path) -> Path:
@@ -229,16 +231,34 @@ def probe_dependencies(
 
 
 def probe_lark_cli(home: Path, spec: str | None, *, names: list[str] | None = None) -> dict:
-    """Executable presence only — never treated as a logged-in identity."""
-    found = resolve_executable(
+    """Executable presence only — never treated as a logged-in identity.
+
+    A recorded absolute path (``paths.lark_cli``) or explicit ``--lark-cli`` is
+    authoritative: when it no longer exists the step is blocked with
+    rediscovery guidance, even if another ``lark-cli`` is on PATH (ADR 0007).
+    """
+    found = lark_mod.resolve_cli(
         spec,
         private_dirs=[Path(home) / "bin"],
         names=names or ["lark-cli"],
     )
     if not found["found"]:
+        if found.get("stale"):
+            return {
+                "status": "blocked",
+                "note": found["note"],
+                "evidence": {
+                    "path": found.get("path"),
+                    "source": found.get("source"),
+                    "stale": True,
+                },
+            }
         return {
             "status": "blocked",
-            "note": "飞书 CLI 未找到：把它装到私有目录并在 install/config.json 的 paths.lark_cli 指向它",
+            "note": (
+                "飞书 CLI 未找到：用 `lark discover --cli <可执行文件绝对路径>` 记录已有 CLI，"
+                "或运行 `lark install --root <workspace>` 私有安装"
+            ),
             "evidence": {"source": found["source"]},
         }
     return {
@@ -270,29 +290,37 @@ def parse_auth_status(payload: dict) -> dict:
             if facts[name]["ready"]
             and facts[name]["status"] in lark_mod.REFRESHABLE_STATUSES
         ],
+        "scopes": facts["scopes"],
     }
 
 
 def probe_identity(lark_cli_path: str, *, runner=None, timeout: int = 30) -> dict:
-    """Authenticated access, distinguished from mere executable presence."""
+    """Authenticated access, distinguished from mere executable presence.
+
+    ``--verify`` is passed so this probe and ``lark status`` share one
+    readiness rule (refreshable is usable, expired is not).
+    """
     if not lark_cli_path:
-        return {"status": "blocked", "note": "缺少 lark-cli 路径", "evidence": {}}
+        return {"status": "blocked", "note": "缺少 lark-cli 路径", "evidence": {}, "scopes": []}
     kwargs = {"timeout": timeout}
     if runner is not None:
         kwargs["runner"] = runner
-    result = run_json([lark_cli_path, "auth", "status", "--json"], **kwargs)
+    result = run_json([lark_cli_path, "auth", "status", "--json", "--verify"], **kwargs)
     if not result.get("ok"):
         return {
             "status": "blocked",
             "note": f"auth status 无法读取：{result.get('error')}",
             "evidence": {},
+            "scopes": [],
         }
     facts = parse_auth_status(result["payload"])
+    scopes = facts.pop("scopes", [])
     if facts["user_ready"] and facts["bot_ready"]:
         return {
             "status": "ok",
             "note": "user 与 bot 身份均可用",
             "evidence": {k: v for k, v in facts.items() if k != "user_open_id_present"},
+            "scopes": scopes,
         }
     missing = []
     if not facts["user_ready"]:
@@ -303,6 +331,7 @@ def probe_identity(lark_cli_path: str, *, runner=None, timeout: int = 30) -> dic
         "status": "blocked",
         "note": "需要用户完成飞书登录/授权：" + "、".join(missing),
         "evidence": {k: v for k, v in facts.items() if k != "user_open_id_present"},
+        "scopes": scopes,
     }
 
 
@@ -454,10 +483,62 @@ def check(
     )
     lark_result = probe_lark_cli(home, lark_cli or config["paths"].get("lark_cli"))
     results["lark_cli"] = lark_result
-    lark_path = (lark_result.get("evidence") or {}).get("path", "")
+    lark_path = (
+        (lark_result.get("evidence") or {}).get("path", "")
+        if lark_result["status"] == "ok"
+        else ""
+    )
     results["identity"] = probe_identity(lark_path, runner=runner)
 
-    for step in ("host", "workspace", "dependencies", "skill", "lark_cli", "identity"):
+    # Authorization and real resource reads are a separate fact from login:
+    # a successful identity probe never stands in for them.
+    facilities = read_json(home / "install" / "facilities.json") or {}
+    folders = facilities.get("folders") or {}
+    authz = lark_mod.authorization(
+        results["identity"].get("scopes") or [],
+        required=REQUIRED_PERMISSION_SCOPES,
+    )
+    resources = lark_mod.resource_preflight(
+        home,
+        lark_path or None,
+        base_token=(facilities.get("base") or {}).get("token"),
+        source_folder=folders.get("source"),
+        push_folder=folders.get("push"),
+        runner=runner,
+    )
+    if authz["status"] == "blocked" or resources["status"] == "blocked":
+        permissions_status = "blocked"
+    elif authz["status"] == "ok" and resources["status"] == "ok":
+        permissions_status = "ok"
+    else:
+        permissions_status = "untested"
+    if not lark_path:
+        permissions_note = "飞书 CLI 不可用，登录、授权范围与资源读取均未验证"
+    elif permissions_status == "ok":
+        permissions_note = "授权范围与资源读取均已验证"
+    else:
+        permissions_note = authz.get("note") or resources.get("note", "")
+    results["permissions"] = {
+        "status": permissions_status,
+        "note": permissions_note,
+        "evidence": {
+            "granted": authz.get("granted"),
+            "missing": authz.get("missing"),
+            "base": resources.get("base"),
+            "drive": resources.get("drive"),
+            "messages": resources.get("messages"),
+        },
+    }
+
+    for step in (
+        "host",
+        "workspace",
+        "dependencies",
+        "skill",
+        "lark_cli",
+        "identity",
+        "permissions",
+    ):
         result = results.get(step)
         if not result:
             continue
@@ -467,12 +548,18 @@ def check(
             result["status"],
             note=result["note"],
             evidence=result["evidence"],
-            recheck=step in {"workspace", "dependencies", "skill"},
+            recheck=step
+            in {"workspace", "dependencies", "skill", "identity", "permissions"},
         )
 
     update_config(
         home,
         paths={"repo": str(repo_path), "lark_cli": lark_path or config["paths"].get("lark_cli", "")},
+        permissions={
+            "scope": authz.get("granted") or [],
+            "missing": authz.get("missing") or [],
+            "checked_at": now(),
+        },
         timezone=timezone_name or config.get("timezone") or default_timezone(),
     )
     if host and host.get("product"):

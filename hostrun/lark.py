@@ -105,15 +105,70 @@ def private_bin(root: str | Path) -> Path:
     return Path(root).expanduser().resolve() / ".frontier" / "bin"
 
 
+STALE_CLI_GUIDANCE = (
+    "请重装 @larksuite/cli，并用 `lark discover --cli <可执行文件绝对路径>` 记录新路径；"
+    "不会降级到 PATH 中的其他 lark-cli"
+)
+
+
+def explicit_cli_path(spec: str | None) -> Path | None:
+    """An explicit or recorded CLI path, as opposed to a bare command name.
+
+    ADR 0007 records the executable actually in use.  A path that no longer
+    exists is stale, not a hint to look somewhere else.
+    """
+    if not spec:
+        return None
+    candidate = Path(str(spec)).expanduser()
+    if candidate.is_absolute() or candidate.parent != Path("."):
+        return candidate
+    return None
+
+
+def resolve_cli(
+    spec: str | None,
+    *,
+    private_dirs: list[Path] | None = None,
+    names: list[str] | None = None,
+) -> dict:
+    """Resolve the CLI; a recorded absolute path is authoritative.
+
+    When ``spec`` is a path (explicit ``--cli`` or the recorded
+    ``paths.lark_cli``) and it no longer exists, the answer is ``blocked`` with
+    rediscovery guidance — never a silent fallback to a different ``lark-cli``
+    found on PATH (ADR 0007).
+    """
+    explicit = explicit_cli_path(spec)
+    if explicit is not None:
+        if explicit.is_file():
+            return {"found": True, "path": str(explicit.resolve()), "source": "explicit"}
+        return {
+            "found": False,
+            "path": str(explicit),
+            "source": "explicit",
+            "stale": True,
+            "note": f"记录的飞书 CLI 路径已失效：{explicit}；{STALE_CLI_GUIDANCE}",
+        }
+    return resolve_executable(
+        spec, private_dirs=list(private_dirs or []), names=names or CLI_NAMES
+    )
+
+
 def discover_cli(root: str | Path, *, spec: str | None = None, home: str | Path | None = None) -> dict:
     """Resolve the CLI from explicit config, private directories, then PATH."""
     root = Path(root).expanduser().resolve()
-    found = resolve_executable(
-        spec,
-        private_dirs=[root / ".frontier" / "bin", *( [Path(home) / "bin"] if home else [])],
-        names=CLI_NAMES,
-    )
-    return {"ok": bool(found["found"]), **found}
+    private_dirs = [root / ".frontier" / "bin"]
+    if home:
+        private_dirs.append(Path(home) / "bin")
+    found = resolve_cli(spec, private_dirs=private_dirs, names=CLI_NAMES)
+    result = {"ok": bool(found["found"]), **found}
+    if not result["ok"]:
+        result.setdefault(
+            "note",
+            "未找到飞书 CLI；把可执行文件装好后用 `lark discover --cli <绝对路径>` 记录，"
+            "或运行 `lark install` 私有安装",
+        )
+    return result
 
 
 def _launcher(binary: Path, node: Path | None, *, target: Path) -> Path:
@@ -486,14 +541,18 @@ def status(
     root = Path(root).expanduser().resolve()
     found = discover_cli(root, spec=spec, home=home)
     if not found["ok"]:
+        note = found.get("note") or "未找到 lark-cli"
         return {
             "schema_version": SCHEMA_VERSION,
             "ok": False,
-            "cli": {"status": "blocked", "note": "未找到 lark-cli", **found},
+            "cli": {"status": "blocked", "note": note, **found},
             "identity": {"status": "blocked"},
             "authorization": {"status": "blocked"},
             "resources": {"status": "blocked"},
-            "next": f"python -m hostrun.cli lark install --root {root}",
+            "next": (
+                f"python -m hostrun.cli lark discover --cli <lark-cli 绝对路径> "
+                f"--root {root}；或 python -m hostrun.cli lark install --root {root}"
+            ),
         }
     identity_result = identity(found["path"], runner=runner)
     authz = authorization(

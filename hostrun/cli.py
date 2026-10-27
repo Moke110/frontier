@@ -847,15 +847,23 @@ def _init(args, root: Path, offline: bool) -> tuple[int, dict]:
 
 def _lark(args, root: Path) -> tuple[int, dict]:
     from common import ensure_dir
-    from hostrun.base import update_config
+    from hostrun.base import load_config, update_config
 
     record = workspace_mod.load_record(args.root)
     data_root = Path(record.get("home") or root)
     if not args.root:
         return 1, {"ok": False, "note": "需要 --root 工作区"}
+    config = load_config(data_root)
+    recorded_cli = str((config.get("paths") or {}).get("lark_cli") or "")
+    # The recorded absolute path is authoritative (ADR 0007); an explicit
+    # --cli wins because the user is deliberately re-recording it.
+    spec = getattr(args, "cli_path", None) or recorded_cli or None
 
     if args.action == "discover":
-        found = lark.discover_cli(args.root, spec=args.cli_path, home=data_root)
+        found = lark.discover_cli(args.root, spec=spec, home=data_root)
+        if found["ok"]:
+            ensure_dir(data_root / "install")
+            update_config(data_root, paths={"lark_cli": found["path"]})
         return (0 if found["ok"] else 1), found
 
     if args.action == "install":
@@ -883,7 +891,7 @@ def _lark(args, root: Path) -> tuple[int, dict]:
 
     if args.action == "login":
         found = lark.discover_cli(
-            args.root, spec=args.cli_path, home=data_root
+            args.root, spec=spec, home=data_root
         )
         if args.device_code:
             result = lark.complete_login(
@@ -906,7 +914,7 @@ def _lark(args, root: Path) -> tuple[int, dict]:
         args.root,
         home=data_root,
         required=required,
-        spec=args.cli_path,
+        spec=spec,
     )
     ensure_dir(data_root / "install")
     install.record(
