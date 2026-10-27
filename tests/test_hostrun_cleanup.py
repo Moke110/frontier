@@ -53,7 +53,7 @@ def _ready(tmp_path, *, with_artifacts=True):
     question = f"q_{push_id}_rating"
     smoke.record(home, "retrieved", candidates=2, plan="install/smoke-plan.json")
     smoke.record(home, "written", papers=[f"paper_{test_id}"])
-    smoke.record(home, "rendered")
+    smoke.record(home, "rendered", push=push_id, html="out/push.html")
     smoke.record(
         home, "sent", push=push_id, message=message, question=question
     )

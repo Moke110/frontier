@@ -146,11 +146,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="retrieved: path/reference of the temporary retrieval plan")
     sr.add_argument("--paper", dest="paper_ids", action="append", default=[],
                     help="written: selected paper id; repeat for each selected paper")
+    sr.add_argument("--html", dest="html",
+                    help="rendered: path of the rendered push html artifact")
     sv = ssub.add_parser("verify", help="read the Base and require the accepted change")
     sv.add_argument("--target-key", required=True, choices=["cards", "propositions", "evidence"])
     sv.add_argument("--target-id", required=True)
-    sv.add_argument("--field", required=True)
-    sv.add_argument("--expected", required=True)
+    sv.add_argument("--field", dest="fields", action="append", default=[],
+                    help="read-back check as name=value; repeat for each adopted field "
+                         "(legacy: --field <name> --expected <value>)")
+    sv.add_argument("--expected", action="append", default=[],
+                    help="legacy value paired with a bare --field <name>")
     sf = ssub.add_parser("fail", help="mark the test failed and keep it for cleanup")
     sf.add_argument("--reason", required=True)
 
@@ -770,15 +775,29 @@ def _smoke(args, root: Path, offline: bool) -> tuple[int, dict]:
             candidates=args.candidates,
             plan=args.plan,
             papers=args.paper_ids,
+            html=args.html,
         )
         return 0, result
     if args.action == "verify":
+        fields = args.fields or []
+        expecteds = args.expected or []
+        if len(expecteds) > len(fields):
+            raise HostRunError("--expected 数量多于 --field")
+        checks: list[str] = []
+        for index, raw in enumerate(fields):
+            if "=" in raw:
+                checks.append(raw)
+            elif index < len(expecteds):
+                checks.append(f"{raw}={expecteds[index]}")
+            else:
+                raise HostRunError(
+                    f"--field {raw} 缺少对应 --expected；也可写成 --field name=value"
+                )
         result = smoke.verify(
             root,
             target_key=args.target_key,
             target_id=args.target_id,
-            field=args.field,
-            expected=args.expected,
+            checks=checks,
             client=client,
         )
         return (0 if result.get("ok") else 1), result
