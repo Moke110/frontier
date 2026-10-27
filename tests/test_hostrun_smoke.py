@@ -409,7 +409,7 @@ def test_cli_record_accepts_retrieval_and_selection_evidence(tmp_path):
 
 
 # ------------------------------------------------- rendered / verify evidence
-def _run_to_applied(home, base):
+def _run_to_applied(home, base, *, applied_fields=None, targets=None):
     started = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
     smoke.record(home, "retrieved", plan=str(_plan_file(home.parent)))
     smoke.record(home, "written", papers=["paper_1"])
@@ -417,7 +417,12 @@ def _run_to_applied(home, base):
     smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
     smoke.record(home, "rated", item="q_1", verdict="great")
     smoke.record(home, "decided", item="q_1", decision="agree_all")
-    smoke.record(home, "applied")
+    applied_kwargs = {}
+    if applied_fields:
+        applied_kwargs["applied_fields"] = applied_fields
+    if targets:
+        applied_kwargs["targets"] = targets
+    smoke.record(home, "applied", **applied_kwargs)
     return started
 
 
@@ -591,3 +596,113 @@ def test_cli_verify_accepts_repeated_field_checks(tmp_path):
     )
     checks = smoke.load(home)["steps"]["verified"]["checks"]
     assert len(checks) == 2
+
+
+# --------------------------------------- applied target/field coverage (spec #56)
+def test_applied_fields_must_all_be_verified_for_the_loop_to_complete(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    config = _seed_tables(home, base)
+    started = _run_to_applied(
+        home, base, applied_fields=["label", "annotation"]
+    )
+    card_id = started["card"]["id"]
+    _accepted_card(config, base)
+
+    partial = smoke.verify(
+        home,
+        target_key="cards",
+        target_id=card_id,
+        field="label",
+        expected="[已采纳] 虚拟细胞",
+        client=base,
+    )
+
+    assert partial["ok"] is False
+    assert partial["reason"] == "verification_incomplete"
+    assert any(row["field"] == "annotation" for row in partial["missing_checks"])
+    assert smoke.status(home)["ok"] is False
+    assert smoke.load(home)["steps"]["verified"]["complete"] is False
+    state_file = json.loads((home / "install" / "state.json").read_text(encoding="utf-8"))
+    assert state_file["steps"]["test_loop"]["status"] != "ok"
+
+    both = smoke.verify(
+        home,
+        target_key="cards",
+        target_id=card_id,
+        checks=[("annotation", "[已采纳] 注释")],
+        client=base,
+    )
+
+    assert both["ok"] is True
+    assert both["status"] == "complete"
+    assert both["applied_fields"] == ["label", "annotation"]
+    assert smoke.load(home)["steps"]["verified"]["complete"] is True
+    assert smoke.status(home)["ok"] is True
+    state_file = json.loads((home / "install" / "state.json").read_text(encoding="utf-8"))
+    assert state_file["steps"]["test_loop"]["status"] == "ok"
+
+
+def test_applied_target_without_fields_needs_at_least_one_check(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    config = _seed_tables(home, base)
+    started = _run_to_applied(home, base)
+    card_id = started["card"]["id"]
+    _accepted_card(config, base)
+
+    state = smoke.load(home)
+    assert state["artifacts"]["applied_targets"] == [
+        {"target": card_id, "fields": []}
+    ]
+
+    result = smoke.verify(
+        home,
+        target_key="cards",
+        target_id=card_id,
+        field="label",
+        expected="[已采纳] 虚拟细胞",
+        client=base,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "complete"
+
+
+def test_cli_record_applied_captures_targets_and_fields(tmp_path):
+    from hostrun import cli
+
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    started = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    card_id = started["card"]["id"]
+    smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
+    smoke.record(home, "written", papers=["paper_1"])
+    smoke.record(home, "rendered", push="push_1", html=str(_rendered_file(tmp_path)))
+    smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
+    smoke.record(home, "rated", item="q_1", verdict="great")
+    smoke.record(home, "decided", item="q_1", decision="agree_all")
+
+    code = cli.main(
+        [
+            "--home",
+            str(home),
+            "smoke",
+            "record",
+            "--step",
+            "applied",
+            "--target",
+            card_id,
+            "--applied-field",
+            "label",
+            "--applied-field",
+            "annotation",
+        ]
+    )
+
+    assert code == 0
+    state = smoke.load(home)
+    assert state["artifacts"]["applied_targets"] == [
+        {"target": card_id, "fields": ["label", "annotation"]}
+    ]

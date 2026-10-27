@@ -81,12 +81,13 @@ python -m hostrun.cli smoke record --home <home> --step rendered --push <push_id
 # ... sent（必须带 --push --message --question；上传文件用 --file，可重复）
 python -m hostrun.cli smoke record --home <home> --step rated --item <id> --verdict great
 python -m hostrun.cli smoke record --home <home> --step decided --item <id> --decision agree_all
-python -m hostrun.cli smoke record --home <home> --step applied
+python -m hostrun.cli smoke record --home <home> --step applied --target <被采纳目标 id> --applied-field <字段>（每字段重复一次）
 python -m hostrun.cli smoke verify --home <home> --target-key cards --target-id <card_id> --field <字段>=<值>（可重复）
 ```
 
 - 只取本次临时卡片的检索式；临时卡片同时写入本地与 Base，ID/标签带测试标记。
 - `retrieved` 必须指向真实存在的计划/候选文件，候选数由该文件得出（可选 `--candidates` 必须与之一致）；`written` 至少一个选中论文 ID（`--paper`）；`rendered` 必须带推送 ID 与渲染文件，并按 `writer/render.py` 契约校验七段段落和 `原文图`/`生成图` 图注；这些证据与 `sent` 的副作用 ID 一并写入测试记录，供精确清理。
+- `applied` 用 `--target` 与 `--applied-field` 登记被采纳的目标与字段（省略时按临时卡片、只要求至少一个字段）；`verify` 必须覆盖每个已登记目标字段才完整，覆盖不足返回 `verification_incomplete`，字段不一致判失败。
 - 使用标准检索、写作、publisher、统一队列与反馈链路；只推一篇，评分先行，采纳后才写入。
 - 用户在飞书检查展示并提交反馈；agent 处理并读回验证。只有全部步骤 + 读回一致才算通过。
 - 任何失败先核对；发送超时不能确认则暂停，不重发。失败不开启正式初始化或日常推送。

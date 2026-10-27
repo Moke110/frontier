@@ -95,7 +95,11 @@ def step_status(home: Path) -> dict:
 
 
 def next_step(home: Path) -> str | None:
+    """The most actionable step: a blocked one first, else the first unfinished."""
     status = step_status(home)
+    for name in STEPS:
+        if status[name] == "blocked":
+            return name
     return next((name for name in STEPS if status[name] != "ok"), None)
 
 

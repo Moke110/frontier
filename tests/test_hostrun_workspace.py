@@ -229,14 +229,17 @@ def test_acquire_rejects_a_data_root_inside_the_code_checkout(tmp_path):
 
 
 def test_cli_workspace_rejection_reports_the_reason_and_writes_nothing(tmp_path, capsys):
-    from hostrun import cli
+    from hostrun import cli, install
 
     root = tmp_path / "ws"
     repo = _seed_repo(root / "frontier")
     before = _files_under(repo)
+    data_root = tmp_path / "data-root"
 
     code = cli.main(
         [
+            "--home",
+            str(data_root),
             "install",
             "workspace",
             "--root",
@@ -253,7 +256,10 @@ def test_cli_workspace_rejection_reports_the_reason_and_writes_nothing(tmp_path,
     assert "数据根不能放在代码目录内" in payload["blocked"]
     assert _files_under(repo) == before
     assert not workspace.record_path(root).exists()
-    assert not (root / "frontier-archive").exists()
+    assert not (root / "frontier" / "archive").exists()
+    entry = install.load_state(data_root)["steps"]["workspace"]
+    assert entry["status"] == "blocked"
+    assert "数据根不能放在代码目录内" in entry["note"]
 
 
 def test_reusable_checkout_is_not_cloned_again(tmp_path):

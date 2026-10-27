@@ -269,6 +269,36 @@ def test_check_merges_host_and_lark_permissions_once(tmp_path, monkeypatch):
     assert permissions["granted_at"]
 
 
+def test_cli_rejected_layout_records_workspace_blocked(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    home = tmp_path / "data-root"
+
+    code = cli.main(
+        [
+            "--home",
+            str(home),
+            "install",
+            "workspace",
+            "--root",
+            str(ws),
+            "--data-dir",
+            "frontier/archive",
+        ]
+    )
+
+    assert code == 1
+    entry = install.load_state(home)["steps"]["workspace"]
+    assert entry["status"] == "blocked"
+    assert "数据根不能放在代码目录内" in entry["note"]
+    assert entry["evidence"]["layout_valid"] is False
+    report = install.report(home)
+    assert [row["step"] for row in report["blocked"]] == ["workspace"]
+    assert report["next"] == "workspace"
+    assert any("数据根不能放在代码目录内" in line for line in report["limitations"])
+    assert not (ws / "frontier").exists()
+
+
 def test_stale_evidence_flags_old_steps(tmp_path):
     install.record(tmp_path, "host", "ok")
     state = install.load_state(tmp_path)

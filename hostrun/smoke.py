@@ -373,6 +373,9 @@ def brief(home: Path) -> dict:
         "用户明确采纳更新：feedback submit --item <id> --decision agree_all（或 adopt）",
         f'python -m hostrun.cli --home "{home}" smoke record --step decided --item <id> --decision <decision>',
         "python -m hostrun.cli feedback process",
+        f'python -m hostrun.cli --home "{home}" smoke record --step applied '
+        "--target <被采纳目标 id> --applied-field <被采纳字段>（每字段重复一次；"
+        "省略时按临时卡片、至少核对一个字段）",
         f'python -m hostrun.cli --home "{home}" smoke verify --target-key cards '
         f"--target-id {card_id} --field <字段>=<值>（每个采纳字段重复一次）",
     ]
@@ -411,6 +414,8 @@ def record(
     plan: str | None = None,
     papers: list[str] | str | None = None,
     html: str | None = None,
+    targets: list[str] | str | None = None,
+    applied_fields: list[str] | str | None = None,
 ) -> dict:
     """Record one ordered step; rerunning the same step is a no-op."""
     home = Path(home).expanduser().resolve()
@@ -481,6 +486,29 @@ def record(
         raise HostRunError("decided 步骤需要 --item 和 --decision")
 
     artifacts = state.setdefault("artifacts", {})
+    applied_targets = [
+        str(target).strip()
+        for target in ([targets] if isinstance(targets, str) else (targets or []))
+        if str(target or "").strip()
+    ]
+    applied_field_list = [
+        str(name).strip()
+        for name in (
+            [applied_fields]
+            if isinstance(applied_fields, str)
+            else (applied_fields or [])
+        )
+        if str(name or "").strip()
+    ]
+    if step == "applied" and not applied_targets:
+        card = (state.get("card") or {}).get("id")
+        if card:
+            applied_targets = [card]
+    if step == "applied":
+        artifacts["applied_targets"] = [
+            {"target": target, "fields": list(applied_field_list)}
+            for target in applied_targets
+        ]
     if step == "retrieved":
         artifacts["candidates"] = candidate_count
         if plan:
@@ -521,6 +549,8 @@ def record(
             **({"plan": plan} if step == "retrieved" and plan else {}),
             **({"papers": selected} if step == "written" else {}),
             **({"html": html} if step == "rendered" and html else {}),
+            **({"targets": applied_targets} if step == "applied" else {}),
+            **({"applied_fields": applied_field_list} if step == "applied" else {}),
         },
     }
     if step == "sent":
@@ -575,6 +605,33 @@ def _normalize_checks(checks, field, expected) -> list[tuple[str, str]]:
     elif expected is not None:
         raise HostRunError("--expected 需要配合 --field 使用，或用 --field name=value")
     return [(name, value) for name, value in pairs if name]
+
+
+def _applied_coverage(state: dict, checks: list[dict]) -> tuple[list[str], list[str], list[dict]]:
+    """Which adopted target/field pairs still lack a successful read-back check."""
+    applied = (state.get("steps") or {}).get("applied") or {}
+    evidence = applied.get("evidence") or {}
+    card_id = (state.get("card") or {}).get("id") or ""
+    targets = [str(target) for target in (evidence.get("targets") or []) if str(target)]
+    if not targets and card_id:
+        targets = [card_id]
+    fields = [str(name) for name in (evidence.get("applied_fields") or []) if str(name)]
+    present: dict[str, set[str]] = {}
+    for check in checks:
+        if not check.get("ok"):
+            continue
+        target = str(check.get("target_id") or card_id or "")
+        present.setdefault(target, set()).add(str(check.get("field") or ""))
+    missing: list[dict] = []
+    for target in targets:
+        covered = present.get(target, set())
+        if fields:
+            for field in fields:
+                if field not in covered:
+                    missing.append({"target": target, "field": field})
+        elif not covered:
+            missing.append({"target": target, "field": None})
+    return targets, fields, missing
 
 
 def verify(
@@ -637,7 +694,14 @@ def verify(
         if isinstance(actual, list):
             actual = actual[0] if len(actual) == 1 else actual
         ok = str(actual) == str(wanted)
-        entry = {"field": name, "expected": wanted, "actual": actual, "ok": ok}
+        entry = {
+            "field": name,
+            "expected": wanted,
+            "actual": actual,
+            "ok": ok,
+            "target_key": target_key,
+            "target_id": target_id,
+        }
         results.append(entry)
         if not ok and failure is None:
             failure = entry
@@ -679,16 +743,52 @@ def verify(
             merged.append(entry)
         else:
             merged[index] = entry
+    applied_targets, applied_fields, missing_checks = _applied_coverage(state, merged)
+    covered = not missing_checks
     state.setdefault("steps", {})["verified"] = {
         "ok": True,
+        "complete": covered,
         "at": now(),
         "checks": merged,
         "evidence": {
             "target_key": target_key,
             "target_id": target_id,
             "checks": merged,
+            "applied_targets": applied_targets,
+            "applied_fields": applied_fields,
+            "missing_checks": missing_checks,
         },
     }
+    if not covered:
+        state["next"] = "还有采纳字段未核对：" + "、".join(
+            f"{row['target']}:{row['field'] or '<任意字段>'}" for row in missing_checks
+        )
+        save(home, state)
+        install_mod.record(
+            home,
+            "test_loop",
+            "untested",
+            note="已核对部分写入；采纳目标字段尚未全部读回",
+            evidence={
+                "test_id": test_id,
+                "card_id": card_id,
+                "missing_checks": missing_checks,
+            },
+            recheck=True,
+        )
+        return {
+            "ok": False,
+            "reason": "verification_incomplete",
+            "test_id": test_id,
+            "status": state["status"],
+            "steps": sorted(state["steps"]),
+            "verified": False,
+            "checks": merged,
+            "applied_targets": applied_targets,
+            "applied_fields": applied_fields,
+            "missing_checks": missing_checks,
+            "next": state["next"],
+        }
     complete = all(name in state["steps"] for name in STEPS)
     state["status"] = "complete" if complete else state.get("status")
     state["next"] = None if complete else "还有未完成步骤"
@@ -716,6 +816,8 @@ def verify(
         "steps": sorted(state["steps"]),
         "verified": True,
         "checks": merged,
+        "applied_targets": applied_targets,
+        "applied_fields": applied_fields,
         "next": state["next"],
     }
 
@@ -727,10 +829,8 @@ def status(home: Path) -> dict:
     if not state:
         return {"ok": False, "status": "none", "note": "尚未开始临时闭环"}
     done = [name for name in STEPS if name in (state.get("steps") or {})]
-    verified = (
-        "verified" in (state.get("steps") or {})
-        or state.get("test_status") == "complete"
-    )
+    verified_entry = (state.get("steps") or {}).get("verified") or {}
+    verified = bool(verified_entry.get("complete")) or state.get("test_status") == "complete"
     complete = state.get("status") == "complete" or state.get("test_status") == "complete"
     return {
         "ok": complete,
