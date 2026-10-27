@@ -183,7 +183,9 @@ def build_parser() -> argparse.ArgumentParser:
     ic = isub.add_parser("confirm", help="record the user's confirmation")
     ic.add_argument("--yes", action="store_true")
     ic.add_argument("--note", default="")
-    isub.add_parser("apply")
+    ap = isub.add_parser("apply")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="explicitly overwrite cards that existed before this draft")
     ia = isub.add_parser("adopt-existing")
     ia.add_argument("--yes", action="store_true", help="the user confirmed keeping the existing library")
     isub.add_parser("retrieve")
@@ -855,14 +857,18 @@ def _init(args, root: Path, offline: bool) -> tuple[int, dict]:
         cards = read_json(Path(args.cards)) or []
         if isinstance(cards, dict):
             cards = cards.get("cards") or []
-        return 0, initialize.propose(root, cards, rationale=args.rationale)
+        return 0, initialize.propose(
+            root, cards, rationale=args.rationale, client=client
+        )
     if args.action == "review":
         return 0, initialize.review(root)
     if args.action == "confirm":
         result = initialize.confirm(root, confirmed_by_user=args.yes, note=args.note)
         return (0 if result.get("ok") else 1), result
     if args.action == "apply":
-        result = initialize.apply_draft(root, client=client)
+        result = initialize.apply_draft(
+            root, client=client, overwrite=bool(getattr(args, "overwrite", False))
+        )
         return (0 if result.get("ok") else 1), result
     if args.action == "adopt-existing":
         result = initialize.adopt_existing(root, client=client, confirmed=args.yes)
