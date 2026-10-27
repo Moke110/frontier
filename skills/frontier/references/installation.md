@@ -7,13 +7,13 @@ frontier 不再是一个要开机自启的后台服务，而是**由你正在用
 - 不需要写持久环境变量、PATH 或注册表。
 - 数据根默认 `~/knowledge-loop`，可用 `--home` 指定（中文与含空格路径均支持）。
 
-> 旧的 WSL + systemd 安装方式已归档到 [`docs/legacy/2026-10-systemd-install.md`](../../../docs/legacy/2026-10-systemd-install.md)。如果你机器上还留着旧的 `frontier-*` 单元，见本文末「清理旧安装」。
+> 旧 WSL/systemd 安装步骤只保留在 [Git 历史](https://github.com/Moke110/frontier/blob/978cbfc/docs/legacy/2026-10-systemd-install.md)，不作为安装入口。如果机器上仍留着旧 `frontier-*` 单元，按本文「清理旧安装」先识别并在用户授权范围内停用。
 
 ## 1. 支持的宿主与验证状态
 
 | 宿主 | 形态 | 状态 |
 |---|---|---|
-| WorkBuddy（Windows 桌面端） | 本地会话 + 内置自动化 | 本机已实测命令行、项目目录、技能与本地 Python 执行；**内置调度的真实触发与无人值守权限仍待实测**，见 [`docs/acceptance/2026-10-27-host-matrix.md`](../../../docs/acceptance/2026-10-27-host-matrix.md) |
+| WorkBuddy（Windows 桌面端） | 本地会话 + 内置自动化 | 本机已实测命令行、项目目录、技能与本地 Python 执行；**内置调度的真实触发与无人值守权限仍待实测**，见 [`docs/acceptance/README.md`](../../../docs/acceptance/README.md) |
 | ChatGPT（Windows 桌面端本地模式） | 本地会话 + 计划任务 | **未实测**，只有安装脚本与说明，不作为「已通过」宣称 |
 | Linux / macOS 终端 | 直接跑 CLI | 命令行链路可用（与宿主无关的部分由测试覆盖） |
 

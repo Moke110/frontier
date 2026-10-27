@@ -26,7 +26,7 @@ frontier 依赖一款能在本机执行命令、使用技能并创建定时任�
 | ChatGPT Windows 桌面端 | 本地执行 + 内置定时任务 | 完整安装与真实调度尚未实测 |
 | WorkBuddy Windows 桌面端 | 本地会话 + 内置自动化 | 本地命令与项目访问有历史记录；真实定时触发和无人值守权限仍待验收 |
 
-具体版本、账号权限和证据见 [宿主验收记录](docs/acceptance/2026-10-27-host-matrix.md)。电脑须开机、宿主运行且能访问飞书；网页云任务不能代替对本机依赖和凭据的访问。OpenCode 不在首批定时部署支持范围。
+具体版本、账号权限和证据见 [宿主验收记录](docs/acceptance/README.md)。电脑须开机、宿主运行且能访问飞书；网页云任务不能代替对本机依赖和凭据的访问。OpenCode 不在首批定时部署支持范围。
 
 ## 使用
 
@@ -57,6 +57,6 @@ frontier 依赖一款能在本机执行命令、使用技能并创建定时任�
 - **未实测**：没有真实运行证据；任务已配置不等于触发成功。
 - **队列未推进**：检查答案是否已提交，以及是否存在更早的待答问题。
 
-数据根默认是用户目录下的 `knowledge-loop`；安装时 agent 会记录实际位置。中断后可要求“继续 frontier 安装”，不必从头创建知识库。存量迁移和云端恢复的限制见 [恢复验收记录](docs/acceptance/2026-10-27-cloud-recovery.md)。
+数据根默认是用户目录下的 `knowledge-loop`；安装时 agent 会记录实际位置。中断后可要求“继续 frontier 安装”，不必从头创建知识库。存量迁移和云端恢复的限制见 [恢复验收记录](docs/acceptance/README.md)。
 
 运行时技能由宿主加载 [skills/frontier/SKILL.md](skills/frontier/SKILL.md)。开发指引在 [AGENTS.md](AGENTS.md)，项目术语在 [CONTEXT.md](CONTEXT.md)。许可证见 [MIT License](LICENSE)。

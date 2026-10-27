@@ -298,6 +298,6 @@ python -m hostrun.cli --home <home> feedback sync
 
 - `contracts/README.md`：模块文件契约。
 - `contracts/agent-tasks.md`：editor / writer 任务包与校验规则。
-- `docs/specs/unified-question-queue.md`：队列状态机与闸门。
+- `contracts/question-queue.md`：队列状态机与闸门。
 - `docs/adr/`：知识卡片、命题 v3、Bitable 权威等决策记录。
 - `fixtures/`：离线数据根与论文。

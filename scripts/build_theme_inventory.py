@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cluster the PDF manifest into initial-build themes.
 
-Writes fixtures/theme-inventory.jsonl and docs/research/theme-inventory.md.
+Writes fixtures/theme-inventory.jsonl and its concise fixtures/theme-inventory.md summary.
 Classification is title/category based; it is a planning aid, not a final
 ontology. Overlaps are resolved by rule priority (first match wins).
 """
@@ -22,7 +22,7 @@ from common import slug  # noqa: E402
 
 MANIFEST = ROOT / "fixtures" / "pdf-manifest.jsonl"
 OUT_JSONL = ROOT / "fixtures" / "theme-inventory.jsonl"
-OUT_MD = ROOT / "docs" / "research" / "theme-inventory.md"
+OUT_MD = ROOT / "fixtures" / "theme-inventory.md"
 
 THEMES = {
     "evaluation-credibility": {
@@ -192,23 +192,7 @@ def main() -> int:
             f"| {row['title']} (`{row['theme_id']}`) | {row['paper_count']} | {row['evidence_strength']} | {len(row['proposed_cards'])} | {row['proposed_propositions']} |"
         )
     lines.append("")
-    lines.append("## Theme detail")
-    for row in inventory:
-        lines += [
-            "",
-            f"### {row['title']} (`{row['theme_id']}`)",
-            "",
-            row["description"],
-            "",
-            f"- 证据强弱：**{row['evidence_strength']}**",
-            f"- 拟建卡片：{', '.join('`'+c+'`' for c in row['proposed_cards'])}",
-            f"- 拟写命题：{row['proposed_propositions']} 条",
-            "- 论文（最多列 10 篇，完整列表见 JSONL）：",
-        ]
-        for paper in row["papers"][:10]:
-            lines.append(f"  - {paper['year']} · {paper['title']} (`{paper['paper_id']}`)")
-        if row["paper_count"] > 10:
-            lines.append(f"  - … 共 {row['paper_count']} 篇")
+    lines += ["", "完整论文与卡片建议见 `theme-inventory.jsonl`；主题需用户确认，不自动导入正式知识库。"]
     OUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"wrote {OUT_JSONL.relative_to(ROOT)} and {OUT_MD.relative_to(ROOT)}")
     for row in inventory:

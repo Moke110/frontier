@@ -26,7 +26,7 @@ Do not force-push, reset away commits, or delete historical branches as routine 
 
 ### Issue tracker
 
-Issues, specs, tickets, and wayfinder maps live only in GitHub Issues of `Moke110/frontier`; do not create local spec/ticket drafts or mirrors. See `docs/agents/issue-tracker.md`. `.scratch/` is legacy/read-only.
+Issues, specs, tickets, and wayfinder maps live only in GitHub Issues of `Moke110/frontier`; do not create local spec/ticket drafts or mirrors. See `docs/agents/issue-tracker.md`. The retired `.scratch/` tracker is available through Git history, not the working tree.
 
 ### Triage labels
 
@@ -39,6 +39,8 @@ Single-context layout (`CONTEXT.md` + `docs/adr/` at the repo root). See `docs/a
 ### Runtime and user documentation
 
 `README.md` is the user-facing installation and usage guide. The product's host agent loads `skills/frontier/SKILL.md`; its installation and workflow references are runtime instructions, not development skills. Module contracts live in `contracts/`; current acceptance evidence and blockers live in `docs/acceptance/` and GitHub Issues. Keep root documentation limited to `AGENTS.md`, `CONTEXT.md` and `README.md`, with `LICENSE` retained at the root.
+
+Keep `docs/adr/` for Matt-maintained decisions, `docs/agents/` for Matt skill configuration, and `docs/acceptance/README.md` for concise evidence and outstanding acceptance gaps. Put schemas/state machines in `contracts/`, sample/generated documentation beside its fixtures, and historical process logs in Git history rather than duplicate local trackers or reports.
 
 For development checks, use an independent Python environment with PyYAML, pytest and PyMuPDF. The old `.venv` points to a retired WorkBuddy interpreter; rebuild it before using it. On Windows, use `python -X utf8 -m pytest -q` to avoid locale-dependent reads without persistent environment changes.
 

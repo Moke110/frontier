@@ -1,51 +1,13 @@
-# Domain Docs
+# Domain documentation
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+Single context: root `CONTEXT.md` is the project glossary; `docs/adr/` holds the decision history. These are maintained through Matt Pocock's `domain-modeling` workflow, reached while using `grill-with-docs` or resolving domain decisions.
 
-## Before exploring, read these
+Before exploring or planning, read `CONTEXT.md` and the ADRs relevant to the work. If a document is absent, proceed; create entries lazily when a term or meaningful decision is resolved.
 
-- **`CONTEXT.md`** at the repo root, or
-- **`CONTEXT-MAP.md`** at the repo root if it exists — it points at one `CONTEXT.md` per context. Read each one relevant to the topic.
-- **`docs/adr/`** — read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
+- Use canonical glossary terms in issues, code and discussion. Clarify conflicting meanings and update the resolved definition immediately.
+- Keep the glossary about vocabulary; schemas and implementation rules belong in `contracts/`, plans in GitHub Issues.
+- Keep existing ADR history and supersession links. Flag a proposal that conflicts with an accepted ADR instead of silently overriding it.
+- Record an ADR only for a decision with a meaningful trade-off, a real cost to reverse and context a future reader would otherwise miss. Use the skill's format and next sequential number.
+- Put development instructions in `AGENTS.md`, user instructions in `README.md`, and runtime instructions in `skills/frontier/`. Keep each rule authoritative in one place.
 
-If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
-
-## File structure
-
-Single-context repo (most repos):
-
-```
-/
-├── CONTEXT.md
-├── docs/adr/
-│   ├── 0001-event-sourced-orders.md
-│   └── 0002-postgres-for-write-model.md
-└── src/
-```
-
-Multi-context repo (presence of `CONTEXT-MAP.md` at the root):
-
-```
-/
-├── CONTEXT-MAP.md
-├── docs/adr/                          ← system-wide decisions
-└── src/
-    ├── ordering/
-    │   ├── CONTEXT.md
-    │   └── docs/adr/                  ← context-specific decisions
-    └── billing/
-        ├── CONTEXT.md
-        └── docs/adr/
-```
-
-## Use the glossary's vocabulary
-
-When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `CONTEXT.md`. Don't drift to synonyms the glossary explicitly avoids.
-
-If the concept you need isn't in the glossary yet, that's a signal — either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
-
-## Flag ADR conflicts
-
-If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
-
-> _Contradicts ADR-0007 (event-sourced orders) — but worth reopening because…_
+Do not introduce a multi-context map unless the project actually grows separate domain contexts and the user agrees to the layout change.

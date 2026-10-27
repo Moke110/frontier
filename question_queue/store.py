@@ -1,6 +1,6 @@
 """Unified question queue: one active question, file-backed and lock-guarded.
 
-Contract: `docs/specs/unified-question-queue.md`.
+Contract: `contracts/question-queue.md`.
 The queue is the only place that decides what question is active; publisher
 renders and sends it, archive applies approved groups.
 """
