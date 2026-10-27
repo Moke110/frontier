@@ -51,8 +51,9 @@ def _ready(tmp_path, *, with_artifacts=True):
     push_id = f"push_{test_id}"
     message = "om_test_message"
     question = f"q_{push_id}_rating"
-    for step in ("retrieved", "written", "rendered"):
-        smoke.record(home, step)
+    smoke.record(home, "retrieved", candidates=2, plan="install/smoke-plan.json")
+    smoke.record(home, "written", papers=[f"paper_{test_id}"])
+    smoke.record(home, "rendered")
     smoke.record(
         home, "sent", push=push_id, message=message, question=question
     )
@@ -228,7 +229,7 @@ def test_failed_test_cannot_be_reported_as_cleaned_success(tmp_path):
     drive = FixtureDrive()
     facilities.create(home, confirmed=True, admin=Admin(base), client=base, drive=drive)
     smoke.start(home, "虚拟细胞", confirmed=True, client=base)
-    smoke.record(home, "retrieved")
+    smoke.record(home, "retrieved", candidates=1)
     smoke.fail(home, "send_timeout")
 
     refused = cleanup.run(home, confirmed=True, client=base, drive=drive, messenger=lambda x: None)

@@ -75,8 +75,9 @@ python -m hostrun.cli facilities status --home <home>
 python -m hostrun.cli smoke start --home <home> --keyword "<用户给的关键词>" --owner <open_id> --yes
 python -m hostrun.cli smoke plan  --home <home>
 python -m hostrun.cli smoke brief --home <home>          # 给宿主 agent 的下一步命令
-python -m hostrun.cli smoke record --home <home> --step retrieved
-# ... written / rendered / sent（sent 必须带 --push --message --question；上传文件用 --file，可重复）
+python -m hostrun.cli smoke record --home <home> --step retrieved --candidates <候选数> --plan <plan 路径>
+python -m hostrun.cli smoke record --home <home> --step written --paper <选中 paper_id>（可重复）
+# ... rendered / sent（sent 必须带 --push --message --question；上传文件用 --file，可重复）
 python -m hostrun.cli smoke record --home <home> --step rated --item <id> --verdict great
 python -m hostrun.cli smoke record --home <home> --step decided --item <id> --decision agree_all
 python -m hostrun.cli smoke record --home <home> --step applied
@@ -84,6 +85,7 @@ python -m hostrun.cli smoke verify --home <home> --target-key cards --target-id 
 ```
 
 - 只取本次临时卡片的检索式；临时卡片同时写入本地与 Base，ID/标签带测试标记。
+- `retrieved` 必须带真实检索证据（`--candidates` 候选数 > 0，可用 `--plan` 记录计划），`written` 必须带至少一个选中论文 ID（`--paper`）；与 `sent` 的副作用 ID 一并写入测试记录，供精确清理。
 - 使用标准检索、写作、publisher、统一队列与反馈链路；只推一篇，评分先行，采纳后才写入。
 - 用户在飞书检查展示并提交反馈；agent 处理并读回验证。只有全部步骤 + 读回一致才算通过。
 - 任何失败先核对；发送超时不能确认则暂停，不重发。失败不开启正式初始化或日常推送。

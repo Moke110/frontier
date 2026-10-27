@@ -139,8 +139,8 @@ def test_steps_are_ordered_and_success_needs_a_real_read_back(tmp_path):
 
     with pytest.raises(HostRunError):
         smoke.record(home, "sent", push="push_1", message="om_1", question="q_1")
-    smoke.record(home, "retrieved")
-    smoke.record(home, "written")
+    smoke.record(home, "retrieved", candidates=3, plan="install/smoke-plan.json")
+    smoke.record(home, "written", papers=["paper_1"])
     smoke.record(home, "rendered")
     with pytest.raises(HostRunError):
         smoke.record(home, "sent", push="push_1")
@@ -176,8 +176,9 @@ def test_verification_mismatch_fails_and_never_opens_formal_init(tmp_path):
     base = _base(tmp_path)
     _seed_tables(home, base)
     started = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
-    for step in ("retrieved", "written", "rendered"):
-        smoke.record(home, step)
+    smoke.record(home, "retrieved", candidates=2)
+    smoke.record(home, "written", papers=["paper_1"])
+    smoke.record(home, "rendered")
     smoke.record(home, "sent", push="p", message="m", question="q")
     smoke.record(home, "rated", item="q", verdict="ok")
     smoke.record(home, "decided", item="q", decision="adopt")
@@ -205,8 +206,9 @@ def test_verification_refuses_to_touch_formal_knowledge(tmp_path):
     base = _base(tmp_path)
     _seed_tables(home, base)
     smoke.start(home, "虚拟细胞", confirmed=True, client=base)
-    for step in ("retrieved", "written", "rendered"):
-        smoke.record(home, step)
+    smoke.record(home, "retrieved", candidates=2)
+    smoke.record(home, "written", papers=["paper_1"])
+    smoke.record(home, "rendered")
     smoke.record(home, "sent", push="p", message="m", question="q")
     smoke.record(home, "rated", item="q", verdict="ok")
     smoke.record(home, "decided", item="q", decision="adopt")
@@ -253,3 +255,125 @@ def test_second_start_is_refused_until_the_first_is_cleaned(tmp_path):
 
     assert second["ok"] is False
     assert second["reason"] == "test_in_progress"
+
+
+# ------------------------------------------------ real retrieval and selection
+def test_retrieved_requires_real_retrieval_evidence(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+
+    with pytest.raises(HostRunError):
+        smoke.record(home, "retrieved")
+    with pytest.raises(HostRunError):
+        smoke.record(home, "retrieved", candidates=0)
+
+    result = smoke.record(
+        home, "retrieved", candidates=3, plan="install/smoke-plan.json"
+    )
+
+    assert result["ok"] is True
+    state = smoke.load(home)
+    assert state["artifacts"]["candidates"] == 3
+    assert state["artifacts"]["plan"] == "install/smoke-plan.json"
+    evidence = state["steps"]["retrieved"]["evidence"]
+    assert evidence["candidates"] == 3
+    assert evidence["plan"] == "install/smoke-plan.json"
+
+
+def test_written_requires_a_selected_paper_id(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    smoke.record(home, "retrieved", candidates=2)
+
+    with pytest.raises(HostRunError):
+        smoke.record(home, "written")
+    with pytest.raises(HostRunError):
+        smoke.record(home, "written", papers=[])
+
+    result = smoke.record(home, "written", papers=["paper_a", "paper_b"])
+
+    assert result["ok"] is True
+    state = smoke.load(home)
+    assert state["artifacts"]["paper_ids"] == ["paper_a", "paper_b"]
+    assert state["steps"]["written"]["evidence"]["papers"] == ["paper_a", "paper_b"]
+
+
+def test_missing_facilities_is_reported_and_retryable(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    base = _base(tmp_path)
+
+    first = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+
+    assert first["ok"] is False
+    assert first["reason"] == "facilities_missing"
+    assert first["retryable"] is True
+    assert first["note"]
+    assert not (home / "install" / "smoke.json").exists()
+    assert not (home / "install" / "state.json").exists()
+
+    (home / "knowledge").mkdir(parents=True)
+    (home / "knowledge" / "base.json").write_text(
+        json.dumps({"schema_version": 1, "base_token": "basoffline", "tables": {}}),
+        encoding="utf-8",
+    )
+    _seed_tables(home, base)
+
+    second = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+
+    assert second["ok"] is True
+    assert second["status"] == "running"
+
+
+def test_cli_record_accepts_retrieval_and_selection_evidence(tmp_path):
+    from hostrun import cli
+
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+
+    refused = cli.main(
+        ["--home", str(home), "smoke", "record", "--step", "retrieved"]
+    )
+    assert refused == 1
+
+    assert (
+        cli.main(
+            [
+                "--home",
+                str(home),
+                "smoke",
+                "record",
+                "--step",
+                "retrieved",
+                "--candidates",
+                "2",
+                "--plan",
+                "install/smoke-plan.json",
+            ]
+        )
+        == 0
+    )
+    assert (
+        cli.main(
+            [
+                "--home",
+                str(home),
+                "smoke",
+                "record",
+                "--step",
+                "written",
+                "--paper",
+                "paper_1",
+            ]
+        )
+        == 0
+    )
+    state = smoke.load(home)
+    assert state["artifacts"]["paper_ids"] == ["paper_1"]
+    assert state["steps"]["retrieved"]["evidence"]["candidates"] == 2
