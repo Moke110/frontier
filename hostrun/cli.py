@@ -78,10 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--code-dir", default=workspace_mod.DEFAULT_CODE_DIRNAME)
     w.add_argument("--data-dir", default=workspace_mod.DEFAULT_DATA_DIRNAME)
     w.add_argument("--dry-run", action="store_true")
-    t = isub.add_parser("toolchain", help="reuse or privately install uv, then the repo venv")
+    t = isub.add_parser("toolchain", help="resolve uv outside the workspace, then build the data-root environment")
     t.add_argument("--root", required=True)
     t.add_argument("--uv", dest="uv_path")
     t.add_argument("--python-version", default=workspace_mod.DEFAULT_PYTHON)
+    t.add_argument("--clear", action="store_true", help="rebuild a missing or broken data-root interpreter")
     sk = isub.add_parser("skill", help="register the frontier-run launcher for the host")
     sk.add_argument("--root", required=True)
     sk.add_argument("--target", required=True, help="host skill directory for frontier-run")
@@ -404,7 +405,9 @@ def _install(args, root: Path) -> tuple[int, dict]:
             data_dirname=args.data_dir,
             dry_run=args.dry_run,
         )
-        if not args.dry_run:
+        # A rejected layout has no safe data root to write into: report it and
+        # leave the code checkout (and the data-root candidate inside it) alone.
+        if not args.dry_run and result.get("layout_valid", True):
             data_root = Path(result["home"])
             ensure_dir(data_root / "install")
             install.record(
@@ -435,27 +438,34 @@ def _install(args, root: Path) -> tuple[int, dict]:
 
     if args.action == "toolchain":
         result = workspace_mod.toolchain(
-            args.root, uv_path=args.uv_path, python_version=args.python_version
+            args.root,
+            uv_path=args.uv_path,
+            python_version=args.python_version,
+            clear=args.clear,
         )
         record = workspace_mod.load_record(args.root)
         data_root = Path(record.get("home") or root)
         if not args.root or not record:
             return 1, result
         ensure_dir(data_root / "install")
+        environment = result.get("environment") or {}
         install.record(
             data_root,
             "dependencies",
             "ok" if result["ok"] else "blocked",
             note=(
-                "uv 与私有解释器可用"
+                "数据根私有 uv 与解释器可用，导入探针通过"
                 if result["ok"]
                 else (result.get("note") or "工具链未就绪")
             ),
             evidence={
                 "uv": result.get("uv", {}).get("path"),
                 "uv_source": result.get("uv", {}).get("source"),
-                "python": result.get("environment", {}).get("python"),
-                "repaired": result.get("environment", {}).get("repaired"),
+                "python": environment.get("python"),
+                "venv": environment.get("venv"),
+                "repaired": environment.get("repaired"),
+                "imports_ok": (environment.get("probe") or {}).get("ok"),
+                "repair": result.get("repair"),
             },
             recheck=True,
         )
@@ -464,7 +474,8 @@ def _install(args, root: Path) -> tuple[int, dict]:
                 data_root,
                 paths={
                     "uv": result["uv"]["path"],
-                    "python": result["environment"]["python"],
+                    "python": environment["python"],
+                    "venv": environment.get("venv", ""),
                 },
             )
         return (0 if result["ok"] else 1), result

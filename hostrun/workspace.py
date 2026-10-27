@@ -5,21 +5,27 @@ phase checkable instead of conversational:
 
     root/                         installation workspace (host project folder)
       .frontier/install.json      resolved code / data / interpreter / skill paths
-      .frontier/bin/uv(.exe)      private uv, used when no usable uv is present
       frontier/                   code checkout (never the data root)
       frontier-archive/           data root (never inside the code checkout)
+        bin/uv(.exe)              private uv fallback, outside the code checkout
+        .venv/                    private environment created and used by uv
       <host skills dir>/frontier-run/SKILL.md   small launcher, not a repo copy
 
 Rules that the functions below keep:
 
 - an existing checkout is inspected first and never overwritten or pulled when
   it has local changes or a different origin;
-- uv is reused when present, otherwise installed privately under the workspace;
-- the interpreter lives in ``<repo>/.venv`` and is managed by uv only;
+- uv is resolved from outside the workspace first (recorded or system uv), then
+  a uv installed into the data root; nothing asks the user to edit PATH;
+- the private environment and its interpreter live in the data root, never in
+  the code checkout, and the absolute interpreter path is recorded in both the
+  workspace pointer and the install configuration;
 - no environment variable, PATH entry, registry value, service or OS task is
   written;
 - a failed phase returns ``ok: false`` with an actionable reason and stays
-  resumable: rerunning reuses everything already verified.
+  resumable: rerunning reuses everything already verified, and a broken
+  interpreter is reported as blocked with the exact ``--clear`` repair command
+  instead of being silently rebuilt.
 """
 
 from __future__ import annotations
@@ -29,13 +35,14 @@ import os
 import platform as platform_mod
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 import zipfile
 from pathlib import Path
 
 from common import ensure_dir, now, read_json, write_json
-from hostrun.base import HostRunError, resolve_executable
+from hostrun.base import HostRunError, resolve_executable, update_config
 
 SCHEMA_VERSION = 1
 RECORD_REL = Path(".frontier") / "install.json"
@@ -43,6 +50,7 @@ DEFAULT_CODE_DIRNAME = "frontier"
 DEFAULT_DATA_DIRNAME = "frontier-archive"
 DEFAULT_REPO_URL = "https://github.com/Moke110/frontier.git"
 DEFAULT_PYTHON = "3.13"
+ENV_DIRNAME = ".venv"
 SKILL_NAME = "frontier-run"
 SKILL_ENTRY = Path("skills") / SKILL_NAME / "SKILL.md"
 SKILL_REFERENCES = (
@@ -101,6 +109,25 @@ def _venv_python(venv: Path) -> Path:
     if os.name == "nt":
         return venv / "Scripts" / "python.exe"
     return venv / "bin" / "python"
+
+
+def environment_venv(home: str | Path) -> Path:
+    """The private environment directory inside the data root."""
+    return Path(home).expanduser().resolve() / ENV_DIRNAME
+
+
+def environment_python(home: str | Path) -> Path:
+    """The absolute interpreter path installation records and later reuses."""
+    return _venv_python(environment_venv(home))
+
+
+def repair_command(root: str | Path, home: str | Path) -> str:
+    """The exact command that rebuilds a missing or broken interpreter."""
+    return (
+        f'"{sys.executable or "python"}" -m hostrun.cli '
+        f'--home "{Path(home).expanduser().resolve()}" install toolchain '
+        f'--root "{Path(root).expanduser().resolve()}" --clear'
+    )
 
 
 def normalize_url(url: str) -> str:
@@ -249,6 +276,11 @@ def _recover_partial_clone(root: Path, repo: Path) -> dict | None:
     return {"archived": str(archived)}
 
 
+def _candidate_path(root_path: Path, dirname: str) -> Path:
+    candidate = Path(dirname).expanduser()
+    return (candidate if candidate.is_absolute() else root_path / candidate).resolve()
+
+
 def acquire(
     root: str | Path,
     *,
@@ -258,8 +290,29 @@ def acquire(
     dry_run: bool = False,
     runner=subprocess.run,
 ) -> dict:
-    """Acquire code safely and create the data root; never overwrite user work."""
-    layout = resolve_layout(root, code_dirname=code_dirname, data_dirname=data_dirname)
+    """Acquire code safely and create the data root; never overwrite user work.
+
+    A data root that would sit inside the code checkout is refused before any
+    directory is created, and the refusal carries the reason plus the offending
+    candidate so the caller can report it instead of writing anywhere.
+    """
+    root_path = Path(root).expanduser().resolve()
+    try:
+        layout = resolve_layout(root, code_dirname=code_dirname, data_dirname=data_dirname)
+    except HostRunError as exc:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "ok": False,
+            "dry_run": dry_run,
+            "action": "rejected",
+            "layout_valid": False,
+            "root": str(root_path),
+            "repo": str(_candidate_path(root_path, code_dirname)),
+            "home": str(_candidate_path(root_path, data_dirname)),
+            "code_dirname": code_dirname,
+            "data_dirname": data_dirname,
+            "blocked": str(exc),
+        }
     repo, home = Path(layout["repo"]), Path(layout["home"])
     existing = inspect_checkout(repo, repo_url=repo_url, runner=runner)
     recovered = None
@@ -271,6 +324,7 @@ def acquire(
                 "ok": False,
                 "dry_run": dry_run,
                 "action": "blocked",
+                "layout_valid": True,
                 "root": layout["root"],
                 "repo": layout["repo"],
                 "home": layout["home"],
@@ -329,6 +383,7 @@ def acquire(
         "ok": blocked is None,
         "dry_run": dry_run,
         "action": action,
+        "layout_valid": True,
         "root": layout["root"],
         "repo": layout["repo"],
         "home": layout["home"],
@@ -387,17 +442,21 @@ def _extract_uv(blob: bytes, asset: str, target_dir: Path) -> Path:
     return path
 
 
+def _private_uv_path(home: Path) -> Path:
+    return Path(home).expanduser().resolve() / "bin" / ("uv.exe" if os.name == "nt" else "uv")
+
+
 def install_uv(
-    root: str | Path,
+    home: str | Path,
     *,
     asset: str | None = None,
     fetch=None,
     platform_name: str | None = None,
     machine: str | None = None,
 ) -> dict:
-    """Install uv privately under ``<root>/.frontier/bin`` (no PATH write)."""
+    """Install uv privately under ``<home>/bin`` (no PATH write)."""
     asset = asset or uv_asset(platform_name, machine)
-    target_dir = Path(root).expanduser().resolve() / ".frontier" / "bin"
+    target_dir = Path(home).expanduser().resolve() / "bin"
     url = UV_RELEASE.format(asset=asset)
     if fetch is None:
         import urllib.request
@@ -417,36 +476,79 @@ def install_uv(
 
 
 def ensure_uv(
-    root: str | Path,
+    home: str | Path,
     *,
     uv_path: str | None = None,
+    recorded: str | None = None,
     fetch=None,
     runner=subprocess.run,
     platform_name: str | None = None,
     machine: str | None = None,
 ) -> dict:
-    root_path = Path(root).expanduser().resolve()
-    private = root_path / ".frontier" / "bin"
-    found = resolve_executable(uv_path, private_dirs=[private], names=["uv", "uv.exe"])
-    installed = None
-    if not found["found"]:
-        installed = install_uv(
-            root_path, fetch=fetch, platform_name=platform_name, machine=machine
-        )
-        if not installed["ok"]:
+    """Resolve uv from outside the workspace first, then the data-root private copy.
+
+    Order: explicit ``--uv``, the recorded uv, a read-only PATH lookup, then
+    ``<home>/bin``; only when none is usable is uv downloaded into the data
+    root. A candidate that cannot even answer ``--version`` is skipped, so one
+    stale recorded path cannot mask a working system uv.
+    """
+    home_path = Path(home).expanduser().resolve()
+    private = _private_uv_path(home_path)
+    candidates: list[tuple[str, str]] = []
+    if uv_path:
+        found = resolve_executable(uv_path)
+        if not found["found"]:
             return {
                 "ok": False,
                 "status": "blocked",
-                "note": "未找到 uv，私有安装也失败：" + installed["error"],
-                "evidence": {"source": "missing", "install": installed},
+                "note": f"指定的 uv 不存在：{uv_path}；请给出 uv 可执行文件的绝对路径或省略 --uv",
+                "evidence": {"source": "explicit", "path": str(uv_path)},
             }
-        found = resolve_executable(None, private_dirs=[private], names=["uv", "uv.exe"])
-    version = _run([found["path"], "--version"], runner=runner, timeout=60)
+        candidates.append(("explicit", found["path"]))
+    else:
+        if recorded and Path(recorded).expanduser().is_file():
+            candidates.append(("recorded", str(Path(recorded).expanduser())))
+        system = resolve_executable(None, names=["uv", "uv.exe"])
+        if system["found"]:
+            candidates.append((system["source"], system["path"]))
+    if private.is_file():
+        candidates.append(("private", str(private)))
+
+    for source, path in candidates:
+        version = _run([path, "--version"], runner=runner, timeout=60)
+        if version["ok"]:
+            return {
+                "ok": True,
+                "status": "ok",
+                "path": path,
+                "source": source,
+                "version": version["out"].splitlines()[0] if version["out"] else "",
+                "installed": None,
+            }
+    if uv_path:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "note": f"指定的 uv 无法运行：{uv_path}；请修复该可执行文件或改用系统 uv",
+            "evidence": {"source": "explicit", "path": str(uv_path)},
+        }
+
+    installed = install_uv(
+        home_path, fetch=fetch, platform_name=platform_name, machine=machine
+    )
+    if not installed["ok"]:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "note": "未找到 uv，数据根私有安装也失败：" + installed["error"],
+            "evidence": {"source": "missing", "install": installed},
+        }
+    version = _run([installed["path"], "--version"], runner=runner, timeout=60)
     return {
         "ok": True,
         "status": "ok",
-        "path": found["path"],
-        "source": found["source"],
+        "path": installed["path"],
+        "source": "private",
         "version": version["out"].splitlines()[0] if version["ok"] and version["out"] else "",
         "installed": installed,
     }
@@ -468,37 +570,68 @@ def check_runtime(python_path: str | Path, *, runner=subprocess.run) -> dict:
 
 def ensure_environment(
     repo: str | Path,
+    home: str | Path,
     *,
     uv: str,
     python_version: str = DEFAULT_PYTHON,
     runner=subprocess.run,
     verify=None,
+    clear: bool = False,
+    repair: str = "",
+    expected: str | Path | None = None,
 ) -> dict:
-    """Create or repair ``<repo>/.venv`` with uv, then verify imports."""
+    """Create the private environment in ``<home>/.venv``, then verify imports.
+
+    An environment recorded by an earlier run that no longer passes the import
+    probe — or whose recorded interpreter disappeared — is *not* rebuilt
+    silently: the call returns ``blocked`` with the repair command unless the
+    caller explicitly asked for ``clear=True``.
+    """
     repo = Path(repo)
-    venv = repo / ".venv"
+    home = Path(home).expanduser().resolve()
+    venv = environment_venv(home)
     python = _venv_python(venv)
     verify = verify or (lambda path: check_runtime(path, runner=runner))
     requirements = repo / "requirements.txt"
 
-    existing_ok = python.exists() and verify(python).get("ok")
+    existing_ok = python.is_file() and verify(python).get("ok")
     if existing_ok:
         return {
             "ok": True,
             "status": "ok",
             "python": str(python),
+            "venv": str(venv),
             "uv": str(uv),
             "created": False,
             "repaired": False,
-            "note": "已有私有环境通过依赖自检",
+            "probe": {"ok": True, "error": ""},
+            "note": "已有数据根私有环境通过依赖自检",
         }
 
-    repaired = venv.exists()
-    private = repo.parent / ".frontier"
+    recorded_missing = bool(expected) and Path(expected) == python
+    broken = venv.exists() or python.exists() or recorded_missing
+    if broken and not clear:
+        hint = repair or "以 --clear 重跑 install toolchain"
+        reason = "interpreter_missing" if recorded_missing and not python.exists() else "interpreter_broken"
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": reason,
+            "python": str(python),
+            "venv": str(venv),
+            "uv": str(uv),
+            "created": False,
+            "repaired": False,
+            "probe": {"ok": False, "error": ""},
+            "note": f"数据根私有解释器不可用：{python}；修复：{hint}",
+        }
+
+    ensure_dir(home)
+    repaired = broken
     child_env = {
         **os.environ,
-        "UV_PYTHON_INSTALL_DIR": str(private / "python"),
-        "UV_CACHE_DIR": str(private / "uv-cache"),
+        "UV_PYTHON_INSTALL_DIR": str(home / "python"),
+        "UV_CACHE_DIR": str(home / "uv-cache"),
         "UV_LINK_MODE": "copy",
     }
     create = [str(uv), "venv", "--python", str(python_version), str(venv)]
@@ -511,6 +644,7 @@ def ensure_environment(
             "status": "blocked",
             "note": "创建私有环境失败：" + (_tail(made["err"] or made["out"]) or "uv venv 退出非零"),
             "python": str(python),
+            "venv": str(venv),
             "uv": str(uv),
             "repaired": repaired,
         }
@@ -520,6 +654,7 @@ def ensure_environment(
             "status": "blocked",
             "note": f"缺少依赖声明：{requirements}",
             "python": str(python),
+            "venv": str(venv),
             "uv": str(uv),
         }
     installed = _run(
@@ -543,18 +678,25 @@ def ensure_environment(
             "status": "blocked",
             "note": "安装依赖失败：" + (_tail(installed["err"] or installed["out"]) or "uv pip install 退出非零"),
             "python": str(python),
+            "venv": str(venv),
             "uv": str(uv),
             "repaired": repaired,
         }
     checked = verify(python)
+    ok = bool(checked.get("ok"))
+    note = "" if ok else "依赖装好后仍无法导入 yaml/fitz：" + checked.get("error", "")
+    if not ok and repair:
+        note += f"；修复：{repair}"
     return {
-        "ok": bool(checked.get("ok")),
-        "status": "ok" if checked.get("ok") else "blocked",
+        "ok": ok,
+        "status": "ok" if ok else "blocked",
         "python": str(python),
+        "venv": str(venv),
         "uv": str(uv),
         "created": not repaired,
         "repaired": repaired,
-        "note": "" if checked.get("ok") else "依赖装好后仍无法导入 yaml/fitz：" + checked.get("error", ""),
+        "probe": {"ok": ok, "error": "" if ok else checked.get("error", "")},
+        "note": note,
     }
 
 
@@ -565,35 +707,78 @@ def toolchain(
     python_version: str = DEFAULT_PYTHON,
     fetch=None,
     runner=subprocess.run,
+    clear: bool = False,
 ) -> dict:
-    """Reuse or privately install uv, then create/repair the repo interpreter."""
-    record = load_record(root)
-    if not record.get("repo"):
+    """Resolve uv outside the workspace, then build the data-root environment."""
+    root_path = Path(root).expanduser().resolve()
+    record = load_record(root_path)
+    if not record.get("repo") or not record.get("home"):
         raise HostRunError("先执行 install workspace，工作区尚未记录代码与数据目录")
-    uv = ensure_uv(root, uv_path=uv_path, fetch=fetch, runner=runner)
-    if not uv["ok"]:
-        return {"ok": False, "status": "blocked", "uv": uv, "note": uv["note"]}
-    env = ensure_environment(
-        record["repo"], uv=uv["path"], python_version=python_version, runner=runner
+    repo = Path(record["repo"])
+    home = Path(record["home"])
+    repair = repair_command(root_path, home)
+    uv = ensure_uv(
+        home,
+        uv_path=uv_path,
+        recorded=record.get("uv"),
+        fetch=fetch,
+        runner=runner,
     )
-    result = {"ok": env["ok"], "status": env["status"], "uv": uv, "environment": env}
-    if env["ok"]:
-        save_record(
-            root,
-            {
-                **record,
-                "uv": uv["path"],
-                "uv_source": uv["source"],
-                "uv_version": uv.get("version", ""),
-                "python": env["python"],
-                "python_version": python_version,
-                "environment": {
-                    "created": env.get("created", False),
-                    "repaired": env.get("repaired", False),
-                    "checked_at": now(),
-                },
+    if not uv["ok"]:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "uv": uv,
+            "note": uv["note"],
+            "repair": repair,
+        }
+    env = ensure_environment(
+        repo,
+        home,
+        uv=uv["path"],
+        python_version=python_version,
+        runner=runner,
+        clear=clear,
+        repair=repair,
+        expected=record.get("python"),
+    )
+    result = {
+        "ok": env["ok"],
+        "status": env["status"],
+        "uv": uv,
+        "environment": env,
+        "repair": repair,
+    }
+    if not env["ok"]:
+        result["note"] = env["note"]
+        return result
+    save_record(
+        root_path,
+        {
+            **record,
+            "uv": uv["path"],
+            "uv_source": uv["source"],
+            "uv_version": uv.get("version", ""),
+            "python": env["python"],
+            "python_version": python_version,
+            "venv": env["venv"],
+            "environment": {
+                "created": env.get("created", False),
+                "repaired": env.get("repaired", False),
+                "imports_ok": bool(env.get("probe", {}).get("ok")),
+                "checked_at": now(),
             },
-        )
+        },
+    )
+    update_config(
+        home,
+        paths={
+            "uv": uv["path"],
+            "python": env["python"],
+            "venv": env["venv"],
+        },
+    )
+    result["note"] = env["note"]
     return result
 
 
@@ -707,11 +892,14 @@ def status(root: str | Path) -> dict:
     home = Path(record.get("home") or "")
     python = Path(record.get("python") or "")
     uv = Path(record.get("uv") or "")
+    venv = Path(record.get("venv") or "")
     problems = []
     if not (repo / ".git").exists():
         problems.append(f"代码目录不可用：{repo}")
     if not home.is_dir():
         problems.append(f"数据根不可用：{home}")
+    if venv and not venv.is_dir():
+        problems.append(f"数据根私有环境不可用：{venv}")
     if not python.is_file():
         problems.append(f"解释器不可用：{python}")
     if not uv.is_file():

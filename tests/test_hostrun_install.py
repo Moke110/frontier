@@ -1,11 +1,13 @@
 """Install self-check: honest statuses, resumable state, no credential leakage."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
-from hostrun import install
+from hostrun import cli, install
+from hostrun import workspace as workspace_mod
 from hostrun.base import HostRunError, resolve_executable
 
 
@@ -177,3 +179,81 @@ def test_stale_evidence_flags_old_steps(tmp_path):
     install.save_state(tmp_path, state)
 
     assert "host" in install.stale_evidence(tmp_path, days=7)
+
+
+# -------------------------------------------------- install toolchain step
+def _fake_workspace(tmp_path):
+    root = tmp_path / "ws"
+    repo = root / "frontier"
+    (repo / ".git").mkdir(parents=True)
+    home = root / "frontier-archive"
+    home.mkdir()
+    workspace_mod.save_record(
+        root,
+        {
+            "schema_version": 1,
+            "root": str(root),
+            "repo": str(repo),
+            "home": str(home),
+            "repo_url": workspace_mod.DEFAULT_REPO_URL,
+            "commit": "abc123",
+        },
+    )
+    return root, repo, home
+
+
+def test_toolchain_step_blocks_with_a_repair_command_then_recovers(
+    tmp_path, monkeypatch
+):
+    root, repo, home = _fake_workspace(tmp_path)
+    repair = (
+        f'python -m hostrun.cli --home "{home}" install toolchain '
+        f'--root "{root}" --clear'
+    )
+    blocked = {
+        "ok": False,
+        "status": "blocked",
+        "note": "数据根私有解释器不可用；修复：" + repair,
+    }
+    monkeypatch.setattr(workspace_mod, "toolchain", lambda *a, **k: blocked)
+
+    assert cli.main(["--home", str(home), "install", "toolchain", "--root", str(root)]) == 1
+
+    entry = install.load_state(home)["steps"]["dependencies"]
+    assert entry["status"] == "blocked"
+    assert "--clear" in entry["note"]
+    report = install.report(home)
+    assert [row["step"] for row in report["blocked"]] == ["dependencies"]
+    assert any("--clear" in line for line in report["limitations"])
+
+    python = home / ".venv" / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    ok = {
+        "ok": True,
+        "status": "ok",
+        "note": "",
+        "uv": {"path": "uv"},
+        "environment": {"python": str(python), "probe": {"ok": True}},
+    }
+    monkeypatch.setattr(workspace_mod, "toolchain", lambda *a, **k: ok)
+
+    assert (
+        cli.main(
+            [
+                "--home",
+                str(home),
+                "install",
+                "toolchain",
+                "--root",
+                str(root),
+                "--clear",
+            ]
+        )
+        == 0
+    )
+    assert install.step_status(home)["dependencies"] == "ok"
+    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
+    assert config["paths"]["python"] == str(python)
+    assert config["paths"]["uv"] == "uv"
+
