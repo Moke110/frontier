@@ -16,14 +16,14 @@
 | 文献/要求摄取、卡片校验、用户确认、写入飞书、标准检索、已有库导入 | `hostrun/initialize.py` | `tests/test_hostrun_initialize.py`（11） |
 | 两类任务、小时维护、启用闸门、任务 ID 去重、真实触发证据 | `hostrun/schedules.py`、`hostrun/intents.py` | `tests/test_hostrun_schedules.py`（10） |
 
-本机（2026-10-27）全量离线结果：排除两个依赖 PyMuPDF 的测试文件后 **251 passed, 3 skipped**。`tests/test_initial_build.py` 与 `tests/test_pdf_ingest.py` 本机无法运行：PyMuPDF 未能安装（PyPI 连接中断）。这不等于 PDF 路径已通过。
+本机（2026-10-27）全量离线结果：**265 passed, 3 skipped**（PyMuPDF 2.0 已安装，含 `tests/test_initial_build.py` 与 `tests/test_pdf_ingest.py`）。这是离线 PDF 生成/摄取测试，不等于真实文献库或真实租户已通过。
 
 仍缺的真实证据：
 
 1. 本机没有可用的 `lark-cli`，`lark status`、设施创建、真实推送与反馈尚未真实执行；只有进程边界与离线 Base/Drive 测试。
 2. 两款宿主的**内置调度真实触发**与无人值守权限仍无证据；`schedules trigger` 只接受运行日志中的 `scheduled=true` 记录，手动调用不计。
 3. 真实飞书展示、评分、采纳写入、消息撤回和清理读回需要目标租户与用户操作。
-4. 真实 PDF 摄取需安装 PyMuPDF 后重跑。
+4. 真实文献库的 PDF 摄取、原文登记与卡片证据核对仍需在目标环境执行；离线 PDF 测试只证明本地摄取链。
 
 因此 #42–#48 的代码与离线验收标准已满足；#49/#50 保持开放，直到真实宿主与飞书证据齐全。
 
