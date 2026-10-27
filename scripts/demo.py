@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Offline end-to-end demo: six modules, file contracts only.
+"""Offline end-to-end demo: the current pipeline, file contracts only.
 
-  checkpoint -> frontier.plan -> retriever(fixture) -> editor.fit/rank
-  -> writer.write -> archive.add-push -> publisher.send(dry-run)
-  -> rating event -> approval card -> approval event -> archive.apply-decisions
+  checkpoint -> frontier.plan -> retriever(fixture) -> editor.rank
+  -> writer task/check -> archive.add-push -> publisher.send(dry-run)
+  -> rating card event -> unified queue -> 逐题同意 -> archive.apply_group
+
+A template push has no seven sections, so the demo renders a minimal HTML
+instead of calling writer render; the real seven-section HTML is written by the
+host agent. Nothing is applied to the knowledge base before an explicit
+agreement, which is exactly what step 10 shows.
 
 Runs in a throwaway $KL_HOME; never touches the real data root.
 """
@@ -146,11 +151,29 @@ def main() -> int:
     step("8. publisher: 发评分卡（dry-run，不发网络请求）")
     push_path = home / "outbox" / "pushes" / f"{chosen['push_id']}.json"
     html_path = home / "outbox" / f"{chosen['push_id']}.html"
-    run(
-        [PY, "-m", "writer.cli", "render", "--push", str(push_path),
-         "--format", "html", "--out", str(html_path)],
-        env,
+    required_sections = ("takeaway", "background", "methods", "results", "why", "limits", "sources")
+    sections = chosen.get("sections") or {}
+    complete = all(str(sections.get(name) or "").strip() for name in required_sections) and "<figure" in str(
+        chosen.get("body_html") or ""
     )
+    if complete:
+        run(
+            [PY, "-m", "writer.cli", "render", "--push", str(push_path),
+             "--format", "html", "--out", str(html_path)],
+            env,
+        )
+    else:
+        # 模板 fallback 只产出 body_md，没有七段 sections，render 会（也应该）拒绝。
+        # 真实流程里七段 HTML 由宿主 agent 亲自写；这里给一个最小自包含 HTML 交差。
+        print("（该推送来自模板 fallback，无 sections；跳过 render，用最小 HTML 代替）")
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        html_path.write_text(
+            "<!doctype html><meta charset=\"utf-8\"><title>{}</title>"
+            "<article><pre>{}</pre></article>".format(
+                chosen["push_id"], chosen.get("body_md", "").replace("&", "&amp;").replace("<", "&lt;")
+            ),
+            encoding="utf-8",
+        )
     send = run(
         [
             PY, "-m", "publisher.cli", "send", "--push", str(push_path),
@@ -162,9 +185,9 @@ def main() -> int:
 
     step("9. publisher: 模拟点击「质量优秀」+ 评语")
     rating_event = {
-        "message_id": send["message_id"],
+        "message_id": send["rating_message_id"],
         "action_name": "score_high",
-        "form_value": json.dumps({"comment": "接上了之前的 HMBS 线索，PDF 预览也清楚"}, ensure_ascii=False),
+        "form_value": json.dumps({"comment": "接上了之前的 HMBS 线索，HTML 预览也清楚"}, ensure_ascii=False),
         "operator_id": "ou_demo",
         "token": "",
     }
@@ -172,50 +195,21 @@ def main() -> int:
     events.write_text(json.dumps(rating_event, ensure_ascii=False) + "\n", encoding="utf-8")
     run([PY, "-m", "publisher.cli", "ingest", "--events", str(events), "--offline"], env)
 
-    step("10. publisher: 生成审批卡，模拟点击「同意」")
-    messages = [
-        json.loads(line)
-        for line in (home / "publisher" / "messages.jsonl").read_text().splitlines()
-        if line.strip()
-    ]
-    approval_id = [m for m in messages if m["kind"] == "approval"][-1]["message_id"]
-    approval_event = {
-        "message_id": approval_id,
-        "action_name": "approve",
-        "form_value": "{}",
-        "operator_id": "ou_demo",
-        "token": "",
-    }
-    approval_path = home / "approval.ndjson"
-    approval_path.write_text(json.dumps(approval_event, ensure_ascii=False) + "\n", encoding="utf-8")
-    run([PY, "-m", "publisher.cli", "ingest", "--events", str(approval_path), "--offline"], env)
+    step("10. queue: 评分之后的统一队列")
+    queue_state = run([PY, "-m", "question_queue.cli", "status"], env, quiet=True)
+    answered = [r for r in queue_state["items"] if r["status"] == "answered"]
+    print(f"题目总数 {len(queue_state['items'])}，已答 {len(answered)}，"
+          f"当前活动题 {queue_state.get('active_id')}")
 
-    step("11. archive: 应用已同意的更新")
-    run(
-        [
-            PY, "-m", "archive.cli", "apply-decisions",
-            "--pending-dir", str(home / "publisher" / "pending"),
-            "--decisions", str(home / "publisher" / "decisions.jsonl"),
-        ],
-        env,
-    )
+    active = queue_state.get("active_id")
+    if active:
+        # 只有显式的「同意」才会写知识库；这里是逐题确认，不是审批卡批量通过
+        run([PY, "-m", "question_queue.cli", "answer", "--item", active, "--decision", "agree_all"], env)
+        after = run([PY, "-m", "question_queue.cli", "status"], env, quiet=True)
+        print(f"同意后：已答 {len([r for r in after['items'] if r['status'] == 'answered'])} 题，"
+              f"剩余活动题 {after.get('active_id')}")
 
-    step("12. 反哺：评分 -> frontier 权重 -> editor 偏好")
-    run(
-        [PY, "-m", "frontier.cli", "record", "--checkpoint", chosen["checkpoint_id"], "--verdict", "great", "--pushed"],
-        env,
-    )
-    run([PY, "-m", "editor.cli", "fit"], env)
-    rerank = run(
-        [
-            PY, "-m", "editor.cli", "rank", "--candidates", str(home / "candidates.jsonl"),
-            "--date", "2026-10-20", "--limit", "4", "--per-checkpoint", "2",
-            "--out", str(home / "selection_after.json"),
-        ],
-        env,
-    )
-
-    step("13. 结果")
+    step("11. 结果")
     prop = json.loads(
         subprocess.run(
             [PY, "-m", "archive.cli", "prop-get", "prop_hmbs_aip"],
@@ -228,16 +222,19 @@ def main() -> int:
             cwd=ROOT, env=env, capture_output=True, text=True,
         ).stdout
     )
-    print(f"命题 prop_hmbs_aip 历史条数：{len(prop['history'])} -> {[e.get('paper_id') for h in prop['history'] for e in h.get('evidence', [])]}")
+    evidence = prop.get("evidence") or []
+    print(f"命题 prop_hmbs_aip 证据条数：{len(evidence)} -> {[e.get('id') for e in evidence]}")
     print(f"知识卡 card_hmbs ontology：{node['ontology']}")
     print(f"知识卡片数：{len(list((home / 'archive' / 'cards').glob('*.json')))}")
     print(f"命题数：{len(list((home / 'archive' / 'propositions').glob('*.json')))}")
-    print(f"评分：{(home / 'ratings.jsonl').read_text().strip()}")
-    print(f"排序前 3：{[s['paper_id'] for s in rerank.get('scores', [])]}")
+    ratings = home / "ratings.jsonl"
+    print(f"评分记录：{ratings.read_text().strip() if ratings.exists() else '（无）'}")
     print(f"\n全部产物在 {home}")
     print("可单独重跑任一模块，例如：")
-    print(f"  KL_HOME={home} python -m frontier.cli show")
+    print(f"  python -m question_queue.cli --home {home} status")
     return 0
+
+
 
 
 if __name__ == "__main__":

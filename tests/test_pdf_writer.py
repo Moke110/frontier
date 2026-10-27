@@ -1,5 +1,8 @@
+import importlib.util
 import json
 from pathlib import Path
+
+import pytest
 
 from writer.figures import fetch_for_paper
 from writer.render import inspect, render_push
@@ -94,6 +97,13 @@ def test_pdf_push_rejects_script(tmp_path):
     assert any("forbidden tag" in e for e in errors)
 
 
+HAS_WEASYPRINT = importlib.util.find_spec("weasyprint") is not None
+
+
+@pytest.mark.skipif(
+    not HAS_WEASYPRINT,
+    reason="legacy PDF rendering needs WeasyPrint (optional; the push format is HTML)",
+)
 def test_render_produces_pdf(tmp_path):
     path = _push(tmp_path)
     result = render_push(path)

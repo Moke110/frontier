@@ -1,3 +1,4 @@
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -19,3 +20,56 @@ def kl_home(tmp_path):
 @pytest.fixture
 def fixtures_dir():
     return ROOT / "fixtures" / "papers"
+
+
+@pytest.fixture
+def offline_home(tmp_path):
+    """A private data root with no Bitable configured yet."""
+    home = tmp_path / "home"
+    (home / "knowledge").mkdir(parents=True)
+    return home
+
+
+def configure_base(home: Path, token: str = "basetest0001") -> Path:
+    """Point a home at a (fake) Base; tests never reach a live tenant."""
+    path = Path(home) / "knowledge" / "base.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "base_token": token,
+                "base_url": f"https://example.feishu.cn/base/{token}",
+                "tables": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def configured_home(offline_home):
+    """A home already pointing at a Base (feedback/library tests start here)."""
+    configure_base(offline_home)
+    return offline_home
+
+
+@pytest.fixture
+def offline_base(offline_home):
+    from library.offline import JsonBase
+
+    return JsonBase(offline_home / "library" / "offline-base.json")
+
+
+def seed_queue(home: Path, items: list[dict]) -> None:
+    """Write queue state directly: tests describe the queue, not its history."""
+    root = Path(home) / "queue"
+    root.mkdir(parents=True, exist_ok=True)
+    active = next((row["id"] for row in items if row.get("status") == "active"), None)
+    (root / "state.json").write_text(
+        json.dumps({"schema_version": 1, "active_id": active, "items": items}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (root / "events.jsonl").touch()

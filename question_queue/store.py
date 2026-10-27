@@ -33,6 +33,7 @@ PROP_OPS = {
 MAX_TARGETS = 2
 REVIEW_EVERY = 10
 REVIEW_KIND = "proposition_review"
+CORRECTION_KIND = "correction"
 LEASE_MINUTES = 10
 _ID_RE = re.compile(r"[^a-z0-9_]+")
 
@@ -512,6 +513,127 @@ class QueueStore:
         if status:
             rows = [r for r in rows if r.get("status") == status]
         return rows
+
+    # ----------------------------------------------------------- corrections
+    def enqueue_correction(
+        self,
+        *,
+        correction_id: str,
+        target_type: str,
+        target_id: str | None,
+        target_label: str,
+        reason: str,
+        proposals: list[dict] | None = None,
+        card_id: str | None = None,
+    ) -> dict:
+        """A correction request enters the same serial queue as any other question.
+
+        It starts not-ready: the host agent writes the corrected proposals first,
+        then ``mark_correction_ready`` makes it askable. Nothing is applied by
+        merely requesting a correction.
+        """
+        item_id = f"q_fix_{_safe(correction_id)}"
+        with self.locked():
+            state = self.load()
+            existing = next((r for r in state["items"] if r["id"] == item_id), None)
+            if existing:
+                return {"ok": True, "deduped": True, "item": existing}
+            item = {
+                "id": item_id,
+                "kind": CORRECTION_KIND,
+                "push_id": None,
+                "card_id": card_id,
+                "status": "pending",
+                "created_at": now(),
+                "sent_at": None,
+                "answered_at": None,
+                "message_id": None,
+                "attempts": 0,
+                "answer": None,
+                "payload": {
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "target_label": target_label,
+                    "correction_id": correction_id,
+                    "reason": reason,
+                    "proposal_ids": [p.get("proposal_id") for p in proposals or []],
+                    "proposals": proposals or [],
+                    "ready": bool(proposals),
+                },
+            }
+            state["items"].append(item)
+            if not state.get("active_id"):
+                self._activate(state)
+            self._save(state)
+            self.event("correction_enqueued", item_id=item_id, correction_id=correction_id)
+            return {"ok": True, "item": item, "active": state.get("active_id")}
+
+    def mark_correction_ready(self, item_id: str, proposals: list[dict]) -> dict:
+        with self.locked():
+            state = self.load()
+            item = next((r for r in state["items"] if r["id"] == item_id), None)
+            if not item:
+                raise QueueError(f"unknown queue item: {item_id}")
+            if item.get("kind") != CORRECTION_KIND:
+                raise QueueError(f"{item_id} is not a correction item")
+            item.setdefault("payload", {})
+            item["payload"]["proposals"] = proposals
+            item["payload"]["proposal_ids"] = [
+                p.get("proposal_id") for p in proposals if p.get("proposal_id")
+            ]
+            item["payload"]["ready"] = True
+            if not state.get("active_id"):
+                self._activate(state)
+            self._save(state)
+            self.event("correction_ready", item_id=item_id, proposal_ids=item["payload"]["proposal_ids"])
+            return item
+
+    def correction_items(self, status: str | None = None) -> list[dict]:
+        rows = [r for r in self.load()["items"] if r.get("kind") == CORRECTION_KIND]
+        if status:
+            rows = [r for r in rows if r.get("status") == status]
+        return rows
+
+    # ------------------------------------------------------------- recovery
+    def adopt(self, incoming: list[dict], *, keep_terminal: bool = True) -> dict:
+        """Merge items rebuilt from persistent records into the local queue.
+
+        Used after a machine switch: ids, statuses and proposal snapshots come
+        from Feishu, so a rebuilt queue is the same queue. Terminal local items
+        are never reopened — that is what stops a processed decision from being
+        applied twice.
+        """
+        with self.locked():
+            state = self.load()
+            local = {row["id"]: row for row in state["items"]}
+            rebuilt = kept = 0
+            for item in incoming:
+                current = local.get(item["id"])
+                if current is None:
+                    local[item["id"]] = item
+                    rebuilt += 1
+                    continue
+                if keep_terminal and current.get("status") in TERMINAL:
+                    kept += 1
+                    continue
+                local[item["id"]] = {
+                    **item,
+                    "created_at": current.get("created_at") or item.get("created_at"),
+                }
+                kept += 1
+            state["items"] = list(local.values())
+            if not any(row["id"] == state.get("active_id") for row in state["items"]):
+                state["active_id"] = None
+            if not state.get("active_id"):
+                self._activate(state)
+            self._save(state)
+            self.event("adopted", rebuilt=rebuilt, kept=kept)
+            return {
+                "rebuilt": rebuilt,
+                "kept": kept,
+                "items": len(state["items"]),
+                "active": state.get("active_id"),
+            }
 
     def _record_decision(self, item: dict, decision: str, path: Path | None) -> None:
         target = Path(path or self.home / "publisher" / "decisions.jsonl")

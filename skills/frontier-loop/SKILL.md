@@ -24,20 +24,21 @@ metadata:
 
 ## 1. 前置条件与数据根
 
-1. 已安装支持 skills 的 agent（opencode / Claude Code / Codex / Cursor）。
-2. `lark-cli` 已登录，飞书应用已订阅 `card.action.trigger`。
-3. 仓库已软链到 agent 的 skills 目录（读到这段即已接入）。
+1. 宿主 agent（WorkBuddy / ChatGPT 桌面端本地会话，或任意能跑本地命令的 agent）已安装本仓库；**不需要软链到系统目录**。
+2. `lark-cli` 装在私有目录并已登录；登录状态由 `hostrun install` 的 `identity` 步骤验证，不靠 `command -v` 猜。
+3. 运行方式是「宿主唤醒 → 一次有界运行 → 退出」；不装常驻监听、不装 systemd、不写持久环境变量。
 
-所有命令在**本仓库根**执行：
+所有命令在**本仓库根**执行，数据根用 `--home` 显式给出（默认 `~/knowledge-loop`）：
 
 ```bash
-export KL_HOME="${KL_HOME:-$HOME/knowledge-loop}"
+python -m hostrun.cli --home "$HOME/knowledge-loop" install status
+python -m hostrun.cli --home "$HOME/knowledge-loop" status
 ```
 
 ```bash
-command -v lark-cli && lark-cli auth status --json
-python3 -c "import yaml, weasyprint"
-python3 -m pytest -q
+lark-cli auth status --json
+python -c "import yaml"
+python -m pytest -q
 ```
 
 ## 2. 领域模型

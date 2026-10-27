@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 
 import pytest
@@ -282,6 +283,10 @@ def test_timeout_logs_the_agent_tail(kl_home):
     assert QueueStore(kl_home).status()["request"] is not None
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="process groups (getpgid/killpg) are POSIX-only; Windows uses taskkill",
+)
 def test_run_agent_kills_process_group_on_timeout(monkeypatch, tmp_path):
     import signal
 

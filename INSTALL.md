@@ -1,246 +1,134 @@
-# 安装 frontier（由你的 agent 执行）
+# 安装 frontier（Windows 原生，由宿主 agent 执行）
 
-把下面这段发给你的 agent（opencode / Claude Code / Codex / Cursor / 其他）：
+frontier 不再是一个要开机自启的后台服务，而是**由你正在用的宿主 agent 在本机按需执行**的一组命令。你在 WorkBuddy 或 ChatGPT 桌面端的本地会话里贴一段 prompt，agent 会自己完成安装、接入知识库、配置宿主的定时任务，并在之后每次被唤醒时执行一次有界运行。
 
-> 请安装 frontier。先从 https://github.com/Moke110/frontier 获取代码，克隆到 `~/frontier`，然后严格按仓库里的 `INSTALL.md` 执行：检查 `lark-cli` 是否已安装并登录，把仓库接入当前 agent 的 skills 目录，初始化数据，最后做一次验证。任何一步失败就停下来告诉我原因，不要跳过检查。
+- 不需要 WSL。
+- 不需要 systemd、systemd timer、Windows 任务计划或任何常驻进程。
+- 不需要写持久环境变量、PATH 或注册表。
+- 数据根默认 `~/knowledge-loop`，可用 `--home` 指定（中文与含空格路径均支持）。
 
-> **Windows 原生环境（非 WSL）不要照本文件走**，见 [`WINDOWS-TRANSFER.md`](WINDOWS-TRANSFER.md)：systemd 单元、`fc-list`、WeasyPrint 依赖都不适用。
+> 旧的 WSL + systemd 安装方式已归档到 [`docs/legacy/2026-10-systemd-install.md`](docs/legacy/2026-10-systemd-install.md)。如果你机器上还留着旧的 `frontier-*` 单元，见本文末「清理旧安装」。
 
----
+## 1. 支持的宿主与验证状态
 
-## 给 agent 的执行步骤
+| 宿主 | 形态 | 状态 |
+|---|---|---|
+| WorkBuddy（Windows 桌面端） | 本地会话 + 内置自动化 | 本机已实测命令行、项目目录、技能与本地 Python 执行；**内置调度的真实触发与无人值守权限仍待实测**，见 [`docs/acceptance/2026-10-27-host-matrix.md`](docs/acceptance/2026-10-27-host-matrix.md) |
+| ChatGPT（Windows 桌面端本地模式） | 本地会话 + 计划任务 | **未实测**，只有安装脚本与说明，不作为「已通过」宣称 |
+| Linux / macOS 终端 | 直接跑 CLI | 命令行链路可用（与宿主无关的部分由测试覆盖） |
 
-### 0. 原则
+判断标准只有一条：`python -m hostrun.cli install report` 里标为 `working` 的项才算通过；`blocked` 是缺能力，`untested` 是没测过。**模拟与离线测试不代替宿主实测。**
 
-- **先检查，后写入。** 任一前置条件不满足就停止，不要“先装再说”。
-- **不覆盖用户数据。** 目标目录、`data/`、skills 目录里已有内容时，先询问。
-- **不打印密钥。** `lark-cli auth status --json` 的输出里可能带 token，只汇报身份与状态。
+## 2. 前置条件
 
-### 1. 确认 Lark CLI 已安装并登录
-
-```bash
-command -v lark-cli
-lark-cli auth status --json
-```
-
-判断标准：
-
-- `command -v lark-cli` 有输出（不在 PATH 就停止，让用户先安装）；
-- JSON 中 `identities.user.available == true`，且 `identities.user.tokenStatus == "valid"`；
-- `identities.bot.available == true`（卡片推送走 bot 身份）。
-
-如果已安装但未登录：运行 `lark-cli auth login`，让用户在飞书里完成授权，**等状态变为 ready 再继续**。不要伪造成功。
-
-检查两个事件订阅（缺一个都会让对应功能失效）：
-
-```bash
-# 评分卡按钮回调
-lark-cli event consume card.action.trigger --as bot --timeout 3s
-
-# 手动补推关键词（「再推一篇」）
-lark-cli event consume im.message.receive_v1 --as bot --timeout 3s
-```
-
-看到 `ready event_key=...` 即已订阅；看到 `failed_precondition` 就提醒用户去开发者后台订阅对应事件（WebSocket，无需公网 URL）。
-
-### 2. 检查运行环境
-
-```bash
-git --version
-python3 --version              # 需要 >= 3.11
-python3 -c "import yaml"       # 需要 PyYAML
-python3 -c "import weasyprint" # 可选：仅 legacy PDF 推送需要（默认 HTML 不需要）
-fc-list :lang=zh | head -1     # 至少一种中文字体（仅 PDF 渲染需要）
-```
-
-缺 PyYAML 时先问用户是否允许安装（`pip install pyyaml`），不要擅自改系统环境。WeasyPrint 与中文字体只服务 `writer render --format pdf`；默认推送是自包含 HTML，不装也能跑完整流程。
-
-### 3. 从 GitHub 获取代码与技能文档
-
-默认目录 `~/frontier`：
-
-```bash
-# 不存在
-git clone https://github.com/Moke110/frontier.git ~/frontier
-
-# 已存在且是 frontier 仓库
-git -C ~/frontier pull --ff-only
-```
-
-如果 `~/frontier` 已存在但不是这个仓库，停止并询问用户换目录。
-
-确认这些文件存在：
-
-```bash
-ls ~/frontier/SKILL.md ~/frontier/contracts/README.md ~/frontier/archive/cli.py
-```
-
-`SKILL.md` 是接入后 agent 使用的技能说明；`contracts/` 是模块间文件契约。
-
-### 4. 接入当前 agent
-
-先确认你自己是哪种 agent，再选对应目录：
-
-| 当前 agent | skills 目录 |
+| 需要 | 说明 |
 |---|---|
-| opencode | `~/.config/opencode/skills` |
-| Claude Code | `~/.claude/skills` |
-| Codex | `~/.codex/skills` |
-| Cursor | `~/.cursor/skills` |
-| 其他 / 不确定 | `~/.agents/skills` |
+| Python ≥ 3.11 | 用宿主能找到的私有解释器；`install check` 会记录路径与版本 |
+| PyYAML | `python -m pip install pyyaml` |
+| 仓库副本 | 放在任意本地目录即可，安装步骤只读它，不软链到系统目录 |
+| 飞书 CLI（`lark-cli`） | 装到**私有目录**（如 `<home>/bin`），登录/授权由你本人完成 |
+| 飞书知识库 | 一个 Base：新建空库，或已有库的链接 |
 
-创建软链（推荐，`git pull` 后自动更新）：
+`lark-cli` 由显式路径解析：先看 `install/config.json` 的 `paths.lark_cli`，再看 `<home>/bin`，最后才做一次只读的 PATH 查找。**「找到可执行文件」不等于「已登录」**——登录状态是 `identity` 这一步单独验证的。
 
-```bash
-SKILLS_DIR="$HOME/.config/opencode/skills"   # 按上表替换
-mkdir -p "$SKILLS_DIR"
+## 3. 把这段 prompt 发给宿主 agent
 
-for name in frontier frontier-loop; do
-  target="$HOME/frontier"
-  [ "$name" = "frontier-loop" ] && target="$HOME/frontier/skills/frontier-loop"
-  if [ -L "$SKILLS_DIR/$name" ]; then
-    echo "already linked: $name -> $(readlink "$SKILLS_DIR/$name")"
-  elif [ -e "$SKILLS_DIR/$name" ]; then
-    echo "STOP: $SKILLS_DIR/$name 已存在且不是软链，请询问用户"
-  else
-    ln -s "$target" "$SKILLS_DIR/$name"
-  fi
-done
+```
+在当前项目里完成 frontier 的安装与接入，只做这些事，不要装服务或系统定时任务：
+
+1. python -m hostrun.cli install check --repo . --host-product <你的产品名> --host-version <版本号> \
+     --host-local-execution --host-schedules --permissions "shell,file_write"
+   —— 只声明你实际验证过的能力；没验证的不要加参数，状态留 pending/untested。
+2. 把 install report 的 blocked 项逐条告诉我，需要我做的登录/授权停下来问我。
+3. 知识库二选一：
+   新建空库：python -m hostrun.cli kb create --link <空 Base 链接>（建表后 verify --expect-empty 必须为 ok）
+   接入已有库：python -m hostrun.cli kb attach --link <Base 链接>，把 missing 表清单给我确认后再 create-tables
+4. 初始主题先给我看草案，我说确认后再：
+   python -m hostrun.cli kb initial-confirm --themes <themes.json> --yes
+5. 用 python -m hostrun.cli schedules plan 告诉我每日检索 / 每小时反馈 / 每日维护的时间，
+   我确认时区与启用后再 schedules confirm --yes，并由你在宿主里真正创建这三个任务。
+6. 最后跑一次 python -m hostrun.cli run --intent feedback，把结果贴给我。
 ```
 
-`frontier` 是入口（转发到 `skills/frontier-loop/SKILL.md`）；`frontier-loop` 是完整流程 skill，两者都需要接入。
+agent 会把每一步的状态写进 `<home>/install/state.json`，**中断后重跑会续接**，不会重复建表、不会覆盖已验证的组件。
 
-若所选 agent 不支持软链，改为复制（并告诉用户以后更新要重新复制）：
+## 4. 装完之后：日常是怎么跑的
 
-```bash
-cp -R "$HOME/frontier" "$SKILLS_DIR/frontier"
-cp -R "$HOME/frontier/skills/frontier-loop" "$SKILLS_DIR/frontier-loop"
-```
+宿主按三个意图唤醒 agent，每个意图都是「做完就退出」：
 
-### 5. 初始化数据（可选，但推荐）
-
-数据根默认 `~/knowledge-loop`（与代码仓库分离）。如果目录为空，复制 fixtures 作为起点：
-
-```bash
-export KL_HOME="${KL_HOME:-$HOME/knowledge-loop}"
-mkdir -p "$KL_HOME"
-if [ -z "$(ls -A "$KL_HOME" 2>/dev/null)" ]; then
-  cp -R "$HOME/frontier/fixtures/home/." "$KL_HOME/"
-fi
-```
-
-**已有数据时不要覆盖**；先问用户用哪个数据根。之后 agent 执行技能时都需要设置 `KL_HOME`。
-
-### 5.5 常驻手动补推（可选，但推荐）
-
-需要 systemd user 会话（WSL 默认已开启）。先拿到用户在飞书的 open_id：
+| 意图 | 频率 | 做什么 | 不做 |
+|---|---|---|---|
+| `daily` | 每天一次 | 先处理反馈，再做一次维护（若今天没做过），然后请求并开始**一篇**推送 | 不并发多篇 |
+| `feedback` | 每小时 | 只处理已提交的答案与未完成的题 | **不创建**检索请求 |
+| `maintenance` | 每天至多一次 | 原文库/推送库对账 + 配额检查 | 不删除、不检索 |
 
 ```bash
-OWNER=$(lark-cli auth list --json | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['userOpenId'])")
-mkdir -p "$HOME/.config/frontier" "$HOME/.config/systemd/user"
-printf 'FRONTIER_OWNER_ID=%s\n' "$OWNER" > "$HOME/.config/frontier/env"
-
-sed "s|__PYTHON__|$(command -v python3)|" \
-  "$HOME/frontier/deploy/frontier-listener.service.in" \
-  > "$HOME/.config/systemd/user/frontier-listener.service"
-sed "s|__PYTHON__|$(command -v python3)|" \
-  "$HOME/frontier/deploy/frontier-rating-listener.service.in" \
-  > "$HOME/.config/systemd/user/frontier-rating-listener.service"
-sed "s|__PYTHON__|$(command -v python3)|" \
-  "$HOME/frontier/deploy/frontier-daily.service.in" \
-  > "$HOME/.config/systemd/user/frontier-daily.service"
-cp "$HOME/frontier/deploy/frontier-daily.timer.in" \
-  "$HOME/.config/systemd/user/frontier-daily.timer"
-sed "s|__PYTHON__|$(command -v python3)|" \
-  "$HOME/frontier/deploy/frontier-retry.service.in" \
-  > "$HOME/.config/systemd/user/frontier-retry.service"
-cp "$HOME/frontier/deploy/frontier-retry.timer.in" \
-  "$HOME/.config/systemd/user/frontier-retry.timer"
-sed "s|__PYTHON__|$(command -v python3)|" \
-  "$HOME/frontier/deploy/frontier-sync.service.in" \
-  > "$HOME/.config/systemd/user/frontier-sync.service"
-cp "$HOME/frontier/deploy/frontier-sync.timer.in" \
-  "$HOME/.config/systemd/user/frontier-sync.timer"
-sed "s|__PYTHON__|$(command -v python3)|" \
-  "$HOME/frontier/deploy/frontier-library.service.in" \
-  > "$HOME/.config/systemd/user/frontier-library.service"
-cp "$HOME/frontier/deploy/frontier-library.timer.in" \
-  "$HOME/.config/systemd/user/frontier-library.timer"
-
-systemctl --user daemon-reload
-systemctl --user enable --now frontier-listener frontier-rating-listener
-systemctl --user enable --now frontier-daily.timer frontier-retry.timer frontier-sync.timer frontier-library.timer
-systemctl --user is-active frontier-listener frontier-rating-listener   # 都应输出 active
-systemctl --user list-timers frontier-daily.timer                       # 下一次 08:00
+python -m hostrun.cli run --intent daily           # 宿主每日任务调用
+python -m hostrun.cli run --intent feedback        # 宿主每小时任务调用
+python -m hostrun.cli run --intent daily --finish ok   # 链路做完后回报结果
+python -m hostrun.cli status                       # 一个只读快照
 ```
 
-三个服务/定时器缺一不可：
+错过就错过：宿主机没开机、客户端没运行，这一次运行就**不发生**，不会补跑出一串积压；错过的每日请求会合并成一次。
 
-- `frontier-listener`：收 `im.message.receive_v1`（手动补推关键词）；
-- `frontier-rating-listener`：收 `card.action.trigger`（评分/更新题按钮）。没有它，点击不会推进队列；
-- `frontier-daily.timer`：每天 08:00 Asia/Shanghai 调 `trigger.cli scheduled`。队列非空时只合并待推请求；队列清空后由评分回调自动拉起 `run-request`。
-- `frontier-sync.timer`：每 10 分钟 `knowledge.cli pull → sync → compare`；没有 `knowledge/base.json` 时跳过镜像。
-- `frontier-library.timer`：每天 03:30 对账云盘与 Base、检查配额，并把提醒发成 owner 私聊文本。
-- `frontier-retry.timer`：每 2 分钟调一次 `trigger.cli run-request --quiet`，作为 lease 过期后的兜底；没有待推请求、队列未清空、租约仍有效或 job lock 被占时立即退出（不写日志、不告警）。
-
-没有 systemd 时，用 tmux 常驻：
+### 反馈闭环
 
 ```bash
-tmux new -d -s frontier \
-  "cd $HOME/frontier && KL_HOME=$HOME/knowledge-loop FRONTIER_OWNER_ID=$OWNER python3 -m trigger.cli listen"
+python -m hostrun.cli feedback setup     # 建「问题 / 反馈 / 更正」三表（幂等）
+python -m hostrun.cli feedback sync      # 把本地队列镜像到飞书
+python -m hostrun.cli feedback status    # 只读：多少待处理
+python -m hostrun.cli feedback process   # 应用已提交的答案（只处理当前活动题）
+python -m hostrun.cli feedback submit --item q_01 --verdict great      # 显式提交
+python -m hostrun.cli feedback submit --item q_03 --decision agree_all # 显式采纳
+python -m hostrun.cli feedback correct --item q_03 --reason "机制写错了" # 更正请求，只入队
 ```
 
-手动补推只接受 owner 的私聊关键词：`再推一篇` / `下一篇` / `next` / `more`，可跟知识卡片 id（如 `再推一篇 card_hmbs`）。
+规则：**提交是边界**——不 submit 就不处理；只处理当前活动题；只有 `agree_all` / `adopt` 才写入知识；更正只生成新问题，不直接改数据。
 
-### 6. 验证
+### 换机器 / 恢复
 
 ```bash
-cd "$HOME/frontier"
-python3 -m pytest -q                          # 应全部通过（当前 18 个）
-KL_HOME="$HOME/knowledge-loop" python3 -m frontier.cli validate
-KL_HOME="$HOME/knowledge-loop" python3 -m frontier.cli plan --out /tmp/frontier-plan.json
+python -m hostrun.cli executor status                                  # 现在谁在驱动
+python -m hostrun.cli executor handover --to <新宿主> --from <旧宿主>   # 旧端还活着会被拒绝
+python -m hostrun.cli executor handover --to <新宿主> --force           # 确认旧端已停用后再强制
+python -m hostrun.cli feedback rebuild                                 # 从飞书重建本地队列
 ```
 
-`validate` 应返回 `ok: true`；`plan` 应生成包含 arXiv 与 Europe PMC 查询的 JSON（不联网）。
+同一时刻只有一个执行端。租约是时间租约（不是进程号），所以另一台机器上的 pid 不会被误判。重建只恢复未完成的题，**已处理的决定不会被再次应用**。
 
-### 7. 汇报给用户
+## 5. 权限、在线条件与无人值守
 
-输出并让用户确认：
+- 需要授予的能力：跑本地命令、读写项目目录、调用飞书 CLI。**不需要**全局网络代理、不需要管理员权限、不需要开机自启。
+- 自动运行只使用你**已授予**的范围。如果宿主的权限模型无法把范围限制到这几项，安装报告会把该步骤标为 `blocked` 并说明原因——**不要用「完全访问」绕过**。
+- 电脑需开机、客户端需运行且已登录；否则该次运行不发生（这是设计，不是故障）。
+- 凭据只留在 `lark-cli` 自己的机制里；`install report` 与所有状态文件都不含 token（`token` / `secret` / `password` / `cookie` / `key` 字段一律写 `***`）。
 
-- 仓库路径：`~/frontier`
-- 技能目录：例如 `~/.config/opencode/skills/frontier`
-- 数据根：`KL_HOME=...`
-- Lark 登录身份：user / bot 是否 ready
-- 手动补推监听：`frontier-listener` 是否 active
-- 评分/更新题监听：`frontier-rating-listener` 是否 active
-- 每日定时：`frontier-daily.timer` 是否 active，下一次 08:00
-- 验证结果：测试通过数、`validate` 是否 ok
-- 下一步：**重启 agent**，然后说「跑一下 frontier 的今日循环」；或在飞书私聊发「再推一篇」
-
-### 8. 卸载（用户要求时）
+## 6. 暂停、切换与清理
 
 ```bash
-systemctl --user disable --now frontier-listener frontier-rating-listener frontier-daily.timer 2>/dev/null || true
-rm -f "$HOME/.config/systemd/user/frontier-listener.service" \
-      "$HOME/.config/systemd/user/frontier-rating-listener.service" \
-      "$HOME/.config/systemd/user/frontier-daily.service" \
-      "$HOME/.config/systemd/user/frontier-daily.timer"
-systemctl --user daemon-reload
-rm "$HOME/.config/opencode/skills/frontier"   # 只删软链
-# 数据在 ~/knowledge-loop，默认保留；删除前必须再确认
+# 暂停：在宿主里停用（或禁用）那三个任务即可；不需要动任何文件
+# 换机：先在新机上 install check + kb attach，再 executor handover，最后 feedback rebuild
+# 查看：python -m hostrun.cli install report
 ```
 
-## 故障
+**清理旧安装**（只有你确实装过 WSL/systemd 版本时才需要）：
 
-| 现象 | 处理 |
-|---|---|
-| `lark-cli: command not found` | 停止，让用户先安装 Lark CLI |
-| `auth status` 里 user 不可用 | 运行 `lark-cli auth login`，等用户完成 |
-| `event consume` 报 `failed_precondition` | 飞书开发者后台订阅对应事件（`card.action.trigger` / `im.message.receive_v1`） |
-| `frontier-listener` 反复重启 | 看 `journalctl --user -u frontier-listener`；常见原因是 `lark-cli` 不在 PATH 或 owner 未配置 |
-| 点了评分但 `ratings.jsonl` 为空 | 确认 `frontier-rating-listener` 是 active；没有它，`card.action.trigger` 不会被消费 |
-| skills 目录已有同名文件 | 停止并询问，不要覆盖 |
-| `python3 -c "import yaml"` 失败 | 询问后安装 PyYAML |
-| `python3 -c "import weasyprint"` 失败 | 询问后安装 WeasyPrint |
-| PDF 中文缺字 | 安装 Noto CJK 字体（`fonts-noto-cjk`） |
-| `pytest` 失败 | 停止，把失败输出贴给用户，不要继续接入 |
+```bash
+systemctl --user disable --now frontier-listener frontier-rating-listener \
+  frontier-daily.timer frontier-retry.timer frontier-sync.timer frontier-library.timer 2>/dev/null || true
+systemctl --user list-unit-files 'frontier-*'    # 确认没有残留
+```
+
+清掉运行配置**不等于**删除知识库：飞书里的 Base、云盘里的原文与推送都不要动。确认新方式跑通、云端对账零差异之后，再决定是否清理旧工作目录。
+
+## 7. 自检与验收
+
+```bash
+python -m hostrun.cli install report                      # working / blocked / untested 三段
+python -m hostrun.cli kb verify --expect-empty            # 新库必须为空
+python -m hostrun.cli audit run --baseline <174 篇清单>    # 存量核对（只读）
+python -m hostrun.cli audit streak                        # 连续零差异天数
+python -m pytest -q                                       # 仓库自测
+```
+
+验收结论只看证据：宿主的真实触发记录、`feedback` 的持久化记录、`audit` 的连续自然日零差异。**没测过的写「未实测」，缺能力的写「阻塞」，不写成通过。**

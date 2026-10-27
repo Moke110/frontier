@@ -157,7 +157,8 @@ def _kill_tree(proc) -> None:
     """Kill the agent and its descendants.
 
     A timed-out opencode run can leave grandchildren that keep writing pushes,
-    so a bare proc.kill() is not enough on either platform.
+    so a bare proc.kill() is not enough on either platform. ``getpgid``/``killpg``
+    are POSIX-only, so the POSIX branch is feature-checked instead of assumed.
     """
     if os.name == "nt":  # pragma: no cover - Windows only
         subprocess.run(
@@ -167,8 +168,13 @@ def _kill_tree(proc) -> None:
         )
         proc.kill()
         return
+    getpgid = getattr(os, "getpgid", None)
+    killpg = getattr(os, "killpg", None)
+    if getpgid is None or killpg is None:  # pragma: no cover - exotic POSIX
+        proc.kill()
+        return
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        killpg(getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         proc.kill()
 

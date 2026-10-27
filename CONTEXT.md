@@ -2,6 +2,10 @@
 
 This file is vocabulary, not a spec. Implementation lives in `contracts/` and the code.
 
+## frontier
+
+面向研究者的知识库与论文报道推送系统，围绕知识卡片、命题、证据和用户反馈持续积累研究知识。
+
 ## Knowledge card（知识卡片）
 
 The canonical frontier item. A knowledge card **replaces** the old checkpoint.

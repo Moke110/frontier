@@ -27,17 +27,16 @@
 
 要求：已安装一个 agent（opencode / Claude Code / Codex / Cursor…）、已安装并**登录** `lark-cli`、Python 3.11+ + PyYAML（`pip install -r requirements.txt`）。WeasyPrint 与中文字体只在渲染 legacy PDF 时需要。
 
-安装方式不是运行安装脚本，而是把 [`INSTALL.md`](INSTALL.md) 开头的任务说明发给你的 agent。agent 会：
+安装方式不是运行安装脚本，而是把 [`INSTALL.md`](INSTALL.md) 里的 prompt 发给你的宿主 agent。agent 会：
 
-1. 检查 `lark-cli` 是否存在、user/bot 身份是否已登录（未登录会引导你完成授权）；
-2. 从 GitHub 克隆 `https://github.com/Moke110/frontier`（默认 `~/frontier`）；
-3. 把仓库软链到你所用 agent 的 skills 目录（opencode / Claude Code / Codex / Cursor / `~/.agents/skills`）；
-4. 初始化数据根并跑测试与 `frontier validate`；
-5. 汇报安装路径，提示你重启 agent。
+1. 用 `python -m hostrun.cli install check` 探测本机能力（解释器、PyYAML、`lark-cli` 路径、user/bot 登录状态），缺什么标 `blocked`，没测过标 `untested`；
+2. 用 `hostrun kb create|attach` 新建空库或接入已有知识库，缺表时列清单等你确认再补；
+3. 用 `hostrun schedules plan|confirm` 把每日检索 / 每小时反馈 / 每日维护写到**宿主自己的调度**里，不装 systemd、不装常驻监听、不写持久环境变量；
+4. 跑一次 `hostrun run --intent feedback` 作为首跑证据，之后每次被唤醒只做一次有界运行。
 
-**Windows 原生环境**（不是 WSL）不要照 `INSTALL.md` 走：systemd、`fc-list`、软链都不适用，见 [`WINDOWS-TRANSFER.md`](WINDOWS-TRANSFER.md)。
+**Windows 原生环境**（不是 WSL）就是默认路径：没有 systemd、没有软链、没有 `fc-list`。旧的 WSL + systemd 安装说明已归档到 [`docs/legacy/2026-10-systemd-install.md`](docs/legacy/2026-10-systemd-install.md)，现行流程不再引用。
 
-技能说明在 [`SKILL.md`](SKILL.md)，安装后 agent 会直接读到。
+技能说明在 [`SKILL.md`](SKILL.md)，安装后 agent 会直接读到。安装与验收状态以 [`docs/acceptance/`](docs/acceptance/) 里的实测记录为准，未实测的宿主不会被写成「已通过」。
 
 ```
 frontier.yaml ──> frontier ──> plan.json ──> retriever ──> candidates.jsonl
@@ -55,8 +54,8 @@ frontier.yaml ──> frontier ──> plan.json ──> retriever ──> candi
 ## 快速开始
 
 ```bash
-# 安装：把 INSTALL.md 开头的任务说明发给你的 agent
-# （agent 检查 lark-cli 登录 → git clone → 软链到 skills → 验证）
+# 安装：把 INSTALL.md 第 3 节的 prompt 发给你的宿主 agent
+# （agent 探测能力 → 接入知识库 → 在宿主里建三个任务 → 跑一次 feedback）
 
 # 离线端到端 demo（临时目录，不联网、不污染仓库）
 python scripts/demo.py
@@ -65,17 +64,19 @@ python scripts/demo.py
 python -m pytest -q
 ```
 
-Demo 会依次打印每一步的命令与产物，并在结尾展示：命题多了一条证据、知识卡多了一个别名、知识图多了一个节点、评分权重从 6 升到 7、排序分数变化。Demo 走的是确定性 fallback；正式流程是 agent 读取 `editor-task.json` / `writer-task.json` 后亲自排序与写作。
+Demo 会依次打印每一步的命令与产物：检索 → 排序 → 写作任务 → 入库 → 发评分卡（dry-run）→ 模拟点击评分 → 统一队列 → 逐题「同意」→ 命题多一条证据。Demo 走的是确定性 fallback：模板推送没有七段 sections，所以跳过 `writer render`，用最小 HTML 代替；正式流程由 agent 读 `editor-task.json` / `writer-task.json` 后亲自排序、写作七段 HTML。
 
 依赖：Python 3.11+、PyYAML；`publisher` 的**真实发送**额外需要 `lark-cli`（dry-run / offline 模式不需要）。
 
 ## 数据根
 
-所有模块读同一个 `$KL_HOME`（默认 `~/knowledge-loop`，与代码仓库分离）：
+所有模块读同一个数据根（默认 `~/knowledge-loop`，与代码仓库分离）。**优先用参数显式传入**，避免依赖环境变量：
 
 ```bash
-export KL_HOME="$HOME/knowledge-loop"
+python -m hostrun.cli --home "$HOME/knowledge-loop" status
 ```
+
+`KL_HOME` 仍被接受（`--home` 未给时生效），但它只是单次会话的约定，安装不会写任何持久环境变量。
 
 目录结构、每层字段、去重键、退出码约定见 [`contracts/README.md`](contracts/README.md)。`fixtures/home/` 是一份可直接复制的最小数据根。
 
@@ -131,17 +132,18 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 
 真实推送需要飞书应用已订阅 `card.action.trigger` 回调（走 WebSocket 长连接，无需公网 URL）。卡片是 Card 2.0，需要客户端 ≥ 7.20。
 
-## 手动补推（飞书关键词）
+## 手动补推与反馈（宿主内完成）
 
-常驻 listener 订阅 `im.message.receive_v1`；在飞书私聊发 `再推一篇` / `下一篇` / `next` / `more`（可跟 checkpoint id）即可触发一次完整的正向补推。
+现在没有常驻监听器：补推、评分、逐题更新都走同一套「宿主唤醒 → 一次有界运行」的路径。
 
 ```bash
-python -m trigger.cli listen                 # 前台调试
-systemctl --user status frontier-listener         # 关键词监听
-systemctl --user status frontier-rating-listener  # 评分卡回调
+python -m hostrun.cli run --intent daily        # 请求并开始一篇推送
+python -m hostrun.cli feedback submit --item q_01 --verdict great
+python -m hostrun.cli feedback process          # 应用已提交的答案（只处理活动题）
+python -m hostrun.cli status                    # 只读快照
 ```
 
-listener 只负责关键词、owner 校验与串行排队，实际排序/写作由 `opencode run --auto` 里的 agent 完成；它不会修改知识库，也不会发审批卡。安装见 `INSTALL.md` §5.5。
+旧的 `trigger.cli listen` + `frontier-listener` / `frontier-rating-listener` 属于已归档的 systemd 方案（[`docs/legacy/2026-10-systemd-install.md`](docs/legacy/2026-10-systemd-install.md)），现行流程不再启动它们。评分与更新题的按钮回调由 `publisher`/`question_queue` 的持久化记录承载，队列可从飞书重建。
 
 ## 设计要点（原型版）
 

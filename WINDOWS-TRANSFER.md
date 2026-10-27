@@ -2,7 +2,9 @@
 
 本文件是 2026-10-26 那次 WSL → Windows 转移的**唯一交接文件**：项目是什么、原来怎么跑、这次做了什么、到 Windows 上还剩什么要做。
 
-代码侧的决定与取舍见 [`docs/adr/0004-native-windows-python.md`](docs/adr/0004-native-windows-python.md)；Linux/WSL 的安装步骤仍在 [`INSTALL.md`](INSTALL.md)，但**本次之后不再适用于本机**。
+代码侧的决定与取舍见 [`docs/adr/0004-native-windows-python.md`](docs/adr/0004-native-windows-python.md)。
+
+> **现状（2026-10-27 起）**：现行安装与运行方式以 [`INSTALL.md`](INSTALL.md) 为准——宿主 agent 在本机执行，不装 WSL / systemd / 常驻监听。旧的 systemd 安装步骤已归档到 [`docs/legacy/2026-10-systemd-install.md`](docs/legacy/2026-10-systemd-install.md)。本文件保留为那次转移的历史记录，不再作为操作指引。
 
 ---
 

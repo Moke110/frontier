@@ -479,3 +479,41 @@ python -m question_queue.cli try-start
 ```
 
 `publisher send` 会把 push 入队并只发送当前 active 题；回调经 `messages.jsonl` 的 `queue_item_id` 路由回队列。同意更新时 archive 以 `group_id=<item_id>` 原子应用并幂等；拒绝只写 `decisions.jsonl`。
+
+## 12. 宿主运行（hostrun）
+
+由宿主 agent 驱动的安装、租约与有界运行。**不写持久环境变量、不创建服务/系统定时任务/常驻进程**；数据根优先用 `--home` 显式给出（`KL_HOME` 仅在未给时生效）。
+
+```bash
+python -m hostrun.cli install check|report|status|record
+python -m hostrun.cli kb attach|create|create-tables|verify|initial-confirm|initial-status
+python -m hostrun.cli feedback setup|sync|status|process|rebuild|submit|correct
+python -m hostrun.cli run --intent daily|feedback|maintenance [--finish ok|error]
+python -m hostrun.cli schedules plan|confirm|status
+python -m hostrun.cli audit run --baseline <manifest>|streak
+python -m hostrun.cli executor status|handover
+python -m hostrun.cli status
+```
+
+```
+$KL_HOME/
+├── install/
+│   ├── config.json               # 宿主产品/版本/模式、私有路径、时区、已授予权限（凭据字段一律 ***）
+│   ├── state.json                # 安装七步状态：ok / blocked / untested / pending（ok 为终态，复检不降级）
+│   └── initial-build.json        # 用户确认过的初始主题（未确认不写）
+├── executor/
+│   ├── lease.json                # 单执行端时间租约（host / run_id / lease_until），不是 pid 租约
+│   └── events.jsonl              # acquired / blocked / taken_over / released / handover
+├── hostrun/
+│   └── runs.jsonl                # 每次有界运行的意图、动作、是否安静、是否需要通知
+└── library/
+    ├── maintenance/<date>.json   # 每天至多一次的对账 + 配额；失败不写 ok，下次重试
+    └── audit/<date>.json         # 存量核对结果（zero_diff 决定 streak）
+```
+
+约定：
+
+- `install report` 的 `working` / `blocked` / `untested` 三段是验收依据；缺能力标 `blocked`，没测过标 `untested`，不得写成通过。
+- `run` 的固定顺序：反馈 → 恢复未完成 → 维护（到期才做）→ 检索闸门。`feedback` 意图**从不**创建检索请求；错过的每日请求合并为一次。
+- 同一时刻只有一个执行端：另一宿主持有有效租约时返回 `executor_busy`；过期租约可被接管并在 `events.jsonl` 记 `taken_over`；换机必须 `handover`（旧端仍活跃时需 `--force` 并说明）。
+- `feedback rebuild` 从「问题」表重建本地队列，已处理的决定不会被再次应用。
