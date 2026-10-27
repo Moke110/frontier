@@ -1,44 +1,25 @@
----
-name: frontier-loop
-description: "Run the personal knowledge loop end to end: turn knowledge cards into retrieval queries, rank papers, write long-form HTML pushes, send them to Lark, collect ratings, and update knowledge cards / proposition evidence / proposition reviews through one serial question queue. Use when the user wants to run or advance their frontier daily workflow, or asks to add/update evidence for a proposition."
-metadata:
-  requires:
-    bins: ["python3", "lark-cli"]
----
+# frontier 检索、写作与知识更新参考
 
-# frontier-loop
+由 [frontier 运行时入口](../SKILL.md) 按需加载的完整流程参考；命令路径相对仓库根。agent 负责**排序（editor）与写作（writer）**；脚本负责取数、校验、入队、落盘。所有知识库写入都经过 archive / `KnowledgeStore`，agent 不直接改存储。
 
-个人知识循环的主 skill。agent 负责**排序（editor）与写作（writer）**；脚本负责取数、校验、入队、落盘。所有知识库写入都经过 archive / `KnowledgeStore`，agent 不直接改存储。
-
-> **实施阶段**（同一份契约分三步落地）：
->
-> | 能力 | 状态 |
-> |---|---|
-> | 每篇推送 2 个实体名额；三类卡片顶栏/正文 | 已生效（Phase 1） |
-> | 命题 v3（evidence / review / changelog）、证据 add/merge、迁移 | 已生效（Phase 2a） |
-> | 综述题、HTML 推送 | 已生效（Phase 2b） |
-> | Bitable 镜像、手工编辑回拉、10 分钟同步 | 已生效（Phase 3a，双读期） |
-> | Bitable 权威读、WAL 落盘、下线文件写入 | Phase 3b（双读 7 天后） |
->
-> Phase 2/3 的命令在文中标注；未标注的均为当前可用命令。
+文中的 Phase 标签表示能力来源，不能作为当前安装或云端切换已通过的证据。运行前检查安装报告与实际知识库状态；同步由宿主的有界执行承担，不单独安装十分钟定时器。真实验收限制见 [验收记录](../../../docs/acceptance/)。
 
 ## 1. 前置条件与数据根
 
-1. 宿主 agent（WorkBuddy / ChatGPT 桌面端本地会话，或任意能跑本地命令的 agent）已安装本仓库；**不需要软链到系统目录**。
+1. 已按 [安装参考](installation.md) 验证本地宿主、解释器、飞书 CLI 和知识库；定时运行还须验证宿主内置调度。
 2. `lark-cli` 装在私有目录并已登录；登录状态由 `hostrun install` 的 `identity` 步骤验证，不靠 `command -v` 猜。
 3. 运行方式是「宿主唤醒 → 一次有界运行 → 退出」；不装常驻监听、不装 systemd、不写持久环境变量。
 
 所有命令在**本仓库根**执行，数据根用 `--home` 显式给出（默认 `~/knowledge-loop`）：
 
 ```bash
-python -m hostrun.cli --home "$HOME/knowledge-loop" install status
-python -m hostrun.cli --home "$HOME/knowledge-loop" status
+python -m hostrun.cli --home <home> install status
+python -m hostrun.cli --home <home> status
 ```
 
 ```bash
-lark-cli auth status --json
+# 通过安装检查验证身份，只报告就绪状态，不打印原始 auth 输出
 python -c "import yaml"
-python -m pytest -q
 ```
 
 ## 2. 领域模型
@@ -96,11 +77,13 @@ python -m pytest -q
 
 ## 3. 主循环
 
+只有运行时入口的 daily 闸门允许后才开始以下正向链路。使用安装配置的解释器，日期由宿主按用户时区生成，所有模块命令显式传 `--home <home>`；下列示例省略该重复参数。先处理已提交反馈，未答问题挡住新推送。
+
 ### 3.1 检索计划
 
 ```bash
 python -m frontier.cli validate
-python -m frontier.cli plan --date "$(date +%F)" --days 7 --out plan.json
+python -m frontier.cli plan --date <YYYY-MM-DD> --days 7 --out plan.json
 ```
 
 每张卡片必须有 `id / label / ontology / annotation`。
@@ -117,9 +100,8 @@ python -m retriever.cli fetch --plan plan.json --out candidates.jsonl --source l
 ### 3.3 排序（agent 亲自做）
 
 ```bash
-python -m editor.cli fit
-python -m editor.cli task --candidates candidates.jsonl --date "$(date +%F)" \
-  --limit 5 --per-checkpoint 2 --out editor-task.json
+python -m editor.cli task --candidates candidates.jsonl --date <YYYY-MM-DD> \
+  --limit 1 --per-checkpoint 1 --out editor-task.json
 ```
 
 读 `editor-task.json`，按 `instructions` 写 `selection.json`：
@@ -164,10 +146,10 @@ python -m library.cli ensure-source --paper <push 里的 paper_id>
 
 ```bash
 python -m publisher.cli send --push outbox/pushes/<push_id>.json --html outbox/<push_id>.html --to ou_xxx
-python -m publisher.cli listen --max-events 1 --timeout 10m
+python -m hostrun.cli --home <home> feedback sync
 ```
 
-- `send` 是**对外可见**操作：先向用户确认收件人、文件与条数。
+- `send` 是**对外可见**操作：遵循安装时确认的收件人、文件与条数范围；超出原授权时再确认。
 - 只发送当前 active 题；一题答完才发下一题。
 - 无飞书环境：`--dry-run`（send）与 `--offline`（ingest）。
 - 查看队列：`python -m question_queue.cli status`。
@@ -289,7 +271,7 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 
 - 只动文本列：`title / review / conclusion / annotation`；结构列（id、关联、日期、计数）只读。
 - 编辑视图隐藏结构列；这是约定，不是强制权限。
-- 每 10 分钟扫描 Bitable 与本地「上次已见」台账：文本变化补一条 changelog；校验失败写「待修正」，不静默接受。
+- 在宿主授权的有界同步运行中扫描 Bitable 与本地「上次已见」台账（不另装十分钟系统定时器）：文本变化补一条 changelog；校验失败写「待修正」，不静默接受。
 
 ## 8. 用户偏好与硬规则
 
@@ -297,7 +279,7 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 - **不编造**：论文只来自 candidates；证据、别名、命题必须可追溯。
 - 知识库只写提议；同意后才落盘。
 - 先 `check` 再入库；校验失败就修，不改校验器。
-- 推送前确认收件人、文件、条数；测试优先 `--dry-run`。
+- 发送遵循已确认的收件人、文件与条数范围；预览使用 `--dry-run`。
 - 结论 ≤200 字、综述 ≤2000 字是硬上限。
 - HTML 排版：正文 `clamp(16px, 1.1vw + 12px, 20px)`、行高 1.85、最大宽 40em、系统字体、跟随深色模式；图片 100% 宽；表格可横向滚动。
 
@@ -305,7 +287,7 @@ python -m publisher.cli listen --max-events 1 --timeout 10m
 
 | 现象 | 处理 |
 |---|---|
-| `event consume` 报 `failed_precondition` | 飞书后台订阅 `card.action.trigger`（WebSocket） |
+| 评分未推进 | 检查持久反馈是否提交，再通过宿主有界运行处理；现行流程不启动事件监听 |
 | 发卡报 `missing scope` | 按 `missing_scope` 重新授权 |
 | 卡片只显示 header | 客户端 < 7.20，升级飞书 |
 | `lark-cli --file` 报 `unsafe file path` | 只传当前工作目录下的相对路径 |

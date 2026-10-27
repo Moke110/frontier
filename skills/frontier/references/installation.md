@@ -1,19 +1,19 @@
-# 安装 frontier（Windows 原生，由宿主 agent 执行）
+# frontier 安装与恢复参考（供宿主 agent 执行）
 
-frontier 不再是一个要开机自启的后台服务，而是**由你正在用的宿主 agent 在本机按需执行**的一组命令。你在 WorkBuddy 或 ChatGPT 桌面端的本地会话里贴一段 prompt，agent 会自己完成安装、接入知识库、配置宿主的定时任务，并在之后每次被唤醒时执行一次有界运行。
+frontier 不再是一个要开机自启的后台服务，而是**由你正在用的宿主 agent 在本机按需执行**的一组命令。用户从仓库 README.md 的 prompt 启动；宿主加载 skills/frontier/SKILL.md 后按本参考执行安装与恢复。所有命令在仓库根执行，示例中的解释器和数据根替换为安装时验证的绝对路径。
 
 - 不需要 WSL。
 - 不需要 systemd、systemd timer、Windows 任务计划或任何常驻进程。
 - 不需要写持久环境变量、PATH 或注册表。
 - 数据根默认 `~/knowledge-loop`，可用 `--home` 指定（中文与含空格路径均支持）。
 
-> 旧的 WSL + systemd 安装方式已归档到 [`docs/legacy/2026-10-systemd-install.md`](docs/legacy/2026-10-systemd-install.md)。如果你机器上还留着旧的 `frontier-*` 单元，见本文末「清理旧安装」。
+> 旧的 WSL + systemd 安装方式已归档到 [`docs/legacy/2026-10-systemd-install.md`](../../../docs/legacy/2026-10-systemd-install.md)。如果你机器上还留着旧的 `frontier-*` 单元，见本文末「清理旧安装」。
 
 ## 1. 支持的宿主与验证状态
 
 | 宿主 | 形态 | 状态 |
 |---|---|---|
-| WorkBuddy（Windows 桌面端） | 本地会话 + 内置自动化 | 本机已实测命令行、项目目录、技能与本地 Python 执行；**内置调度的真实触发与无人值守权限仍待实测**，见 [`docs/acceptance/2026-10-27-host-matrix.md`](docs/acceptance/2026-10-27-host-matrix.md) |
+| WorkBuddy（Windows 桌面端） | 本地会话 + 内置自动化 | 本机已实测命令行、项目目录、技能与本地 Python 执行；**内置调度的真实触发与无人值守权限仍待实测**，见 [`docs/acceptance/2026-10-27-host-matrix.md`](../../../docs/acceptance/2026-10-27-host-matrix.md) |
 | ChatGPT（Windows 桌面端本地模式） | 本地会话 + 计划任务 | **未实测**，只有安装脚本与说明，不作为「已通过」宣称 |
 | Linux / macOS 终端 | 直接跑 CLI | 命令行链路可用（与宿主无关的部分由测试覆盖） |
 
@@ -31,26 +31,18 @@ frontier 不再是一个要开机自启的后台服务，而是**由你正在用
 
 `lark-cli` 由显式路径解析：先看 `install/config.json` 的 `paths.lark_cli`，再看 `<home>/bin`，最后才做一次只读的 PATH 查找。**「找到可执行文件」不等于「已登录」**——登录状态是 `identity` 这一步单独验证的。
 
-## 3. 把这段 prompt 发给宿主 agent
+## 3. 执行安装
 
-```
-在当前项目里完成 frontier 的安装与接入，只做这些事，不要装服务或系统定时任务：
+1. 获取或检查仓库副本；读取 [README.md](../../../README.md) 和 [运行时入口](../SKILL.md)。工作目录设为仓库根，数据根与代码分开；保留已有用户改动。
+2. 探测宿主产品、版本、本地执行、技能加载与内置调度。用私有解释器准备 PyYAML 和飞书 CLI，配置显式路径，不使用失效的其他开发工具运行时。
+3. 调用 `python -m hostrun.cli --home <home> install check --repo <repo>`，仅为亲自验证的能力提供 `--host-product`、`--host-version`、`--host-local-execution`、`--host-schedules` 和 `--permissions`。不要预先把所有能力标为可用。
+4. 用已解析的飞书 CLI 引导登录，等待用户授权，再检查身份；输出只保留状态，不打印原始凭据。缺管理员权限则说明阻塞并保存进度。
+5. 新库：用户提供空 Base 链接，`kb create --link <link>` 初始化后执行 `kb verify --expect-empty`。已有库：`kb attach --link <link>` 后列出缺表与兼容问题，经确认才 `kb create-tables`，不覆盖旧数据。
+6. 与用户讨论初始主题，确认后 `kb initial-confirm --themes <themes.json> --yes`。只有用户确认过的知识进入初始构建。
+7. 用 `schedules plan` 展示时区、每日检索、每小时反馈、每日维护。用户确认后，由宿主实际创建任务；每个任务保存本 skill、仓库、解释器和数据根的完整路径，唤醒时先读 skill，再执行计划中的命令。任务创建成功才能使用 `schedules confirm --yes --host-created`；该标志不是定时触发证据。
+8. 运行一次 `run --intent feedback`，根据实际结果记录首跑；推送和真实调度的验收分别留证。最后 `install report` 汇报可用、阻塞、未实测与下一步，不以“状态命令成功”冒充完整安装验收。
 
-1. python -m hostrun.cli install check --repo . --host-product <你的产品名> --host-version <版本号> \
-     --host-local-execution --host-schedules --permissions "shell,file_write"
-   —— 只声明你实际验证过的能力；没验证的不要加参数，状态留 pending/untested。
-2. 把 install report 的 blocked 项逐条告诉我，需要我做的登录/授权停下来问我。
-3. 知识库二选一：
-   新建空库：python -m hostrun.cli kb create --link <空 Base 链接>（建表后 verify --expect-empty 必须为 ok）
-   接入已有库：python -m hostrun.cli kb attach --link <Base 链接>，把 missing 表清单给我确认后再 create-tables
-4. 初始主题先给我看草案，我说确认后再：
-   python -m hostrun.cli kb initial-confirm --themes <themes.json> --yes
-5. 用 python -m hostrun.cli schedules plan 告诉我每日检索 / 每小时反馈 / 每日维护的时间，
-   我确认时区与启用后再 schedules confirm --yes，并由你在宿主里真正创建这三个任务。
-6. 最后跑一次 python -m hostrun.cli run --intent feedback，把结果贴给我。
-```
-
-agent 会把每一步的状态写进 `<home>/install/state.json`，**中断后重跑会续接**，不会重复建表、不会覆盖已验证的组件。
+所有子命令均通过 `python -m hostrun.cli --home <home>` 调用。状态保存在 `<home>/install/state.json`，中断后读取状态续接。若宿主必须注册技能，使用其当前已验证的项目加载方式，保持对本仓库完整参考文件的访问，不复制整个仓库到技能目录。
 
 ## 4. 装完之后：日常是怎么跑的
 
@@ -128,7 +120,6 @@ python -m hostrun.cli install report                      # working / blocked / 
 python -m hostrun.cli kb verify --expect-empty            # 新库必须为空
 python -m hostrun.cli audit run --baseline <174 篇清单>    # 存量核对（只读）
 python -m hostrun.cli audit streak                        # 连续零差异天数
-python -m pytest -q                                       # 仓库自测
 ```
 
 验收结论只看证据：宿主的真实触发记录、`feedback` 的持久化记录、`audit` 的连续自然日零差异。**没测过的写「未实测」，缺能力的写「阻塞」，不写成通过。**

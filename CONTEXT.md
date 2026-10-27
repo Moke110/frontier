@@ -2,6 +2,8 @@
 
 This file is vocabulary, not a spec. Implementation lives in `contracts/` and the code.
 
+Maintained through the Matt Pocock domain-modeling workflow. Development instructions live in `AGENTS.md`; user instructions live in `README.md`.
+
 ## frontier
 
 面向研究者的知识库与论文报道推送系统，围绕知识卡片、命题、证据和用户反馈持续积累研究知识。

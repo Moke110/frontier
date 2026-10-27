@@ -1,164 +1,62 @@
 # frontier
 
-个人知识循环：知识卡片 → 检索 → 排序 → 长文推送 → 飞书评分 → 卡片/命题更新。完整操作契约、格式与用户偏好见 [`skills/frontier-loop/SKILL.md`](skills/frontier-loop/SKILL.md)；评分仍不反哺排序。
+面向研究者的知识库与论文报道推送系统。围绕你关注的知识卡片检索论文，由 agent 排序、撰写报道并推送到飞书；你评分、确认更新后，研究知识逐步积累为命题与证据。
 
-本仓库当前只有原型，不是生产系统。设计语义来自 `.scratch/knowledge-loop/`（spec + 决策票），实现进度见 `.scratch/frontier-prototypes/map.md`。
+frontier 依赖一款能在本机执行命令、使用技能并创建定时任务的 agent，以及飞书 CLI。代码与依赖由 agent 管理，你无需自己配置环境或打开终端。飞书保存知识、原文、推送件和已发出的待答问题，本地保存可重建副本。
 
-## 模块（互不 import）
+## 安装
 
-| 模块 | 职责 | 输入 → 输出 |
+在 Windows 上打开宿主 agent 的本地会话，把下面整段发给它：
+
+```text
+请帮我安装 frontier：
+
+1. 从 https://github.com/Moke110/frontier 获取代码；已有副本时先检查来源和本地改动，不覆盖用户数据。
+2. 读取仓库的 README.md，再加载 skills/frontier/SKILL.md，按它引用的安装流程操作。工作目录是仓库根，数据根单独保存；记录两者的完整路径。
+3. 检查当前宿主是否支持本地命令、技能和内置定时任务。自动准备私有 Python 依赖和飞书 CLI，不修改系统/用户环境变量、PATH、注册表，不装服务、系统定时任务或常驻程序。
+4. 引导我完成飞书登录和必要授权，再让我选择新建空知识库或连接已有知识库。研究方向与初始知识先给我确认，不导入测试数据。
+5. 展示用户时区内每日 08:00 检索、每小时反馈和每日维护的计划。我确认后，再在宿主中创建真实任务；每次任务都加载同一份 frontier skill，在指定仓库与数据根执行一次后退出。
+6. 验证安装和首跑，汇报已可用、阻塞与未实测的项。中断后保留进度；不能把计划生成、离线测试或普通聊天提醒当成真实定时运行成功。
+```
+
+需要你亲自完成的步骤包括登录、授权、提供已有知识库链接，以及确认研究方向、时间和自动运行权限。新建模式当前需要一个空的飞书 Base 链接，由 agent 初始化其中的表；已有模式先校验结构再接入。
+
+| 目标宿主 | 所需模式 | 当前验证状态 |
 |---|---|---|
-| `archive` | 四层存储：**原文 / 推送 / 知识图 / 命题列表** | 任意 → `$KL_HOME/archive/**` |
-| `frontier` | checkpoint 词汇表 → 检索式；评分反馈到权重（本阶段不启用） | `frontier.yaml` → `plan.json` |
-| `retriever` | 按计划取原文（fixture / arXiv / Europe PMC） | `plan.json` → `candidates.jsonl` |
-| `editor` | 排序候选；agent 做语义排序，脚本学偏好与校验 | candidates + ratings → `editor-task.json` → `selection.json` |
-| `writer` | agent 写长文推送（HTML 片段 + 图片）；脚本提供上下文、校验与渲染 | selection + archive 上下文 → `writer-task.json` → push JSON → HTML（Phase 3） |
-| `publisher` | 飞书推送、评分/更新卡与回调 | push + 文件 → 消息 / 卡片 / `ratings.jsonl` / `decisions.jsonl` |
-| `knowledge` | 知识层 ↔ Bitable 镜像、手工编辑回拉、漂移比对 | `KnowledgeStore` → Base 五表 / `knowledge/state.json` |
-| `library` | 云盘原文/推送件 + 「原文」「推送日志」「决定」「配置」四表；配额、对账、离线清理 | PDF/HTML + Base → 云盘文件 / `library/reports` |
+| ChatGPT Windows 桌面端 | 本地执行 + 内置定时任务 | 完整安装与真实调度尚未实测 |
+| WorkBuddy Windows 桌面端 | 本地会话 + 内置自动化 | 本地命令与项目访问有历史记录；真实定时触发和无人值守权限仍待验收 |
 
-`library` 落地后 `archive` 只管本地缓存与物化视图：原文与推送件的唯一真相在飞书（ADR 0003）。见 `docs/specs/lark-storage.md`。
+具体版本、账号权限和证据见 [宿主验收记录](docs/acceptance/2026-10-27-host-matrix.md)。电脑须开机、宿主运行且能访问飞书；网页云任务不能代替对本机依赖和凭据的访问。OpenCode 不在首批定时部署支持范围。
 
-模块之间**零 Python import**，只通过 `contracts/README.md` 定义的文件交换数据。唯一共享代码是根目录 `common.py`（纯 IO 工具，无领域逻辑）。因此每个模块都能单独跑、单独替换 —— 例如把 `writer` 换成 LLM 版本，或把 `retriever` 换成别的数据源，其它模块不用改。
+## 使用
 
-**editor 与 writer 不内置模型调用。** 它们把需要判断的部分打包成任务文件（`editor-task.json` / `writer-task.json`），由宿主 agent 读取、推理、写回，脚本只做取数与校验。任务契约见 [`contracts/agent-tasks.md`](contracts/agent-tasks.md)。`editor rank` / `writer write` 保留为确定性 fallback，供离线 demo 与测试使用。
+在安装时的宿主会话中直接说：
 
-## 安装（由你的 agent 执行）
+- “运行 frontier，再推一篇。”
+- “处理 frontier 的反馈。”
+- “查看 frontier 的安装状态和待答问题。”
+- “暂停 frontier 的自动任务。”
 
-要求：已安装一个 agent（opencode / Claude Code / Codex / Cursor…）、已安装并**登录** `lark-cli`、Python 3.11+ + PyYAML（`pip install -r requirements.txt`）。WeasyPrint 与中文字体只在渲染 legacy PDF 时需要。
+每日任务请求一篇推送；每小时任务处理已提交反馈和未完成工作；维护任务检查原文库、推送库和配额。没有变化时保持安静。错过多天最多合并成一次待推请求，不连续补发。
 
-安装方式不是运行安装脚本，而是把 [`INSTALL.md`](INSTALL.md) 里的 prompt 发给你的宿主 agent。agent 会：
+每篇推送附反馈入口。先评分，再逐题确认知识更新；编辑答案后须明确提交，agent 下次运行才处理。只有采纳的提议会更新知识库。“不在关注领域”会丢弃该篇的更新题。未回答的问题会挡住下一篇推送，但不阻止存储维护。
 
-1. 用 `python -m hostrun.cli install check` 探测本机能力（解释器、PyYAML、`lark-cli` 路径、user/bot 登录状态），缺什么标 `blocked`，没测过标 `untested`；
-2. 用 `hostrun kb create|attach` 新建空库或接入已有知识库，缺表时列清单等你确认再补；
-3. 用 `hostrun schedules plan|confirm` 把每日检索 / 每小时反馈 / 每日维护写到**宿主自己的调度**里，不装 systemd、不装常驻监听、不写持久环境变量；
-4. 跑一次 `hostrun run --intent feedback` 作为首跑证据，之后每次被唤醒只做一次有界运行。
+已处理的答案不会因后来编辑表格而自动撤销；需要纠正时，请向 agent 提出新的更正请求。发送超时且结果不明时，agent 应先核对，无法确认则报告并暂停该项。
 
-**Windows 原生环境**（不是 WSL）就是默认路径：没有 systemd、没有软链、没有 `fc-list`。旧的 WSL + systemd 安装说明已归档到 [`docs/legacy/2026-10-systemd-install.md`](docs/legacy/2026-10-systemd-install.md)，现行流程不再引用。
+## 暂停、换机与恢复
 
-技能说明在 [`SKILL.md`](SKILL.md)，安装后 agent 会直接读到。安装与验收状态以 [`docs/acceptance/`](docs/acceptance/) 里的实测记录为准，未实测的宿主不会被写成「已通过」。
+暂停时，让宿主停用 frontier 的定时任务。换机或换宿主时，先停止旧端任务与执行，再在新端运行安装 prompt，选择连接已有飞书知识库，由 agent 完成接管与恢复。同一知识库同时只使用一个执行端。
 
-```
-frontier.yaml ──> frontier ──> plan.json ──> retriever ──> candidates.jsonl
-                     ▲                                          │
-                     │                                          ▼
-              ratings.jsonl <── publisher <── push <── writer <── editor
-                     │                            ▲                │
-                     └── editor.fit ──────────────┘                │
-                                                                  ▼
-                                                    archive (raw / pushes / kg / props)
-                                                       ▲          │
-                                                       └─ apply ──┘  (审批通过后)
-```
+本地缓存可以重建；离线备份可能是已从云盘移除的原文的唯一副本，须单独保留。卸载运行配置不会自动删除飞书数据。删除云端原文需要单独确认，并先完成离线备份与校验。
 
-## 快速开始
+## 遇到问题
 
-```bash
-# 安装：把 INSTALL.md 第 3 节的 prompt 发给你的宿主 agent
-# （agent 探测能力 → 接入知识库 → 在宿主里建三个任务 → 跑一次 feedback）
+把问题交给宿主 agent，并让它读取安装报告：
 
-# 离线端到端 demo（临时目录，不联网、不污染仓库）
-python scripts/demo.py
+- **阻塞**：缺依赖、未登录、权限不足等，需要修复后继续。
+- **未实测**：没有真实运行证据；任务已配置不等于触发成功。
+- **队列未推进**：检查答案是否已提交，以及是否存在更早的待答问题。
 
-# 测试
-python -m pytest -q
-```
+数据根默认是用户目录下的 `knowledge-loop`；安装时 agent 会记录实际位置。中断后可要求“继续 frontier 安装”，不必从头创建知识库。存量迁移和云端恢复的限制见 [恢复验收记录](docs/acceptance/2026-10-27-cloud-recovery.md)。
 
-Demo 会依次打印每一步的命令与产物：检索 → 排序 → 写作任务 → 入库 → 发评分卡（dry-run）→ 模拟点击评分 → 统一队列 → 逐题「同意」→ 命题多一条证据。Demo 走的是确定性 fallback：模板推送没有七段 sections，所以跳过 `writer render`，用最小 HTML 代替；正式流程由 agent 读 `editor-task.json` / `writer-task.json` 后亲自排序、写作七段 HTML。
-
-依赖：Python 3.11+、PyYAML；`publisher` 的**真实发送**额外需要 `lark-cli`（dry-run / offline 模式不需要）。
-
-## 数据根
-
-所有模块读同一个数据根（默认 `~/knowledge-loop`，与代码仓库分离）。**优先用参数显式传入**，避免依赖环境变量：
-
-```bash
-python -m hostrun.cli --home "$HOME/knowledge-loop" status
-```
-
-`KL_HOME` 仍被接受（`--home` 未给时生效），但它只是单次会话的约定，安装不会写任何持久环境变量。
-
-目录结构、每层字段、去重键、退出码约定见 [`contracts/README.md`](contracts/README.md)。`fixtures/home/` 是一份可直接复制的最小数据根。
-
-## 各模块单独使用
-
-```bash
-# archive：建目录 / 重建索引 / 查上下文
-python -m archive.cli init
-python -m archive.cli reindex
-python -m archive.cli stats
-python -m archive.cli context --node kg_hmbs --checkpoint hmbs
-
-# frontier：检查 checkpoint 链接 + 产出检索式
-python -m frontier.cli validate
-python -m frontier.cli plan --date 2026-10-20 --days 7 --out plan.json
-python -m frontier.cli record --checkpoint hmbs --verdict great --pushed
-
-# retriever：offline 用 fixtures；live 走 arXiv + Europe PMC
-python -m retriever.cli fetch --plan plan.json --out candidates.jsonl --source fixture
-python -m retriever.cli fetch --plan plan.json --out candidates.jsonl --source live
-
-# editor：学偏好；agent 排序（task → 你写 selection → check）
-python -m editor.cli fit
-python -m editor.cli task --candidates candidates.jsonl --limit 5 --out editor-task.json
-#   ……agent 读任务、写 selection.json……
-python -m editor.cli check --task editor-task.json --selection selection.json
-# 离线 fallback：python -m editor.cli rank --candidates candidates.jsonl --out selection.json
-
-# writer：agent 写作（task → 你写 push → check）；fallback 是 write
-python -m writer.cli task --selection selection.json --out writer-task.json
-#   ……agent 读任务、写 outbox/pushes/<push_id>.json……
-python -m writer.cli check --task writer-task.json --outbox outbox
-# 离线 fallback：python -m writer.cli write --selection selection.json --out outbox
-
-# archive：推送入库
-python -m archive.cli add-push --file outbox/pushes/2026-10-20_hmbs_01.json
-
-# library：建表建目录 / 入库 / 取回 / 配额 / 对账 / 清理
-python -m library.cli setup --dry-run
-python -m library.cli put-source --paper pdf_2025_x --file ~/arc/x.pdf
-python -m library.cli put-push --push 2026-10-26_hmbs_01 --html outbox/pushes/2026-10-26_hmbs_01.html
-python -m library.cli resolve --paper pdf_2025_x
-python -m library.cli quota
-python -m library.cli reconcile
-python -m library.cli evict --candidates
-
-# publisher：预览 / 发送 / 收评分
-python -m publisher.cli preview --push outbox/pushes/2026-10-20_hmbs_01.json
-python -m publisher.cli send --push outbox/pushes/2026-10-20_hmbs_01.json --to ou_xxx --dry-run
-python -m publisher.cli send --push outbox/pushes/2026-10-20_hmbs_01.json --to ou_xxx
-python -m publisher.cli listen --max-events 1 --timeout 10m
-```
-
-真实推送需要飞书应用已订阅 `card.action.trigger` 回调（走 WebSocket 长连接，无需公网 URL）。卡片是 Card 2.0，需要客户端 ≥ 7.20。
-
-## 手动补推与反馈（宿主内完成）
-
-现在没有常驻监听器：补推、评分、逐题更新都走同一套「宿主唤醒 → 一次有界运行」的路径。
-
-```bash
-python -m hostrun.cli run --intent daily        # 请求并开始一篇推送
-python -m hostrun.cli feedback submit --item q_01 --verdict great
-python -m hostrun.cli feedback process          # 应用已提交的答案（只处理活动题）
-python -m hostrun.cli status                    # 只读快照
-```
-
-旧的 `trigger.cli listen` + `frontier-listener` / `frontier-rating-listener` 属于已归档的 systemd 方案（[`docs/legacy/2026-10-systemd-install.md`](docs/legacy/2026-10-systemd-install.md)），现行流程不再启动它们。评分与更新题的按钮回调由 `publisher`/`question_queue` 的持久化记录承载，队列可从飞书重建。
-
-## 设计要点（原型版）
-
-- **长文推送**：agent 写七段 HTML 片段与图片资产；Phase 3 起渲染为自包含 HTML（不再用 WeasyPrint 出 PDF）。原文图优先，取不到时用生成图并在图注标源。
-- **评分卡**：PDF 后紧跟一张小卡（质量差/不在关注领域 / 质量一般 / 质量优秀，每行一个按钮 + 可选评语）。评分与评语在同一次 `form` 提交里返回；按钮 `name` 决定 verdict。
-- **知识更新**：writer 生成 `proposals`（全部 `draft`），经统一队列逐题发飞书卡；同意后由 archive 落盘，拒绝只记决定。每篇推送最多 2 个实体目标（卡片 + 命题合计）。
-- **更新提议**：`add_card_ontology` / `update_card_annotation` / `create_card` / `create_proposition` / `update_proposition_title` / `update_proposition_related_knowledge` / `add_proposition_evidence` / `merge_proposition_evidence` / `update_proposition_review`。正式流程由 agent 生成，全部标 `draft`，agent 永不直接改知识库；`writer write` 的术语共现启发式只作为离线 fallback。
-- **反哺（本阶段不运行）**：`frontier` 维护 `ema` 与 `weight`（1–10）；`editor.fit` 维护 checkpoint / 来源偏好（Beta 平滑），`rank` 用四项加权：相关性 0.40、时效 0.15、偏好 0.30、权重 0.15。评分目前只落库。
-- **确定性**：同一输入重复运行结果一致（`stable_id` 用 FNV-1a），便于测试与复现。
-
-## 原型边界（有意不做）
-
-- writer 的 fallback 仍是四段抽取式模板，不调模型；正式写作由宿主 agent 完成，输出七段 HTML + 图片。retriever 的 live 模式只取摘要；图片由 `writer figures` 单独抓取。
-- 无并发写锁、无迁移、无鉴权、无重试队列；飞书 token 的 30 分钟 / 2 次限制未做兜底。
-- `archive` 的"事务"是单文件原子写，跨文件更新失败时可能部分生效。
-- 评分只做单用户三档；没有冷启动以外的反作弊与去偏。
-
-这些都在 `.scratch/frontier-prototypes/map.md` 的「Not yet specified」里，等原型验证后再决定。
+运行时技能由宿主加载 [skills/frontier/SKILL.md](skills/frontier/SKILL.md)。开发指引在 [AGENTS.md](AGENTS.md)，项目术语在 [CONTEXT.md](CONTEXT.md)。许可证见 [MIT License](LICENSE)。
