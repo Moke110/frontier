@@ -482,10 +482,10 @@ python -m question_queue.cli try-start
 
 ## 12. 宿主运行（hostrun）
 
-由宿主 agent 驱动的安装、租约与有界运行。**不写持久环境变量、不创建服务/系统定时任务/常驻进程**；数据根优先用 `--home` 显式给出（`KL_HOME` 仅在未给时生效）。代码目录与数据根分开：工作区默认 `frontier/` 与 `frontier-archive/`。
+由宿主 agent 驱动的安装、租约与有界运行。**不写持久环境变量、不创建服务/系统定时任务/常驻进程**；数据根优先用 `--home` 显式给出（`KL_HOME` 仅在未给时生效）。代码目录与数据根分开：工作区默认 `frontier/` 与 `frontier-archive/`。uv 管理的私有环境与解释器属于**数据根**（`<home>/.venv`），代码目录只保留代码；uv 优先从工作区外解析，缺失时才装到 `<home>/bin`。
 
 ```bash
-# 工作区、私有 uv/解释器、frontier-run 入口指针
+# 工作区、数据根私有 uv/解释器、frontier-run 入口指针
 python -m hostrun.cli install workspace --root <workspace>
 python -m hostrun.cli --home <home> install toolchain --root <workspace>
 python -m hostrun.cli --home <home> install skill --root <workspace> --target <host-skill-dir>/frontier-run
@@ -515,11 +515,11 @@ python -m hostrun.cli status
 
 ```
 <workspace>/
-├── .frontier/
-│   ├── install.json              # 代码 / 数据根 / uv / 解释器 / 技能绝对路径（技能移动后仍可定位）
-│   └── bin/                      # 缺失时的私有 uv（不改 PATH）
-├── frontier/                     # 代码副本（检查来源与改动，不覆盖）
+├── .frontier/install.json        # 代码 / 数据根 / uv / 私有环境 / 解释器 / 技能绝对路径（技能移动后仍可定位）
+├── frontier/                     # 代码副本（检查来源与改动，不覆盖；不放私有环境）
 └── frontier-archive/             # 数据根
+    ├── bin/                      # 缺失时的私有 uv（优先从工作区外解析；不改 PATH）
+    ├── .venv/                    # uv 管理的私有环境与解释器（绝对路径同时写入指针记录与安装配置）
     ├── install/
     │   ├── config.json           # 宿主、私有路径、时区、权限与任务（凭据字段一律 ***）
     │   ├── state.json            # 分步状态：host/workspace/dependencies/skill/lark_cli/identity/
@@ -535,7 +535,7 @@ python -m hostrun.cli status
 约定：
 
 - `install report` 的 `working` / `blocked` / `untested` / `pending` 分项是验收依据；缺能力标 `blocked`，没测过标 `untested`，不得写成通过。
-- 工作区：已有副本有未提交改动、origin 不符或不是 git 仓库时阻塞，不拉取、不覆盖；重跑复用已验证组件。解释器失效时用 uv `--clear` 重建。
+- 工作区与私有环境：已有副本有未提交改动、origin 不符或不是 git 仓库时阻塞，不拉取、不覆盖；重跑复用已验证组件。解释器缺失或损坏时依赖步骤标 `blocked` 并给出 `install toolchain ... --clear` 修复命令，`--clear` 才重建数据根环境；重复运行复用现有环境，不重建。
 - 飞书 CLI：可执行、登录、授权范围、真实资源读取分别验证；设施未创建前资源项只能是 `untested`。
 - 设施：按用户确认的展示名创建；使用稳定 ID，改名不影响读写。同名 Base 多个时阻塞；已有库只检查/补缺，不清空。部分失败如实报告并可从已创建项续接。
 - 临时闭环：临时卡片 ID 与推送/消息/文件/问题 ID 全部归属测试；成功必须包含读回核对。失败不开放正式初始化。

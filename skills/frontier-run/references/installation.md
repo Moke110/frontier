@@ -34,9 +34,10 @@ python -m hostrun.cli --home <home> install toolchain --root <workspace>
 python -m hostrun.cli --home <home> install skill --root <workspace> --target <host-skill-dir>/frontier-run
 ```
 
-- `install workspace` 只**检查**已有副本：有未提交改动、origin 不符或不是 git 仓库时报告 blocked，不拉取、不覆盖。数据根只创建不删除。
-- `install toolchain` 优先复用可用 `uv`，否则安装到 `<workspace>/.frontier/bin`；用 uv 在 `<repo>/.venv` 建私有解释器并安装 `requirements.txt`（含 PDF 初始化需要的 PyMuPDF）。解释器失效时 `--clear` 重建。
-- `install skill` 写入的是**入口指针**，不是仓库副本；指针包含绝对仓库、数据根和解释器路径，技能目录移动后仍能定位代码。步骤可重复执行，已完成的组件不重做。
+- `install workspace` 只**检查**已有副本：有未提交改动、origin 不符或不是 git 仓库时报告 blocked，不拉取、不覆盖；数据根只创建不删除。若数据根落在代码目录内，明确拒绝且不写入。
+- `install toolchain` 先在**工作区外**解析 `uv`（记录过的或系统 PATH 中的），都没有才把 `uv` 装到 `<home>/bin`；由它在**数据根**建私有环境 `<home>/.venv` 并安装 `requirements.txt`（含 PDF 初始化需要的 PyMuPDF），安装后跑一次 `yaml`/`fitz` 导入探针。解释器的绝对路径同时写入工作区指针记录与安装配置；重跑复用现有环境，不重建。
+- 解释器缺失或损坏时 `dependencies` 为 `blocked` 并给出可执行的修复命令（`install toolchain --root <workspace> --clear`）；按命令加 `--clear` 重跑才重建数据根环境，不会静默重建。修复后重跑恢复为 `ok`。
+- `install skill` 写入的是**入口指针**，不是仓库副本；指针包含绝对仓库、数据根、uv、私有环境与解释器路径，技能目录移动后仍能定位代码。步骤可重复执行，已完成的组件不重做。
 
 ### 3.2 飞书 CLI、登录与权限
 
