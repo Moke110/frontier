@@ -100,18 +100,59 @@ def test_probe_host_asks_instead_of_assuming(tmp_path):
     assert ok["evidence"]["local_execution"] is True
 
 
-def test_probe_dependencies_reports_the_missing_piece(tmp_path, monkeypatch):
-    empty = tmp_path / "empty-repo"
-    empty.mkdir()
-    result = install.probe_dependencies(empty, python="python")
-    assert result["status"] == "blocked"
-    assert "skills/frontier-run/SKILL.md" in result["note"]
+def _seed_repo_files(repo: Path) -> None:
+    for rel in (
+        "common.py",
+        "contracts/README.md",
+        "skills/frontier-run/SKILL.md",
+        "skills/frontier-run/references/installation.md",
+        "skills/frontier-run/references/workflow.md",
+    ):
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"# {rel}\n", encoding="utf-8")
 
-    good = Path(__file__).resolve().parents[1]
-    result = install.probe_dependencies(good)
+
+def test_probe_dependencies_never_falls_back_to_this_process(tmp_path):
+    repo = tmp_path / "repo"
+    _seed_repo_files(repo)
+
+    result = install.probe_dependencies(repo)
+
+    assert result["status"] == "blocked"
+    assert "解释器" in result["note"]
+    assert "install toolchain" in result["note"]
+    assert "--clear" in result["note"]
+    assert result["evidence"]["recorded"] is False
+
+
+def test_probe_dependencies_blocks_an_interpreter_inside_the_repo(tmp_path):
+    repo = tmp_path / "repo"
+    _seed_repo_files(repo)
+    inside = repo / ".venv" / "python"
+    inside.parent.mkdir(parents=True)
+    inside.write_text("", encoding="utf-8")
+
+    result = install.probe_dependencies(repo, python=str(inside))
+
+    assert result["status"] == "blocked"
+    assert result["evidence"]["outside_repo"] is False
+    assert "代码目录" in result["note"]
+    assert "--clear" in result["note"]
+
+
+def test_probe_dependencies_accepts_an_existing_outside_interpreter(tmp_path):
+    import sys
+
+    repo = tmp_path / "repo"
+    _seed_repo_files(repo)
+
+    result = install.probe_dependencies(repo, python=sys.executable)
+
     assert result["status"] == "ok"
+    assert result["evidence"]["outside_repo"] is True
+    assert result["evidence"]["recorded"] is True
     assert result["evidence"]["python_version"].count(".") == 2
-    assert isinstance(result["evidence"]["yaml"], bool)
 
 
 def test_probe_identity_reads_booleans_only():
@@ -161,16 +202,71 @@ def test_check_works_with_chinese_and_space_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", "")
     home = tmp_path / "我的 数据" / "home"
     home.mkdir(parents=True)
+    repo = Path(__file__).resolve().parents[1]
 
-    result = install.check(home, repo=Path(__file__).resolve().parents[1], host=_host())
+    result = install.check(home, repo=repo, host=_host())
 
     assert result["steps"]["host"] == "ok"
     assert result["steps"]["dependencies"] == "ok"
+    assert install.load_state(home)["steps"]["dependencies"]["evidence"]["outside_repo"] is True
     assert result["steps"]["lark_cli"] == "blocked"
     assert result["steps"]["permissions"] == "blocked"
     config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
     assert config["host"]["product"] == "WorkBuddy"
     assert config["timezone"]
+
+
+def test_check_never_falls_back_to_the_running_interpreter(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+    root, repo, home = _fake_workspace(tmp_path)
+    _seed_repo_files(repo)
+    workspace_mod.save_record(
+        root,
+        {
+            **workspace_mod.load_record(root),
+            "python": "",
+        },
+    )
+    from hostrun.base import update_config
+
+    update_config(home, paths={"python": ""})
+
+    result = install.check(home, host=_host(), workspace_root=root)
+
+    assert result["steps"]["dependencies"] == "blocked"
+    note = install.load_state(home)["steps"]["dependencies"]["note"]
+    assert "install toolchain" in note
+    assert "--clear" in note
+    assert str(root) in note
+    assert install.load_state(home)["steps"]["dependencies"]["evidence"]["recorded"] is False
+
+
+def test_check_merges_host_and_lark_permissions_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+    home = tmp_path / "home"
+    binary = home / "bin" / "lark-cli"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+    _seed_repo_files(tmp_path / "repo")
+
+    def runner(argv, **kwargs):
+        if "auth" in argv:
+            return _Proc(stdout=json.dumps(_auth_payload()))
+        return _Proc(stdout="{}")
+
+    install.check(
+        home,
+        repo=tmp_path / "repo",
+        host=_host(),
+        python=__import__("sys").executable,
+        runner=runner,
+    )
+
+    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
+    permissions = config["permissions"]
+    assert permissions["scope"] == sorted(GRANULAR_SCOPES)
+    assert permissions["host_scope"] == ["shell", "file_write"]
+    assert permissions["granted_at"]
 
 
 def test_stale_evidence_flags_old_steps(tmp_path):
@@ -400,10 +496,11 @@ def test_check_reads_facilities_folders_for_the_resource_preflight(tmp_path):
         home, repo=Path(__file__).resolve().parents[1], host=_host(), runner=runner
     )
 
-    assert result["steps"]["permissions"] == "untested"
+    assert result["steps"]["permissions"] == "ok"
     entry = install.load_state(home)["steps"]["permissions"]
     assert entry["evidence"]["base"]["status"] == "ok"
     assert entry["evidence"]["drive"]["status"] == "ok"
+    assert entry["evidence"]["messages"]["status"] == "untested"
     drive_calls = [call for call in calls if "files" in call and "list" in call]
     assert drive_calls
     assert any("fld_src" in " ".join(call) for call in drive_calls)

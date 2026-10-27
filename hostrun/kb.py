@@ -113,15 +113,28 @@ def required_fields() -> dict[str, list[str]]:
 
 
 def missing_required_fields(
-    client, table_ids: dict[str, str]
+    client,
+    table_ids: dict[str, str],
+    *,
+    problems: list[str] | None = None,
 ) -> dict[str, list[str]]:
-    """Read back each present table's fields; report gaps by stable table key."""
+    """Read back each present table's fields; report gaps by stable table key.
+
+    With ``problems`` the caller collects per-table read failures instead of
+    aborting the whole check (``verify`` records them as problems).
+    """
     missing: dict[str, list[str]] = {}
     for key, required in required_fields().items():
         table_id = table_ids.get(key)
         if not table_id:
             continue
-        present = set(client.field_names(table_id))
+        try:
+            present = set(client.field_names(table_id))
+        except Exception as exc:  # noqa: BLE001 - caller decides how to report
+            if problems is None:
+                raise
+            problems.append(f"{REQUIRED[key]}：字段读取失败（{exc}）")
+            continue
         gaps = [name for name in required if name not in present]
         if gaps:
             missing[key] = gaps
@@ -180,17 +193,9 @@ def verify(home: Path, *, client=None, expect_empty: bool = False) -> dict:
             problems.append(f"{REQUIRED[key]}：读取失败（{exc}）")
     # Table presence is not structural readiness: every contract field must
     # read back too, or later stages silently write into a partial table.
-    missing_fields: dict[str, list[str]] = {}
-    required = required_fields()
-    for key, table_id in present.items():
-        try:
-            field_names = set(client.field_names(table_id))
-        except Exception as exc:  # noqa: BLE001 - permission problems are results
-            problems.append(f"{REQUIRED[key]}：字段读取失败（{exc}）")
-            continue
-        gaps = [name for name in required.get(key, []) if name not in field_names]
-        if gaps:
-            missing_fields[key] = gaps
+    missing_fields = missing_required_fields(
+        client, present, problems=problems
+    )
     has_data = any(count.get(key) for key in ("cards", "propositions", "papers", "evidence"))
     fixture_titles = []
     if expect_empty and has_data:
@@ -312,13 +317,8 @@ def create_tables(
         raise HostRunError("先在 knowledge/base.json 配置 base_token（hostrun kb attach/create）")
     client = base_client(home, client=client)
     drive = _drive_for(home, client, drive)
-    listing = client.list_tables()
-    by_name = {
-        str(row.get("name") or ""): str(row.get("id") or "") for row in listing
-    }
-    by_id = {
-        str(row.get("id") or ""): str(row.get("name") or "") for row in listing
-    }
+    by_name = _existing(client)
+    by_id = {table_id: name for name, table_id in by_name.items()}
     tables = dict(config.get("tables") or {})
     actions: list[str] = []
     names = names or {}

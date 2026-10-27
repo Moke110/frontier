@@ -100,6 +100,82 @@ def _temp_card(test_id: str, keyword: str) -> dict:
     }
 
 
+def _retrieval_evidence(path: Path) -> tuple[int, str]:
+    """Derive the candidate count from a real plan/candidates artifact.
+
+    Accepts the plan JSON written by ``smoke plan``, a retriever JSONL candidate
+    file, or a JSON list; the count comes from the artifact, never the caller.
+    """
+    if not path.is_file():
+        return 0, f"检索证据文件不存在：{path}"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:  # noqa: BLE001 - unreadable evidence is a refusal
+        return 0, f"检索证据文件无法读取：{exc}"
+    suffix = path.suffix.lower()
+    rows = 0
+    if suffix in {".jsonl", ".ndjson"}:
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                json.loads(line)
+            except json.JSONDecodeError:
+                return 0, f"检索证据不是有效 JSONL：{path}"
+            rows += 1
+    elif suffix == ".json":
+        try:
+            payload = json.loads(text or "null")
+        except json.JSONDecodeError:
+            return 0, f"检索证据不是有效 JSON：{path}"
+        if isinstance(payload, list):
+            rows = len(payload)
+        elif isinstance(payload, dict):
+            for key in ("candidates", "papers", "items", "queries", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    rows = len(value)
+                    break
+            else:
+                for key in ("candidates", "candidate_count", "count"):
+                    value = payload.get(key)
+                    if isinstance(value, int):
+                        rows = value
+                        break
+                else:
+                    return 0, f"检索证据缺少候选列表或计数：{path}"
+        else:
+            return 0, f"检索证据格式不可识别：{path}"
+    else:
+        rows = len([line for line in text.splitlines() if line.strip()])
+    if rows <= 0:
+        return 0, f"检索证据为空（候选数为 0）：{path}"
+    return rows, ""
+
+
+def _rendered_artifact_errors(path: Path) -> list[str]:
+    """A rendered push must contain the render contract's sections and captions."""
+    if not path.is_file():
+        return [f"渲染文件不存在：{path}"]
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:  # noqa: BLE001 - unreadable evidence is a refusal
+        return [f"渲染文件无法读取：{exc}"]
+    from writer.render import CAPTION_LABELS, SECTION_LABELS
+
+    errors = [
+        f"缺少段落：{label}"
+        for label in SECTION_LABELS.values()
+        if label not in text
+    ]
+    errors.extend(
+        f"缺少图注：{label}"
+        for label in CAPTION_LABELS.values()
+        if label not in text
+    )
+    return errors
+
+
 # -------------------------------------------------------------------- start
 def start(
     home: Path,
@@ -271,7 +347,8 @@ def brief(home: Path) -> dict:
         f'python -m retriever.cli fetch --plan "{home / PLAN_REL}" --out '
         f'"<临时目录>/{test_id}-candidates.jsonl" --source live',
         f'python -m hostrun.cli --home "{home}" smoke record --step retrieved '
-        f'--candidates <候选数，需大于 0> --plan "{home / PLAN_REL}"',
+        f'--plan "{home / PLAN_REL}"'
+        "（候选数从该计划/候选文件读取；可加 --candidates 但必须一致）",
         "python -m archive.cli add-paper --file <候选 json>（逐条，自动去重）",
         f'python -m editor.cli task --candidates <候选> --date <today> --out "<临时目录>/{test_id}-editor.json"',
         "你亲自写 selection.json，并 python -m editor.cli check ...",
@@ -282,7 +359,8 @@ def brief(home: Path) -> dict:
         "python -m writer.cli check ...",
         f'python -m writer.cli render --push <push> --out "<临时目录>/{test_id}.html"',
         f'python -m hostrun.cli --home "{home}" smoke record --step rendered '
-        "--push <push_id> --html <渲染文件路径>",
+        "--push <push_id> --html <渲染文件路径>"
+        "（文件须含七段段落与原文图/生成图图注）",
         "python -m archive.cli add-push --file <push json>",
         "python -m library.cli ensure-source --paper <paper_id>",
         f'python -m publisher.cli send --push <push> --html <html> --to {state.get("owner") or "<owner>"}',
@@ -357,18 +435,19 @@ def record(
     # real retrieval count and the selected papers, like sent carries ids.
     candidate_count = 0
     if step == "retrieved":
-        raw = candidates
-        if raw is None and evidence:
-            raw = evidence.get("candidates", evidence.get("candidate_count"))
-        try:
-            candidate_count = int(raw) if raw is not None else 0
-        except (TypeError, ValueError):
-            candidate_count = 0
-        if candidate_count <= 0:
+        if not plan:
             raise HostRunError(
-                "retrieved 步骤需要真实检索证据：用 --candidates <候选数，需大于 0> 记录检索结果"
-                "（可用 --plan 记录检索计划路径）"
+                "retrieved 步骤需要 --plan <检索计划或候选文件路径>，"
+                "候选数必须从该真实检索证据中得出"
             )
+        derived, error = _retrieval_evidence(Path(str(plan)).expanduser())
+        if error:
+            raise HostRunError("retrieved 步骤的检索证据不可用：" + error)
+        if candidates is not None and int(candidates) != derived:
+            raise HostRunError(
+                f"--candidates {candidates} 与检索证据中的候选数 {derived} 不一致"
+            )
+        candidate_count = derived
     selected = [
         str(paper).strip()
         for paper in (
@@ -380,10 +459,20 @@ def record(
         raise HostRunError(
             "written 步骤需要至少一个选中的论文 ID：用 --paper <paper_id>（可重复）"
         )
-    if step == "rendered" and not (push or html):
-        raise HostRunError(
-            "rendered 步骤需要推送件证据：用 --push <push_id> 或 --html <渲染文件路径> 记录渲染结果"
-        )
+    if step == "rendered":
+        if not push:
+            raise HostRunError(
+                "rendered 步骤需要 --push <push_id> 作为推送库登记证据"
+            )
+        if not html:
+            raise HostRunError(
+                "rendered 步骤需要 --html <渲染文件路径>，并校验七段与图注"
+            )
+        render_errors = _rendered_artifact_errors(Path(str(html)).expanduser())
+        if render_errors:
+            raise HostRunError(
+                "rendered 步骤的推送件不完整：" + "；".join(render_errors)
+            )
     if step == "sent" and not (push and message and question):
         raise HostRunError("sent 步骤需要 --push、--message 与 --question，记录本次副作用归属")
     if step == "rated" and (not item or verdict not in ("irrelevant", "ok", "great")):

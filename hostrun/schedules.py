@@ -68,50 +68,48 @@ def _path_problem(paths: dict) -> dict | None:
     of emitting a command.
     """
     python_path = Path(str(paths.get("python") or "")).expanduser()
-    if not str(paths.get("python") or "") or not python_path.is_absolute():
-        return {
-            "ok": False,
-            "reason": "interpreter_not_absolute",
-            "note": (
-                "未记录解释器的绝对路径；先运行 install toolchain 并把数据根解释器"
-                "写入安装配置 paths.python，再重新生成任务"
-            ),
-            "paths": paths,
-        }
-    if not python_path.is_file():
-        return {
-            "ok": False,
-            "reason": "interpreter_missing",
-            "note": (
-                f"记录的解释器不存在：{python_path}；先运行 install toolchain"
-                "（必要时加 --clear 重建）后重试"
-            ),
-            "paths": paths,
-        }
     repo_path = Path(str(paths.get("repo") or "")).expanduser()
-    if not str(paths.get("repo") or "") or not repo_path.is_absolute() or not repo_path.is_dir():
-        return {
-            "ok": False,
-            "reason": "repo_missing",
-            "note": "代码目录未记录或不可用；先完成 install workspace 记录代码目录绝对路径",
-            "paths": paths,
-        }
     home_path = Path(str(paths.get("home") or ""))
-    if not str(paths.get("home") or "") or not home_path.is_absolute() or not home_path.is_dir():
-        return {
-            "ok": False,
-            "reason": "home_missing",
-            "note": "数据根未记录或不可用；先完成 install workspace 创建数据根",
-            "paths": paths,
-        }
     skill_path = Path(str(paths.get("skill") or ""))
-    if not str(paths.get("skill") or "") or not skill_path.is_absolute() or not skill_path.is_file():
-        return {
-            "ok": False,
-            "reason": "skill_missing",
-            "note": "运行技能路径未记录或不可读；先运行 install skill 注册 frontier-run",
-            "paths": paths,
-        }
+    checks = (
+        (
+            not str(paths.get("python") or "").strip()
+            or not python_path.is_absolute(),
+            "interpreter_not_absolute",
+            "未记录解释器的绝对路径；先运行 install toolchain 并把数据根解释器"
+            "写入安装配置 paths.python，再重新生成任务",
+        ),
+        (
+            not python_path.is_file(),
+            "interpreter_missing",
+            f"记录的解释器不存在：{python_path}；先运行 install toolchain"
+            "（必要时加 --clear 重建）后重试",
+        ),
+        (
+            not str(paths.get("repo") or "").strip()
+            or not repo_path.is_absolute()
+            or not repo_path.is_dir(),
+            "repo_missing",
+            "代码目录未记录或不可用；先完成 install workspace 记录代码目录绝对路径",
+        ),
+        (
+            not str(paths.get("home") or "").strip()
+            or not home_path.is_absolute()
+            or not home_path.is_dir(),
+            "home_missing",
+            "数据根未记录或不可用；先完成 install workspace 创建数据根",
+        ),
+        (
+            not str(paths.get("skill") or "").strip()
+            or not skill_path.is_absolute()
+            or not skill_path.is_file(),
+            "skill_missing",
+            "运行技能路径未记录或不可读；先运行 install skill 注册 frontier-run",
+        ),
+    )
+    for failed, reason, note in checks:
+        if failed:
+            return {"ok": False, "reason": reason, "note": note, "paths": paths}
     return None
 
 

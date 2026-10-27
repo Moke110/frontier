@@ -160,6 +160,28 @@ def _field_gaps(client, tables: dict) -> tuple[dict[str, list[str]], list[str]]:
         return {}, [f"字段读回失败：{exc}"]
 
 
+def _readiness_note(
+    names: dict,
+    missing: list[str],
+    missing_fields: dict[str, list[str]],
+    extra: list[str] | None = None,
+) -> str:
+    """One readable not-ready note shared by create/attach/status."""
+    details: list[str] = []
+    if missing:
+        details.append("缺表：" + "、".join(names["tables"][key] for key in missing))
+    if missing_fields:
+        details.append(
+            "缺字段："
+            + "、".join(
+                f"{names['tables'][key]}（{','.join(fields)}）"
+                for key, fields in missing_fields.items()
+            )
+        )
+    details.extend(extra or [])
+    return "设施未就绪：" + "；".join(details)
+
+
 def _folders_from_config(home: Path, client) -> dict:
     """Read folder tokens from the 配置 row without requiring a folder listing."""
     base = read_json(Path(home) / "knowledge" / "base.json") or {}
@@ -233,19 +255,7 @@ def _finish(
             f"设施已就绪：{base.get('name')}（{len(tables)} 表）",
         )
     else:
-        details: list[str] = []
-        if missing:
-            details.append("缺表：" + "、".join(names["tables"][key] for key in missing))
-        if missing_fields:
-            details.append(
-                "缺字段："
-                + "、".join(
-                    f"{names['tables'][key]}（{','.join(fields)}）"
-                    for key, fields in missing_fields.items()
-                )
-            )
-        details.extend(problems)
-        note = "设施未就绪：" + "；".join(details)
+        note = _readiness_note(names, missing, missing_fields, problems)
         _record_blocked(
             home,
             note,
@@ -594,21 +604,13 @@ def status(home: Path, *, client=None) -> dict:
     except Exception:  # noqa: BLE001 - a read failure is not "empty"
         has_user_data = None
     ok = not missing and not missing_fields and not missing_folders and not field_problems
-    details: list[str] = []
-    if missing:
-        details.append("缺表：" + "、".join(names["tables"][key] for key in missing))
-    if missing_fields:
-        details.append(
-            "缺字段："
-            + "、".join(
-                f"{names['tables'][key]}（{','.join(fields)}）"
-                for key, fields in missing_fields.items()
-            )
-        )
-    if missing_folders:
-        details.append("缺云盘目录：" + "、".join(missing_folders))
-    details.extend(field_problems)
-    note = "设施结构完整" if ok else "设施未就绪：" + "；".join(details)
+    if ok:
+        note = "设施结构完整"
+    else:
+        extra = (
+            ["缺云盘目录：" + "、".join(missing_folders)] if missing_folders else []
+        ) + list(field_problems)
+        note = _readiness_note(names, missing, missing_fields, extra)
     return {
         "ok": ok,
         "status": "ok" if ok else "blocked",

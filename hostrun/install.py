@@ -186,17 +186,16 @@ def probe_dependencies(
     python: str | None = None,
     platform: str | None = None,
     home: str | Path | None = None,
+    repair: str = "",
 ) -> dict:
-    """The *recorded* interpreter, PyYAML and a usable repository checkout."""
+    """The *recorded* interpreter, PyYAML and a usable repository checkout.
+
+    There is deliberately no fallback to this process's interpreter: an
+    unrecorded, missing, relative or in-repo interpreter blocks the dependency
+    step with the exact toolchain repair command.
+    """
     repo = Path(repo)
-    python = python or sys.executable
-    facts = _interpreter_facts(str(python))
-    version = facts["version"]
-    has_yaml = facts["yaml"]
-    python_path = Path(str(python))
-    outside_repo = not python_path.is_relative_to(repo) if python_path.is_absolute() else False
-    expected = (Path(home) / workspace_mod.ENV_DIRNAME) if home else None
-    in_data_root = bool(expected) and python_path.is_relative_to(expected)
+    repair_hint = repair or "install toolchain --root <workspace> --clear"
     require = [
         "skills/frontier-run/SKILL.md",
         "skills/frontier-run/references/installation.md",
@@ -205,27 +204,64 @@ def probe_dependencies(
         "common.py",
     ]
     missing = [name for name in require if not (repo / name).exists()]
-    ok = facts["ok"] and version >= MIN_PYTHON and has_yaml and not missing
-    notes = []
-    if not facts["ok"]:
-        notes.append(f"解释器不可用：{facts['error']}")
-    elif version < MIN_PYTHON:
-        notes.append(f"python {'.'.join(map(str, version))} < 3.11")
-    if facts["ok"] and not has_yaml:
-        notes.append("PyYAML missing in this interpreter")
+    recorded = bool(str(python or "").strip())
+    notes: list[str] = []
+    version = (0, 0, 0)
+    has_yaml = False
+    facts = {"ok": False, "error": ""}
+    outside_repo = False
+    in_data_root = False
+    python_path = Path(str(python)).expanduser() if recorded else Path("")
+    outside_repo = (
+        python_path.is_absolute() and not python_path.is_relative_to(repo)
+    )
+    if not recorded:
+        notes.append("未记录解释器的绝对路径；依赖未验证")
+    elif not python_path.is_absolute():
+        notes.append(f"解释器路径不是绝对路径：{python}")
+    elif not python_path.is_file():
+        notes.append(f"解释器不存在：{python}")
+    elif not outside_repo:
+        notes.append(f"解释器位于代码目录内，无法写数据根：{python}")
+    else:
+        facts = _interpreter_facts(str(python))
+        version = facts["version"]
+        has_yaml = facts["yaml"]
+        expected = (Path(home) / workspace_mod.ENV_DIRNAME) if home else None
+        in_data_root = bool(expected) and python_path.is_relative_to(expected)
+        if not facts["ok"]:
+            notes.append(f"解释器不可用：{facts['error']}")
+        elif version < MIN_PYTHON:
+            notes.append(f"python {'.'.join(map(str, version))} < 3.11")
+        elif not has_yaml:
+            notes.append("PyYAML missing in this interpreter")
     if missing:
         notes.append("repo missing: " + ", ".join(missing))
+    ok = (
+        recorded
+        and facts["ok"]
+        and python_path.is_absolute()
+        and python_path.is_file()
+        and outside_repo
+        and version >= MIN_PYTHON
+        and has_yaml
+        and not missing
+    )
+    if not ok:
+        notes.append(f"修复：{repair_hint}")
     return {
         "status": "ok" if ok else "blocked",
         "note": "；".join(notes) or "解释器与仓库可用",
         "evidence": {
-            "python": str(python),
+            "python": str(python) if recorded else "",
             "python_version": ".".join(map(str, version)),
             "platform": platform or sys.platform,
             "repo": str(repo),
             "yaml": has_yaml,
+            "recorded": recorded,
             "outside_repo": outside_repo,
             "in_data_root": in_data_root,
+            "repair": repair_hint,
         },
     }
 
@@ -475,11 +511,18 @@ def check(
         if ws.get("venv"):
             update_config(home, paths={"venv": ws["venv"]})
 
+    repair = (
+        workspace_mod.repair_command(workspace_root, home)
+        if workspace_root
+        else f'python -m hostrun.cli --home "{home}" install toolchain '
+        f"--root <workspace> --clear"
+    )
     results["dependencies"] = probe_dependencies(
         repo_path,
         python=python or config["paths"].get("python"),
         platform=platform,
         home=home,
+        repair=repair,
     )
     lark_result = probe_lark_cli(home, lark_cli or config["paths"].get("lark_cli"))
     results["lark_cli"] = lark_result
@@ -552,14 +595,23 @@ def check(
             in {"workspace", "dependencies", "skill", "identity", "permissions"},
         )
 
+    host_permissions = (
+        list(host.get("permissions") or [])
+        if host and host.get("product")
+        else None
+    )
+    permissions_update = {
+        "scope": authz.get("granted") or [],
+        "missing": authz.get("missing") or [],
+        "checked_at": now(),
+    }
+    if host_permissions is not None:
+        permissions_update["host_scope"] = host_permissions
+        permissions_update["granted_at"] = now()
     update_config(
         home,
         paths={"repo": str(repo_path), "lark_cli": lark_path or config["paths"].get("lark_cli", "")},
-        permissions={
-            "scope": authz.get("granted") or [],
-            "missing": authz.get("missing") or [],
-            "checked_at": now(),
-        },
+        permissions=permissions_update,
         timezone=timezone_name or config.get("timezone") or default_timezone(),
     )
     if host and host.get("product"):
@@ -570,7 +622,6 @@ def check(
                 "version": str(host.get("version") or ""),
                 "mode": str(host.get("mode") or ""),
             },
-            permissions={"scope": host.get("permissions") or [], "granted_at": now()},
         )
     return summary(home)
 

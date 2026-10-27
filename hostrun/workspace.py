@@ -33,6 +33,7 @@ from __future__ import annotations
 import io
 import os
 import platform as platform_mod
+import shlex
 import stat
 import subprocess
 import sys
@@ -122,11 +123,22 @@ def environment_python(home: str | Path) -> Path:
 
 
 def repair_command(root: str | Path, home: str | Path) -> str:
-    """The exact command that rebuilds a missing or broken interpreter."""
+    """The exact command that rebuilds a missing or broken interpreter.
+
+    The command first changes into the code checkout, so the host can run it
+    from any working directory.
+    """
+    root_path = Path(root).expanduser().resolve()
+    home_path = Path(home).expanduser().resolve()
+    if os.name == "nt":
+        change = f'cd /d "{root_path}" && '
+    else:
+        change = f"cd {shlex.quote(str(root_path))} && "
     return (
-        f'"{sys.executable or "python"}" -m hostrun.cli '
-        f'--home "{Path(home).expanduser().resolve()}" install toolchain '
-        f'--root "{Path(root).expanduser().resolve()}" --clear'
+        change
+        + f'"{sys.executable or "python"}" -m hostrun.cli '
+        f'--home "{home_path}" install toolchain '
+        f'--root "{root_path}" --clear'
     )
 
 
@@ -475,6 +487,13 @@ def install_uv(
     return {"ok": True, "path": str(path), "source": "private", "url": url}
 
 
+def _uv_blocked(note: str, path: str | Path | None = None) -> dict:
+    result = {"ok": False, "status": "blocked", "note": note}
+    if path is not None:
+        result["evidence"] = {"source": "explicit", "path": str(path)}
+    return result
+
+
 def ensure_uv(
     home: str | Path,
     *,
@@ -498,12 +517,10 @@ def ensure_uv(
     if uv_path:
         found = resolve_executable(uv_path)
         if not found["found"]:
-            return {
-                "ok": False,
-                "status": "blocked",
-                "note": f"指定的 uv 不存在：{uv_path}；请给出 uv 可执行文件的绝对路径或省略 --uv",
-                "evidence": {"source": "explicit", "path": str(uv_path)},
-            }
+            return _uv_blocked(
+                f"指定的 uv 不存在：{uv_path}；请给出 uv 可执行文件的绝对路径或省略 --uv",
+                uv_path,
+            )
         candidates.append(("explicit", found["path"]))
     else:
         if recorded and Path(recorded).expanduser().is_file():
@@ -526,12 +543,10 @@ def ensure_uv(
                 "installed": None,
             }
     if uv_path:
-        return {
-            "ok": False,
-            "status": "blocked",
-            "note": f"指定的 uv 无法运行：{uv_path}；请修复该可执行文件或改用系统 uv",
-            "evidence": {"source": "explicit", "path": str(uv_path)},
-        }
+        return _uv_blocked(
+            f"指定的 uv 无法运行：{uv_path}；请修复该可执行文件或改用系统 uv",
+            uv_path,
+        )
 
     installed = install_uv(
         home_path, fetch=fetch, platform_name=platform_name, machine=machine
@@ -613,6 +628,10 @@ def ensure_environment(
     if broken and not clear:
         hint = repair or "以 --clear 重跑 install toolchain"
         reason = "interpreter_missing" if recorded_missing and not python.exists() else "interpreter_broken"
+        if python.is_file():
+            probe_error = verify(python).get("error", "") or "解释器导入自检失败"
+        else:
+            probe_error = f"解释器文件缺失：{python}"
         return {
             "ok": False,
             "status": "blocked",
@@ -622,7 +641,7 @@ def ensure_environment(
             "uv": str(uv),
             "created": False,
             "repaired": False,
-            "probe": {"ok": False, "error": ""},
+            "probe": {"ok": False, "error": probe_error},
             "note": f"数据根私有解释器不可用：{python}；修复：{hint}",
         }
 

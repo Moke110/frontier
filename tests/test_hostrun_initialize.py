@@ -330,6 +330,12 @@ def test_apply_refuses_a_card_that_existed_before_the_draft(tmp_path):
         ],
     )
     initialize.propose(home, [_card(label="新标签")], client=base)
+    draft_meta = json.loads(
+        (home / "install" / "initial" / "draft" / "draft.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert draft_meta["pre_existing_ids"] == ["card_virtual_cell"]
     initialize.confirm(home, confirmed_by_user=True)
 
     refused = initialize.apply_draft(home, client=base)
@@ -337,15 +343,86 @@ def test_apply_refuses_a_card_that_existed_before_the_draft(tmp_path):
     assert refused["ok"] is False
     assert refused["reason"] == "pre_existing_card"
     assert refused["conflicts"] == ["card_virtual_cell"]
+    assert "overwrite" not in json.dumps(refused, ensure_ascii=False)
     rows = base.list(cards_table)
     assert [row["fields"]["label"] for row in rows] == ["既有正式卡片"]
     assert not (home / "archive" / "cards" / "card_virtual_cell.json").exists()
 
-    overwritten = initialize.apply_draft(home, client=base, overwrite=True)
+    # there is no escape hatch: the collision is refused again, unchanged
+    again = initialize.apply_draft(home, client=base)
+    assert again["ok"] is False
+    assert again["reason"] == "pre_existing_card"
+    assert [row["fields"]["label"] for row in base.list(cards_table)] == ["既有正式卡片"]
 
-    assert overwritten["ok"] is True
-    rows = base.list(cards_table)
-    assert [row["fields"]["label"] for row in rows] == ["新标签"]
+
+def test_propose_refuses_when_the_preexisting_snapshot_cannot_be_read(tmp_path):
+    home, base, _ = _home(tmp_path)
+    _intake(home, tmp_path)
+
+    class Broken(JsonBase):
+        def list(self, table):
+            raise RuntimeError("permission denied")
+
+    broken = Broken(tmp_path / "home" / "library" / "offline-base.json")
+    broken.meta = base.meta
+    broken.fields = base.fields
+    broken.tables = base.tables
+
+    result = initialize.propose(home, [_card()], client=broken)
+
+    assert result["ok"] is False
+    assert result["reason"] == "pre_existing_snapshot_failed"
+    assert "Base" in result["note"]
+    assert not (home / "install" / "initial" / "draft" / "cards.jsonl").exists()
+
+
+def test_apply_normalises_before_comparing_read_back(tmp_path, monkeypatch):
+    home, base, _ = _home(tmp_path)
+    _intake(home, tmp_path)
+    initialize.propose(home, [_card()], client=base)
+    initialize.confirm(home, confirmed_by_user=True)
+    config = json.loads((home / "knowledge" / "base.json").read_text(encoding="utf-8"))
+    cards_table = config["tables"]["cards"]
+    from knowledge import bitable
+
+    real_sync = bitable.sync
+    card = _card()
+
+    def messy_sync(home_path, *, client):
+        result = real_sync(home_path, client=client)
+        row = client.list(cards_table)[0]
+        client.update(
+            cards_table,
+            {
+                row["record_id"]: {
+                    "label": f"  {card['label']}  ",
+                    "ontology": list(reversed(card["ontology"])) + [" virtual cell "],
+                    "annotation": f" {card['annotation']} ",
+                }
+            },
+        )
+        return result
+
+    monkeypatch.setattr(bitable, "sync", messy_sync)
+
+    result = initialize.apply_draft(home, client=base)
+
+    assert result["ok"] is True, result.get("reason")
+    assert result["readback"]["verified"] is True
+
+
+def test_cli_propose_exits_nonzero_when_refused(tmp_path):
+    from hostrun import cli
+
+    home, base, _ = _home(tmp_path)
+    cards_file = tmp_path / "cards.json"
+    cards_file.write_text(json.dumps([_card()]), encoding="utf-8")
+
+    code = cli.main(
+        ["--home", str(home), "init", "propose", "--cards", str(cards_file)]
+    )
+
+    assert code == 1
 
 
 def test_apply_detects_a_tampered_remote_card_on_read_back(tmp_path, monkeypatch):

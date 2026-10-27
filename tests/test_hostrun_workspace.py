@@ -452,8 +452,26 @@ def test_toolchain_blocks_a_broken_interpreter_with_a_repair_command(
     assert "install toolchain" in note
     assert "--clear" in note
     assert str(root) in note
+    repair = note.split("修复：", 1)[1]
+    assert repair.startswith(("cd /d ", "cd "))
     assert not runner.ran("venv")
     assert not (home / "install" / "config.json").exists()
+    if breakage == "failing_probe":
+        assert "yaml" in result["environment"]["probe"]["error"]
+
+
+def test_repair_command_changes_directory_before_running(tmp_path):
+    root = tmp_path / "ws"
+    home = root / "frontier-archive"
+    command = workspace.repair_command(root, home)
+
+    if os.name == "nt":
+        assert command.startswith(f'cd /d "{root}" && ')
+    else:
+        assert command.startswith(f"cd {root} && ")
+    assert "install toolchain" in command
+    assert "--clear" in command
+    assert str(home) in command
 
 
 def test_toolchain_clear_rebuilds_a_broken_interpreter_and_rerun_is_ok(tmp_path):
