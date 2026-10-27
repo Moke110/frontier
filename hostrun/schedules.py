@@ -49,7 +49,7 @@ def _paths(home: Path, *, repo=None, python=None, skill=None) -> dict:
     return {
         "repo": str(repo or paths.get("repo") or ""),
         "home": str(Path(home).resolve()),
-        "python": str(python or paths.get("python") or "python"),
+        "python": str(python or paths.get("python") or ""),
         "lark_cli": str(paths.get("lark_cli") or ""),
         "skill": str(
             skill
@@ -58,6 +58,59 @@ def _paths(home: Path, *, repo=None, python=None, skill=None) -> dict:
             or (Path(str(repo or paths.get("repo") or ".")) / "skills" / "frontier-run" / "SKILL.md")
         ),
     }
+
+
+def _path_problem(paths: dict) -> dict | None:
+    """Task commands must carry recorded, absolute, resolvable paths.
+
+    A bare ``python`` would make the host's wake-up depend on PATH or its working
+    directory, so an unrecorded or missing interpreter blocks the plan instead
+    of emitting a command.
+    """
+    python_path = Path(str(paths.get("python") or "")).expanduser()
+    repo_path = Path(str(paths.get("repo") or "")).expanduser()
+    home_path = Path(str(paths.get("home") or ""))
+    skill_path = Path(str(paths.get("skill") or ""))
+    checks = (
+        (
+            not str(paths.get("python") or "").strip()
+            or not python_path.is_absolute(),
+            "interpreter_not_absolute",
+            "未记录解释器的绝对路径；先运行 install toolchain 并把数据根解释器"
+            "写入安装配置 paths.python，再重新生成任务",
+        ),
+        (
+            not python_path.is_file(),
+            "interpreter_missing",
+            f"记录的解释器不存在：{python_path}；先运行 install toolchain"
+            "（必要时加 --clear 重建）后重试",
+        ),
+        (
+            not str(paths.get("repo") or "").strip()
+            or not repo_path.is_absolute()
+            or not repo_path.is_dir(),
+            "repo_missing",
+            "代码目录未记录或不可用；先完成 install workspace 记录代码目录绝对路径",
+        ),
+        (
+            not str(paths.get("home") or "").strip()
+            or not home_path.is_absolute()
+            or not home_path.is_dir(),
+            "home_missing",
+            "数据根未记录或不可用；先完成 install workspace 创建数据根",
+        ),
+        (
+            not str(paths.get("skill") or "").strip()
+            or not skill_path.is_absolute()
+            or not skill_path.is_file(),
+            "skill_missing",
+            "运行技能路径未记录或不可读；先运行 install skill 注册 frontier-run",
+        ),
+    )
+    for failed, reason, note in checks:
+        if failed:
+            return {"ok": False, "reason": reason, "note": note, "paths": paths}
+    return None
 
 
 def plan(
@@ -74,6 +127,9 @@ def plan(
     home = Path(home).resolve()
     config = load_config(home, repo=Path(repo) if repo else None)
     paths = _paths(home, repo=repo, python=python, skill=skill)
+    problem = _path_problem(paths)
+    if problem is not None:
+        return problem
     zone = timezone_name or config.get("timezone") or default_timezone()
     daily = _clock(daily, "每日推送")
     if not 0 <= int(feedback_minute) < 60:
@@ -116,6 +172,7 @@ def plan(
     ]
     return {
         "schema_version": 2,
+        "ok": True,
         "generated_at": now(),
         "timezone": zone,
         "paths": paths,
@@ -204,6 +261,9 @@ def confirm(
         daily=daily,
         feedback_minute=feedback_minute,
     )
+    if not spec.get("ok"):
+        # No valid command exists, so no task may be recorded.
+        return spec
     config = load_config(home)
     existing = (config.get("schedules") or {}).get("tasks") or []
     tasks = _merge_tasks(existing, spec["tasks"], task_ids or {})

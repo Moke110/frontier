@@ -6,9 +6,36 @@ from pathlib import Path
 
 import pytest
 
-from hostrun import lark
+from hostrun import cli, lark, workspace
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _workspace(tmp_path):
+    root = tmp_path / "ws"
+    home = root / "frontier-archive"
+    home.mkdir(parents=True)
+    workspace.save_record(
+        root,
+        {
+            "schema_version": 1,
+            "root": str(root),
+            "repo": str(root / "frontier"),
+            "home": str(home),
+            "repo_url": workspace.DEFAULT_REPO_URL,
+            "commit": "abc123",
+        },
+    )
+    return root, home
+
+
+def _cli_file(directory, name=None):
+    binary = Path(directory) / (
+        name or ("lark-cli.exe" if os.name == "nt" else "lark-cli")
+    )
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("", encoding="utf-8")
+    return binary
 
 
 def _auth_payload(**over):
@@ -154,8 +181,47 @@ def test_resource_preflight_proves_base_and_drive_reads(tmp_path):
     assert result["base"]["status"] == "ok"
     assert result["drive"]["status"] == "ok"
     assert result["messages"]["status"] == "untested"
-    assert result["status"] == "untested"
+    # real Base+Drive reads are sufficient; messages stay separate evidence
+    assert result["status"] == "ok"
     assert any("--base-token" in call for call in calls)
+
+
+def test_status_reaches_ok_from_real_base_and_drive_reads(tmp_path):
+    home = tmp_path / "home"
+    (home / "knowledge").mkdir(parents=True)
+    (home / "knowledge" / "base.json").write_text(
+        json.dumps({"schema_version": 1, "base_token": "bas_x", "tables": {}}),
+        encoding="utf-8",
+    )
+    (home / "install").mkdir(parents=True)
+    (home / "install" / "facilities.json").write_text(
+        json.dumps(
+            {
+                "base": {"token": "bas_x"},
+                "folders": {"source": "fld_src", "push": "fld_push"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    root = tmp_path / "ws"
+    binary = root / ".frontier" / "bin" / ("lark-cli.cmd" if os.name == "nt" else "lark-cli")
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+
+    def runner(argv, **kwargs):
+        if "auth" in argv:
+            return Proc(stdout=json.dumps(_auth_payload()))
+        if "+table-list" in argv:
+            return Proc(stdout=json.dumps({"ok": True, "data": {"tables": []}}))
+        if "files" in argv and "list" in argv:
+            return Proc(stdout=json.dumps({"ok": True, "data": {"files": []}}))
+        return Proc(stdout="{}")
+
+    result = lark.status(root, home=home, required=[], runner=runner)
+
+    assert result["resources"]["status"] == "ok"
+    assert result["resources"]["messages"]["status"] == "untested"
+    assert result["ok"] is True
 
 
 def test_resource_preflight_never_claims_permission_from_a_failure(tmp_path):
@@ -240,3 +306,79 @@ def test_needs_refresh_past_the_window_is_expired():
 
     assert facts["user"]["ready"] is False
     assert facts["user"]["expired"] is True
+
+
+# ------------------------------------------- recorded absolute CLI path (ADR 0007)
+def test_stale_recorded_cli_is_blocked_even_when_path_has_one(tmp_path, monkeypatch):
+    path_dir = tmp_path / "pathbin"
+    path_dir.mkdir()
+    _cli_file(path_dir, "lark-cli.cmd" if os.name == "nt" else "lark-cli")
+    monkeypatch.setenv("PATH", str(path_dir))
+    stale = tmp_path / "retired" / ("lark-cli.exe" if os.name == "nt" else "lark-cli")
+
+    found = lark.discover_cli(tmp_path, spec=str(stale), home=tmp_path / "home")
+
+    assert found["ok"] is False
+    assert found["stale"] is True
+    assert found["path"] == str(stale)
+    assert "discover --cli" in found["note"]
+    assert "PATH" in found["note"]
+
+
+def test_status_reports_a_stale_recorded_cli_with_a_rediscovery_step(tmp_path):
+    stale = str(tmp_path / "retired" / "lark-cli")
+
+    result = lark.status(tmp_path, spec=stale, home=tmp_path / "home")
+
+    assert result["ok"] is False
+    assert result["cli"]["status"] == "blocked"
+    assert result["cli"]["stale"] is True
+    assert "discover --cli" in result["next"]
+
+
+def test_discover_cli_persists_the_absolute_path(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("PATH", "")
+    root, home = _workspace(tmp_path)
+    binary = _cli_file(tmp_path / "tools")
+
+    code = cli.main(
+        ["--home", str(home), "lark", "discover", "--root", str(root), "--cli", str(binary)]
+    )
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["path"] == str(binary)
+    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
+    assert config["paths"]["lark_cli"] == str(binary)
+
+
+def test_discover_uses_the_recorded_path_when_cli_is_omitted(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("PATH", "")
+    root, home = _workspace(tmp_path)
+    binary = _cli_file(tmp_path / "tools")
+    from hostrun.base import update_config
+
+    update_config(home, paths={"lark_cli": str(binary)})
+
+    code = cli.main(["--home", str(home), "lark", "discover", "--root", str(root)])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["path"] == str(binary)
+
+
+def test_cli_discover_blocks_a_stale_recorded_path(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("PATH", "")
+    root, home = _workspace(tmp_path)
+    stale = tmp_path / "retired" / "lark-cli"
+    from hostrun.base import update_config
+
+    update_config(home, paths={"lark_cli": str(stale)})
+
+    code = cli.main(["--home", str(home), "lark", "discover", "--root", str(root)])
+
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["stale"] is True
+    assert "discover --cli" in payload["note"]

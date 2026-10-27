@@ -78,10 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--code-dir", default=workspace_mod.DEFAULT_CODE_DIRNAME)
     w.add_argument("--data-dir", default=workspace_mod.DEFAULT_DATA_DIRNAME)
     w.add_argument("--dry-run", action="store_true")
-    t = isub.add_parser("toolchain", help="reuse or privately install uv, then the repo venv")
+    t = isub.add_parser("toolchain", help="resolve uv outside the workspace, then build the data-root environment")
     t.add_argument("--root", required=True)
     t.add_argument("--uv", dest="uv_path")
     t.add_argument("--python-version", default=workspace_mod.DEFAULT_PYTHON)
+    t.add_argument("--clear", action="store_true", help="rebuild a missing or broken data-root interpreter")
     sk = isub.add_parser("skill", help="register the frontier-run launcher for the host")
     sk.add_argument("--root", required=True)
     sk.add_argument("--target", required=True, help="host skill directory for frontier-run")
@@ -139,11 +140,26 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--file", dest="file_ids", action="append", default=[],
                     help="uploaded file token; repeat for source and push files")
     sr.add_argument("--source", dest="source_id")
+    sr.add_argument("--candidates", type=int,
+                    help="retrieved: number of candidates returned by the real retrieval (>0)")
+    sr.add_argument("--plan", dest="plan",
+                    help="retrieved: path/reference of the temporary retrieval plan")
+    sr.add_argument("--paper", dest="paper_ids", action="append", default=[],
+                    help="written: selected paper id; repeat for each selected paper")
+    sr.add_argument("--html", dest="html",
+                    help="rendered: path of the rendered push html artifact")
+    sr.add_argument("--target", dest="targets", action="append", default=[],
+                    help="applied: adopted target id (card/proposition); repeat for each")
+    sr.add_argument("--applied-field", dest="applied_fields", action="append", default=[],
+                    help="applied: field name whose adopted value must be verified; repeat for each")
     sv = ssub.add_parser("verify", help="read the Base and require the accepted change")
     sv.add_argument("--target-key", required=True, choices=["cards", "propositions", "evidence"])
     sv.add_argument("--target-id", required=True)
-    sv.add_argument("--field", required=True)
-    sv.add_argument("--expected", required=True)
+    sv.add_argument("--field", dest="fields", action="append", default=[],
+                    help="read-back check as name=value; repeat for each adopted field "
+                         "(legacy: --field <name> --expected <value>)")
+    sv.add_argument("--expected", action="append", default=[],
+                    help="legacy value paired with a bare --field <name>")
     sf = ssub.add_parser("fail", help="mark the test failed and keep it for cleanup")
     sf.add_argument("--reason", required=True)
 
@@ -171,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     ic = isub.add_parser("confirm", help="record the user's confirmation")
     ic.add_argument("--yes", action="store_true")
     ic.add_argument("--note", default="")
-    isub.add_parser("apply")
+    ap = isub.add_parser("apply")
     ia = isub.add_parser("adopt-existing")
     ia.add_argument("--yes", action="store_true", help="the user confirmed keeping the existing library")
     isub.add_parser("retrieve")
@@ -404,58 +420,87 @@ def _install(args, root: Path) -> tuple[int, dict]:
             data_dirname=args.data_dir,
             dry_run=args.dry_run,
         )
+        # A rejected layout has no safe data root to write into: record the
+        # blocked state under the CLI's data root so `install report` surfaces
+        # the actionable reason, and leave the code checkout untouched.
         if not args.dry_run:
-            data_root = Path(result["home"])
-            ensure_dir(data_root / "install")
-            install.record(
-                data_root,
-                "workspace",
-                "ok" if result["ok"] else "blocked",
-                note="代码与数据根已就绪" if result["ok"] else result.get("blocked", ""),
-                evidence={
-                    "root": result["root"],
-                    "repo": result["repo"],
-                    "home": result["home"],
-                    "action": result["action"],
-                    "commit": result.get("commit"),
-                },
-                recheck=True,
-            )
-            update_config(
-                data_root,
-                workspace={
-                    "root": result["root"],
-                    "repo": result["repo"],
-                    "home": result["home"],
-                    "repo_url": args.repo_url,
-                },
-                paths={"repo": result["repo"], "home": result["home"]},
-            )
+            if result.get("layout_valid", True):
+                data_root = Path(result["home"])
+                ensure_dir(data_root / "install")
+                install.record(
+                    data_root,
+                    "workspace",
+                    "ok" if result["ok"] else "blocked",
+                    note="代码与数据根已就绪" if result["ok"] else result.get("blocked", ""),
+                    evidence={
+                        "root": result["root"],
+                        "repo": result["repo"],
+                        "home": result["home"],
+                        "action": result["action"],
+                        "commit": result.get("commit"),
+                    },
+                    recheck=True,
+                )
+                update_config(
+                    data_root,
+                    workspace={
+                        "root": result["root"],
+                        "repo": result["repo"],
+                        "home": result["home"],
+                        "repo_url": args.repo_url,
+                    },
+                    paths={"repo": result["repo"], "home": result["home"]},
+                )
+            else:
+                report_root = Path(root)
+                ensure_dir(report_root / "install")
+                install.record(
+                    report_root,
+                    "workspace",
+                    "blocked",
+                    note=result.get("blocked", "工作区布局被拒绝"),
+                    evidence={
+                        "root": result.get("root"),
+                        "repo": result.get("repo"),
+                        "home": result.get("home"),
+                        "action": result.get("action"),
+                        "layout_valid": False,
+                        "writes": "仅记录本拒绝状态，未创建数据根或代码副本",
+                    },
+                    recheck=True,
+                )
         return (0 if result["ok"] else 1), result
 
     if args.action == "toolchain":
         result = workspace_mod.toolchain(
-            args.root, uv_path=args.uv_path, python_version=args.python_version
+            args.root,
+            uv_path=args.uv_path,
+            python_version=args.python_version,
+            clear=args.clear,
         )
         record = workspace_mod.load_record(args.root)
-        data_root = Path(record.get("home") or root)
-        if not args.root or not record:
+        if not record:
             return 1, result
+        data_root = Path(record.get("home") or root)
         ensure_dir(data_root / "install")
+        environment = result.get("environment") or {}
         install.record(
             data_root,
             "dependencies",
             "ok" if result["ok"] else "blocked",
             note=(
-                "uv 与私有解释器可用"
+                "数据根私有 uv 与解释器可用，导入探针通过"
                 if result["ok"]
                 else (result.get("note") or "工具链未就绪")
             ),
             evidence={
                 "uv": result.get("uv", {}).get("path"),
                 "uv_source": result.get("uv", {}).get("source"),
-                "python": result.get("environment", {}).get("python"),
-                "repaired": result.get("environment", {}).get("repaired"),
+                "python": environment.get("python"),
+                "venv": environment.get("venv"),
+                "repaired": environment.get("repaired"),
+                "imports_ok": (environment.get("probe") or {}).get("ok"),
+                "repair": result.get("repair"),
             },
             recheck=True,
         )
@@ -464,7 +509,8 @@ def _install(args, root: Path) -> tuple[int, dict]:
                 data_root,
                 paths={
                     "uv": result["uv"]["path"],
-                    "python": result["environment"]["python"],
+                    "python": environment["python"],
+                    "venv": environment.get("venv", ""),
                 },
             )
         return (0 if result["ok"] else 1), result
@@ -750,15 +796,35 @@ def _smoke(args, root: Path, offline: bool) -> tuple[int, dict]:
             decision=args.decision,
             file_id=args.file_ids,
             source_id=args.source_id,
+            candidates=args.candidates,
+            plan=args.plan,
+            papers=args.paper_ids,
+            html=args.html,
+            targets=args.targets,
+            applied_fields=args.applied_fields,
         )
         return 0, result
     if args.action == "verify":
+        fields = args.fields or []
+        expecteds = args.expected or []
+        if len(expecteds) > len(fields):
+            raise HostRunError("--expected 数量多于 --field")
+        checks: list[tuple[str, str]] = []
+        for index, raw in enumerate(fields):
+            if "=" in raw:
+                name, value = raw.split("=", 1)
+                checks.append((name, value))
+            elif index < len(expecteds):
+                checks.append((raw, expecteds[index]))
+            else:
+                raise HostRunError(
+                    f"--field {raw} 缺少对应 --expected；也可写成 --field name=value"
+                )
         result = smoke.verify(
             root,
             target_key=args.target_key,
             target_id=args.target_id,
-            field=args.field,
-            expected=args.expected,
+            checks=checks,
             client=client,
         )
         return (0 if result.get("ok") else 1), result
@@ -816,7 +882,10 @@ def _init(args, root: Path, offline: bool) -> tuple[int, dict]:
         cards = read_json(Path(args.cards)) or []
         if isinstance(cards, dict):
             cards = cards.get("cards") or []
-        return 0, initialize.propose(root, cards, rationale=args.rationale)
+        result = initialize.propose(
+            root, cards, rationale=args.rationale, client=client
+        )
+        return (0 if result.get("ok") else 1), result
     if args.action == "review":
         return 0, initialize.review(root)
     if args.action == "confirm":
@@ -836,15 +905,23 @@ def _init(args, root: Path, offline: bool) -> tuple[int, dict]:
 
 def _lark(args, root: Path) -> tuple[int, dict]:
     from common import ensure_dir
-    from hostrun.base import update_config
+    from hostrun.base import load_config, update_config
 
     record = workspace_mod.load_record(args.root)
     data_root = Path(record.get("home") or root)
     if not args.root:
         return 1, {"ok": False, "note": "需要 --root 工作区"}
+    config = load_config(data_root)
+    recorded_cli = str((config.get("paths") or {}).get("lark_cli") or "")
+    # The recorded absolute path is authoritative (ADR 0007); an explicit
+    # --cli wins because the user is deliberately re-recording it.
+    spec = getattr(args, "cli_path", None) or recorded_cli or None
 
     if args.action == "discover":
-        found = lark.discover_cli(args.root, spec=args.cli_path, home=data_root)
+        found = lark.discover_cli(args.root, spec=spec, home=data_root)
+        if found["ok"]:
+            ensure_dir(data_root / "install")
+            update_config(data_root, paths={"lark_cli": found["path"]})
         return (0 if found["ok"] else 1), found
 
     if args.action == "install":
@@ -872,7 +949,7 @@ def _lark(args, root: Path) -> tuple[int, dict]:
 
     if args.action == "login":
         found = lark.discover_cli(
-            args.root, spec=args.cli_path, home=data_root
+            args.root, spec=spec, home=data_root
         )
         if args.device_code:
             result = lark.complete_login(
@@ -895,7 +972,7 @@ def _lark(args, root: Path) -> tuple[int, dict]:
         args.root,
         home=data_root,
         required=required,
-        spec=args.cli_path,
+        spec=spec,
     )
     ensure_dir(data_root / "install")
     install.record(
@@ -957,12 +1034,13 @@ def _lark(args, root: Path) -> tuple[int, dict]:
 
 def _schedules(args, root: Path) -> tuple[int, dict]:
     if args.action == "plan":
-        return 0, schedules.plan(
+        result = schedules.plan(
             root,
             timezone_name=args.timezone_name,
             daily=args.daily,
             feedback_minute=args.feedback_minute,
         )
+        return (0 if result.get("ok") else 1), result
     if args.action == "confirm":
         task_ids = _pairs(args.task_id)
         result = schedules.confirm(

@@ -81,6 +81,65 @@ LINK_SPECS = {
 }
 INITIAL_REL = Path("install") / "initial-build.json"
 
+
+def required_fields() -> dict[str, list[str]]:
+    """The contract field names for every required table key.
+
+    Knowledge tables use ``KNOWLEDGE_SCHEMA``; library tables use the field
+    lists ``library.setup`` creates; feedback tables use ``feedback.FIELDS``.
+    Display names may change, field names may not.
+    """
+    from library import setup as library_setup
+
+    fields = {
+        key: [field["name"] for field in schema]
+        for key, schema in KNOWLEDGE_SCHEMA.items()
+    }
+    fields.update(
+        {
+            "sources": [field["name"] for field in library_setup.SOURCE_FIELDS],
+            "pushes": [field["name"] for field in library_setup.PUSH_FIELDS],
+            "decisions": [field["name"] for field in library_setup.DECISION_FIELDS],
+            "config": [field["name"] for field in library_setup.CONFIG_FIELDS],
+        }
+    )
+    fields.update(
+        {
+            key: [field["name"] for field in schema]
+            for key, schema in feedback_mod.FIELDS.items()
+        }
+    )
+    return fields
+
+
+def missing_required_fields(
+    client,
+    table_ids: dict[str, str],
+    *,
+    problems: list[str] | None = None,
+) -> dict[str, list[str]]:
+    """Read back each present table's fields; report gaps by stable table key.
+
+    With ``problems`` the caller collects per-table read failures instead of
+    aborting the whole check (``verify`` records them as problems).
+    """
+    missing: dict[str, list[str]] = {}
+    for key, required in required_fields().items():
+        table_id = table_ids.get(key)
+        if not table_id:
+            continue
+        try:
+            present = set(client.field_names(table_id))
+        except Exception as exc:  # noqa: BLE001 - caller decides how to report
+            if problems is None:
+                raise
+            problems.append(f"{REQUIRED[key]}：字段读取失败（{exc}）")
+            continue
+        gaps = [name for name in required if name not in present]
+        if gaps:
+            missing[key] = gaps
+    return missing
+
 _TOKEN = re.compile(r"/(?:base|wiki)/([A-Za-z0-9]+)")
 _TABLE = re.compile(r"[?&]table=([A-Za-z0-9]+)")
 
@@ -132,6 +191,11 @@ def verify(home: Path, *, client=None, expect_empty: bool = False) -> dict:
             count[key] = len(client.list(table_id) or [])
         except Exception as exc:  # noqa: BLE001 - permission problems are results
             problems.append(f"{REQUIRED[key]}：读取失败（{exc}）")
+    # Table presence is not structural readiness: every contract field must
+    # read back too, or later stages silently write into a partial table.
+    missing_fields = missing_required_fields(
+        client, present, problems=problems
+    )
     has_data = any(count.get(key) for key in ("cards", "propositions", "papers", "evidence"))
     fixture_titles = []
     if expect_empty and has_data:
@@ -140,13 +204,19 @@ def verify(home: Path, *, client=None, expect_empty: bool = False) -> dict:
             for key in ("propositions", "cards")
             for row in (client.list(present[key]) if present.get(key) else [])
         ][:5]
-    ok = not missing and not problems and (not expect_empty or not has_data)
+    ok = (
+        not missing
+        and not missing_fields
+        and not problems
+        and (not expect_empty or not has_data)
+    )
     return {
         "ok": ok,
         "base_token": config.get("base_token") or "",
         "base_url": config.get("base_url") or "",
         "present": present,
         "missing": missing,
+        "missing_fields": missing_fields,
         "counts": count,
         "has_user_data": has_data,
         "expect_empty": expect_empty,
@@ -190,8 +260,11 @@ def attach(
     write_json(path, config)
     client = base_client(home, client=client)
     report = verify(home, client=client, expect_empty=expect_empty)
-    if not report["ok"] and report["missing"]:
-        report["next"] = "缺少的表由宿主用 hostrun kb create-tables 补齐，或改用 hostrun kb create 新建空库"
+    if not report["ok"] and (report["missing"] or report["missing_fields"]):
+        report["next"] = (
+            "缺少的表/字段由宿主用 hostrun kb create-tables 补齐，"
+            "或改用 hostrun kb create 新建空库"
+        )
     return {**report, "attached": True, "base_token": parsed["base_token"]}
 
 
@@ -245,6 +318,7 @@ def create_tables(
     client = base_client(home, client=client)
     drive = _drive_for(home, client, drive)
     by_name = _existing(client)
+    by_id = {table_id: name for name, table_id in by_name.items()}
     tables = dict(config.get("tables") or {})
     actions: list[str] = []
     names = names or {}
@@ -253,8 +327,14 @@ def create_tables(
     }
 
     for key, name in knowledge_tables.items():
+        # Stable IDs are authoritative: a renamed display name must not create
+        # a second table with the same contract role.
+        configured_id = str(tables.get(key) or "")
+        if configured_id and configured_id in by_id:
+            tables[key] = configured_id
+            continue
         if name in by_name:
-            tables.setdefault(key, by_name[name])
+            tables[key] = by_name[name]
             continue
         actions.append(f"create table {name}")
         if dry_run:
@@ -262,6 +342,7 @@ def create_tables(
             continue
         tables[key] = client.create_table(name, KNOWLEDGE_SCHEMA[key])
         by_name[name] = tables[key]
+        by_id[tables[key]] = name
         for field, target_key in LINK_SPECS.get(key, {}).items():
             target = tables.get(target_key)
             if target and not str(target).startswith("tbl_dry_"):

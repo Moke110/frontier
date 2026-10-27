@@ -10,6 +10,24 @@ from hostrun.base import HostRunError
 from library.drive import FixtureDrive
 from library.offline import JsonBase
 from question_queue.store import QueueStore
+from writer.render import CAPTION_LABELS, SECTION_LABELS
+
+
+def _plan_file(directory):
+    path = Path(directory) / "candidates.jsonl"
+    path.write_text(json.dumps({"paper_id": "p1"}) + "\n", encoding="utf-8")
+    return path
+
+
+def _rendered_file(directory):
+    path = Path(directory) / "push.html"
+    text = "".join(f"<h2>{label}</h2>" for label in SECTION_LABELS.values())
+    text += "".join(
+        f'<span class="source-pill">{label}</span>'
+        for label in CAPTION_LABELS.values()
+    )
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def _fresh_base(tmp_path) -> JsonBase:
@@ -51,8 +69,9 @@ def _ready(tmp_path, *, with_artifacts=True):
     push_id = f"push_{test_id}"
     message = "om_test_message"
     question = f"q_{push_id}_rating"
-    for step in ("retrieved", "written", "rendered"):
-        smoke.record(home, step)
+    smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
+    smoke.record(home, "written", papers=[f"paper_{test_id}"])
+    smoke.record(home, "rendered", push=push_id, html=str(_rendered_file(tmp_path)))
     smoke.record(
         home, "sent", push=push_id, message=message, question=question
     )
@@ -71,7 +90,10 @@ def _ready(tmp_path, *, with_artifacts=True):
     if with_artifacts:
         base.create(tables["questions"], [{"问题 ID": question, "推送 ID": push_id}])
         base.create(tables["submissions"], [{"问题 ID": question}])
-        base.create(tables["papers"], [{"paper_id": "paper_test", "push_id": push_id}])
+        # the temporary loop records selected paper ids; the 报道 row may carry
+        # no push id at all, so it must be selected by paper id
+        base.create(tables["papers"], [{"paper_id": f"paper_{test_id}"}])
+        base.create(tables["papers"], [{"paper_id": "paper_formal"}])
         base.create(tables["pushes"], [{"推送 ID": push_id}])
         base.create(tables["sources"], [{"原文 ID": f"src_{test_id}"}])
         base.create(tables["logs"], [{"source_id": test_id}])
@@ -110,6 +132,7 @@ def _ready(tmp_path, *, with_artifacts=True):
         "push_id": push_id,
         "question": question,
         "message": message,
+        "paper_id": f"paper_{test_id}",
         "formal_card": formal_card,
         "formal_question": formal_question,
     }
@@ -145,6 +168,9 @@ def test_cleanup_removes_exact_artifacts_and_keeps_formal_data(tmp_path):
         for row in base.list(ctx["tables"]["questions"])
         if row["fields"].get("推送 ID") == ctx["push_id"]
     ]
+    assert {row["fields"].get("paper_id") for row in base.list(ctx["tables"]["papers"])} == {
+        "paper_formal"
+    }
     assert drive.find(source_folder, "smoke.pdf") is None
     queue = QueueStore(home)
     assert not [item for item in queue.items() if item.get("push_id") == ctx["push_id"]]
@@ -228,7 +254,7 @@ def test_failed_test_cannot_be_reported_as_cleaned_success(tmp_path):
     drive = FixtureDrive()
     facilities.create(home, confirmed=True, admin=Admin(base), client=base, drive=drive)
     smoke.start(home, "虚拟细胞", confirmed=True, client=base)
-    smoke.record(home, "retrieved")
+    smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.fail(home, "send_timeout")
 
     refused = cleanup.run(home, confirmed=True, client=base, drive=drive, messenger=lambda x: None)
@@ -301,3 +327,75 @@ def test_plan_is_read_only(tmp_path):
     assert result["ok"] is True
     assert result["records"]["cards"] >= 1
     assert len(ctx["base"].list(ctx["tables"]["cards"])) == before
+
+
+# ------------------------------------------------------- 报道 (papers) scope
+def test_cleanup_removes_the_selected_test_paper_and_reports_the_count(tmp_path):
+    ctx = _ready(tmp_path)
+    home, base = ctx["home"], ctx["base"]
+
+    planned = cleanup.plan(home, client=base)
+    assert planned["records"]["papers"] == 1
+
+    result = cleanup.run(
+        home, confirmed=True, client=base, drive=ctx["drive"], messenger=lambda x: None
+    )
+
+    assert result["ok"] is True
+    state = smoke.load(home)
+    assert state["cleanup"]["removed_counts"]["papers"] == 1
+    remaining = {
+        row["fields"].get("paper_id") for row in base.list(ctx["tables"]["papers"])
+    }
+    assert remaining == {"paper_formal"}
+
+
+def test_remaining_test_paper_row_blocks_cleanup(tmp_path):
+    ctx = _ready(tmp_path)
+    home, base = ctx["home"], ctx["base"]
+
+    class StubbornPapers(JsonBase):
+        def delete(self, table, record_ids):
+            if table == ctx["tables"]["papers"]:
+                return {"ok": True, "deleted": []}
+            return super().delete(table, record_ids)
+
+    stubborn = StubbornPapers(tmp_path / "home" / "library" / "offline-base.json")
+    stubborn.meta = base.meta
+    stubborn.fields = base.fields
+    stubborn.tables = base.tables
+
+    result = cleanup.run(
+        home, confirmed=True, client=stubborn, drive=ctx["drive"], messenger=lambda x: None
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert any("papers" in line for line in result["cleanup"]["residue"])
+    assert smoke.load(home).get("cleaned_at") is None
+    with pytest.raises(HostRunError):
+        cleanup.require_cleaned(home)
+
+
+def test_undeletable_test_paper_row_blocks_cleanup(tmp_path):
+    ctx = _ready(tmp_path)
+    home, base = ctx["home"], ctx["base"]
+
+    class RefusePapers(JsonBase):
+        def delete(self, table, record_ids):
+            if table == ctx["tables"]["papers"]:
+                raise RuntimeError("permission denied")
+            return super().delete(table, record_ids)
+
+    refusing = RefusePapers(tmp_path / "home" / "library" / "offline-base.json")
+    refusing.meta = base.meta
+    refusing.fields = base.fields
+    refusing.tables = base.tables
+
+    result = cleanup.run(
+        home, confirmed=True, client=refusing, drive=ctx["drive"], messenger=lambda x: None
+    )
+
+    assert result["ok"] is False
+    assert any("papers" in line for line in result["cleanup"]["failed"])
+    assert smoke.load(home).get("cleaned_at") is None

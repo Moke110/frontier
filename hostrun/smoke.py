@@ -100,6 +100,82 @@ def _temp_card(test_id: str, keyword: str) -> dict:
     }
 
 
+def _retrieval_evidence(path: Path) -> tuple[int, str]:
+    """Derive the candidate count from a real plan/candidates artifact.
+
+    Accepts the plan JSON written by ``smoke plan``, a retriever JSONL candidate
+    file, or a JSON list; the count comes from the artifact, never the caller.
+    """
+    if not path.is_file():
+        return 0, f"检索证据文件不存在：{path}"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:  # noqa: BLE001 - unreadable evidence is a refusal
+        return 0, f"检索证据文件无法读取：{exc}"
+    suffix = path.suffix.lower()
+    rows = 0
+    if suffix in {".jsonl", ".ndjson"}:
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                json.loads(line)
+            except json.JSONDecodeError:
+                return 0, f"检索证据不是有效 JSONL：{path}"
+            rows += 1
+    elif suffix == ".json":
+        try:
+            payload = json.loads(text or "null")
+        except json.JSONDecodeError:
+            return 0, f"检索证据不是有效 JSON：{path}"
+        if isinstance(payload, list):
+            rows = len(payload)
+        elif isinstance(payload, dict):
+            for key in ("candidates", "papers", "items", "queries", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    rows = len(value)
+                    break
+            else:
+                for key in ("candidates", "candidate_count", "count"):
+                    value = payload.get(key)
+                    if isinstance(value, int):
+                        rows = value
+                        break
+                else:
+                    return 0, f"检索证据缺少候选列表或计数：{path}"
+        else:
+            return 0, f"检索证据格式不可识别：{path}"
+    else:
+        rows = len([line for line in text.splitlines() if line.strip()])
+    if rows <= 0:
+        return 0, f"检索证据为空（候选数为 0）：{path}"
+    return rows, ""
+
+
+def _rendered_artifact_errors(path: Path) -> list[str]:
+    """A rendered push must contain the render contract's sections and captions."""
+    if not path.is_file():
+        return [f"渲染文件不存在：{path}"]
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:  # noqa: BLE001 - unreadable evidence is a refusal
+        return [f"渲染文件无法读取：{exc}"]
+    from writer.render import CAPTION_LABELS, SECTION_LABELS
+
+    errors = [
+        f"缺少段落：{label}"
+        for label in SECTION_LABELS.values()
+        if label not in text
+    ]
+    errors.extend(
+        f"缺少图注：{label}"
+        for label in CAPTION_LABELS.values()
+        if label not in text
+    )
+    return errors
+
+
 # -------------------------------------------------------------------- start
 def start(
     home: Path,
@@ -155,19 +231,16 @@ def start(
     try:
         base_config(home)
     except HostRunError as exc:
-        state = {
-            "schema_version": 1,
-            "test_id": _test_id(),
-            "keyword": keyword,
-            "owner": owner,
-            "repo": str(repo) if repo else "",
-            "status": "failed",
-            "created_at": now(),
-            "card": {},
-            "artifacts": {},
-            "steps": {},
+        # Nothing was created and no test identity exists, so this is a plain
+        # retryable refusal: persisting a failed smoke record would make the
+        # retry after facilities creation look like a duplicate test.
+        return {
+            "ok": False,
+            "reason": "facilities_missing",
+            "retryable": True,
+            "note": str(exc),
+            "next": "先完成设施创建（facilities plan/create），再重新运行 smoke start；本次未生成测试记录",
         }
-        return _fail(home, state, "facilities_missing", note=str(exc))
 
     test_id = _test_id()
     card = _temp_card(test_id, keyword)
@@ -273,13 +346,21 @@ def brief(home: Path) -> dict:
         f'python -m hostrun.cli --home "{home}" smoke plan --out "{home / PLAN_REL}"',
         f'python -m retriever.cli fetch --plan "{home / PLAN_REL}" --out '
         f'"<临时目录>/{test_id}-candidates.jsonl" --source live',
+        f'python -m hostrun.cli --home "{home}" smoke record --step retrieved '
+        f'--plan "{home / PLAN_REL}"'
+        "（候选数从该计划/候选文件读取；可加 --candidates 但必须一致）",
         "python -m archive.cli add-paper --file <候选 json>（逐条，自动去重）",
         f'python -m editor.cli task --candidates <候选> --date <today> --out "<临时目录>/{test_id}-editor.json"',
         "你亲自写 selection.json，并 python -m editor.cli check ...",
+        f'python -m hostrun.cli --home "{home}" smoke record --step written '
+        "--paper <选中 paper_id>（可重复）",
         f'python -m writer.cli task ... --card {card_id} ...',
         "python -m writer.cli figures ...；你亲自写七段 HTML 与 assets",
         "python -m writer.cli check ...",
         f'python -m writer.cli render --push <push> --out "<临时目录>/{test_id}.html"',
+        f'python -m hostrun.cli --home "{home}" smoke record --step rendered '
+        "--push <push_id> --html <渲染文件路径>"
+        "（文件须含七段段落与原文图/生成图图注）",
         "python -m archive.cli add-push --file <push json>",
         "python -m library.cli ensure-source --paper <paper_id>",
         f'python -m publisher.cli send --push <push> --html <html> --to {state.get("owner") or "<owner>"}',
@@ -292,8 +373,11 @@ def brief(home: Path) -> dict:
         "用户明确采纳更新：feedback submit --item <id> --decision agree_all（或 adopt）",
         f'python -m hostrun.cli --home "{home}" smoke record --step decided --item <id> --decision <decision>',
         "python -m hostrun.cli feedback process",
+        f'python -m hostrun.cli --home "{home}" smoke record --step applied '
+        "--target <被采纳目标 id> --applied-field <被采纳字段>（每字段重复一次；"
+        "省略时按临时卡片、至少核对一个字段）",
         f'python -m hostrun.cli --home "{home}" smoke verify --target-key cards '
-        f"--target-id {card_id} --field <字段> --expected <值>",
+        f"--target-id {card_id} --field <字段>=<值>（每个采纳字段重复一次）",
     ]
     return {
         "ok": True,
@@ -326,6 +410,12 @@ def record(
     decision: str | None = None,
     file_id: str | list[str] | None = None,
     source_id: str | None = None,
+    candidates: int | None = None,
+    plan: str | None = None,
+    papers: list[str] | str | None = None,
+    html: str | None = None,
+    targets: list[str] | str | None = None,
+    applied_fields: list[str] | str | None = None,
 ) -> dict:
     """Record one ordered step; rerunning the same step is a no-op."""
     home = Path(home).expanduser().resolve()
@@ -345,6 +435,49 @@ def record(
     )
     if expected != step:
         raise HostRunError(f"步骤顺序错误：下一步是 {expected or '已完成'}，不能先记录 {step}")
+
+    # A step is evidence, not an assertion: retrieved/written must carry the
+    # real retrieval count and the selected papers, like sent carries ids.
+    candidate_count = 0
+    if step == "retrieved":
+        if not plan:
+            raise HostRunError(
+                "retrieved 步骤需要 --plan <检索计划或候选文件路径>，"
+                "候选数必须从该真实检索证据中得出"
+            )
+        derived, error = _retrieval_evidence(Path(str(plan)).expanduser())
+        if error:
+            raise HostRunError("retrieved 步骤的检索证据不可用：" + error)
+        if candidates is not None and int(candidates) != derived:
+            raise HostRunError(
+                f"--candidates {candidates} 与检索证据中的候选数 {derived} 不一致"
+            )
+        candidate_count = derived
+    selected = [
+        str(paper).strip()
+        for paper in (
+            [papers] if isinstance(papers, str) else (papers or [])
+        )
+        if str(paper or "").strip()
+    ]
+    if step == "written" and not selected:
+        raise HostRunError(
+            "written 步骤需要至少一个选中的论文 ID：用 --paper <paper_id>（可重复）"
+        )
+    if step == "rendered":
+        if not push:
+            raise HostRunError(
+                "rendered 步骤需要 --push <push_id> 作为推送库登记证据"
+            )
+        if not html:
+            raise HostRunError(
+                "rendered 步骤需要 --html <渲染文件路径>，并校验七段与图注"
+            )
+        render_errors = _rendered_artifact_errors(Path(str(html)).expanduser())
+        if render_errors:
+            raise HostRunError(
+                "rendered 步骤的推送件不完整：" + "；".join(render_errors)
+            )
     if step == "sent" and not (push and message and question):
         raise HostRunError("sent 步骤需要 --push、--message 与 --question，记录本次副作用归属")
     if step == "rated" and (not item or verdict not in ("irrelevant", "ok", "great")):
@@ -353,6 +486,39 @@ def record(
         raise HostRunError("decided 步骤需要 --item 和 --decision")
 
     artifacts = state.setdefault("artifacts", {})
+    applied_targets = [
+        str(target).strip()
+        for target in ([targets] if isinstance(targets, str) else (targets or []))
+        if str(target or "").strip()
+    ]
+    applied_field_list = [
+        str(name).strip()
+        for name in (
+            [applied_fields]
+            if isinstance(applied_fields, str)
+            else (applied_fields or [])
+        )
+        if str(name or "").strip()
+    ]
+    if step == "applied" and not applied_targets:
+        card = (state.get("card") or {}).get("id")
+        if card:
+            applied_targets = [card]
+    if step == "applied":
+        artifacts["applied_targets"] = [
+            {"target": target, "fields": list(applied_field_list)}
+            for target in applied_targets
+        ]
+    if step == "retrieved":
+        artifacts["candidates"] = candidate_count
+        if plan:
+            artifacts["plan"] = plan
+    if step == "written":
+        for paper in selected:
+            if paper not in artifacts.setdefault("paper_ids", []):
+                artifacts["paper_ids"].append(paper)
+    if step == "rendered" and html:
+        artifacts["push_html"] = html
     file_ids = file_id if isinstance(file_id, list) else ([file_id] if file_id else [])
     for key, values in (
         ("push_ids", [push]),
@@ -379,6 +545,12 @@ def record(
             **({"decision": decision} if decision else {}),
             **({"source": source_id} if source_id else {}),
             **({"files": file_ids} if file_ids else {}),
+            **({"candidates": candidate_count} if step == "retrieved" else {}),
+            **({"plan": plan} if step == "retrieved" and plan else {}),
+            **({"papers": selected} if step == "written" else {}),
+            **({"html": html} if step == "rendered" and html else {}),
+            **({"targets": applied_targets} if step == "applied" else {}),
+            **({"applied_fields": applied_field_list} if step == "applied" else {}),
         },
     }
     if step == "sent":
@@ -407,22 +579,89 @@ def _find_row(client, table: str, key: str, value: str) -> dict | None:
     return None
 
 
+def _normalize_checks(checks, field, expected) -> list[tuple[str, str]]:
+    """Accept a checks list, ``name=value`` strings, or legacy field/expected."""
+    pairs: list[tuple[str, str]] = []
+    if checks:
+        items = list(checks.items()) if isinstance(checks, dict) else list(checks)
+        for item in items:
+            if isinstance(item, str):
+                if "=" not in item:
+                    raise HostRunError(f"检查项需为 field=value：{item}")
+                name, value = item.split("=", 1)
+                pairs.append((name.strip(), value))
+            elif isinstance(item, dict) and item.get("field"):
+                pairs.append((str(item["field"]), str(item.get("expected"))))
+            elif isinstance(item, (tuple, list)) and len(item) == 2:
+                pairs.append((str(item[0]), str(item[1])))
+            else:
+                raise HostRunError(f"无法解析检查项：{item!r}")
+    if field:
+        if "=" in field:
+            name, value = field.split("=", 1)
+            pairs.append((name.strip(), value))
+        else:
+            pairs.append((field, "" if expected is None else str(expected)))
+    elif expected is not None:
+        raise HostRunError("--expected 需要配合 --field 使用，或用 --field name=value")
+    return [(name, value) for name, value in pairs if name]
+
+
+def _applied_coverage(state: dict, checks: list[dict]) -> tuple[list[str], list[str], list[dict]]:
+    """Which adopted target/field pairs still lack a successful read-back check."""
+    applied = (state.get("steps") or {}).get("applied") or {}
+    evidence = applied.get("evidence") or {}
+    card_id = (state.get("card") or {}).get("id") or ""
+    targets = [str(target) for target in (evidence.get("targets") or []) if str(target)]
+    if not targets and card_id:
+        targets = [card_id]
+    fields = [str(name) for name in (evidence.get("applied_fields") or []) if str(name)]
+    present: dict[str, set[str]] = {}
+    for check in checks:
+        if not check.get("ok"):
+            continue
+        target = str(check.get("target_id") or card_id or "")
+        present.setdefault(target, set()).add(str(check.get("field") or ""))
+    missing: list[dict] = []
+    for target in targets:
+        covered = present.get(target, set())
+        if fields:
+            for field in fields:
+                if field not in covered:
+                    missing.append({"target": target, "field": field})
+        elif not covered:
+            missing.append({"target": target, "field": None})
+    return targets, fields, missing
+
+
 def verify(
     home: Path,
     *,
     target_key: str,
     target_id: str,
-    field: str,
-    expected: str,
+    field: str | None = None,
+    expected: str | None = None,
+    checks=None,
     client=None,
 ) -> dict:
-    """Read the authoritative Base and require the accepted change to be there."""
+    """Read the authoritative Base and require every checked field to match.
+
+    Repeated calls keep every per-field read-back check in
+    ``steps["verified"]["checks"]``; a single mismatch fails the test but keeps
+    the checks that were already verified.
+    """
     home = Path(home).expanduser().resolve()
     state = load(home)
     if not state:
         raise HostRunError("没有临时测试记录")
     if any(name not in (state.get("steps") or {}) for name in STEPS):
         raise HostRunError("还有步骤未记录，不能先做写入核对")
+    pairs = _normalize_checks(checks, field, expected)
+    if not pairs:
+        raise HostRunError(
+            "verify 需要至少一个检查项：用 --field <字段>=<值>（可重复），"
+            "或 --field <字段> --expected <值>"
+        )
     test_id = state.get("test_id") or ""
     card_id = (state.get("card") or {}).get("id") or ""
     if target_id not in {card_id} and not target_id.startswith(f"card_{test_id}") and not target_id.startswith(
@@ -447,31 +686,109 @@ def verify(
     row = _find_row(client, table_id, key_field, target_id)
     if not row:
         return _fail(home, state, "verification_target_missing", target_id=target_id)
-    actual = (row.get("fields") or {}).get(field)
-    if isinstance(actual, list):
-        actual = actual[0] if len(actual) == 1 else actual
-    same = str(actual) == str(expected)
-    if not same:
+
+    results: list[dict] = []
+    failure: dict | None = None
+    for name, wanted in pairs:
+        actual = (row.get("fields") or {}).get(name)
+        if isinstance(actual, list):
+            actual = actual[0] if len(actual) == 1 else actual
+        ok = str(actual) == str(wanted)
+        entry = {
+            "field": name,
+            "expected": wanted,
+            "actual": actual,
+            "ok": ok,
+            "target_key": target_key,
+            "target_id": target_id,
+        }
+        results.append(entry)
+        if not ok and failure is None:
+            failure = entry
+    if failure is not None:
         return _fail(
             home,
             state,
             "verification_mismatch",
             target_id=target_id,
-            field=field,
-            expected=expected,
-            actual=actual,
+            field=failure["field"],
+            expected=failure["expected"],
+            actual=failure["actual"],
+            checks=len(results),
         )
 
+    previous = (state.get("steps") or {}).get("verified") or {}
+    merged: list[dict] = [
+        dict(entry)
+        for entry in (previous.get("checks") or [])
+        if isinstance(entry, dict) and entry.get("field")
+    ]
+    if not merged:
+        # Older state stored a single field under ``evidence``; keep it.
+        evidence = previous.get("evidence") or {}
+        if evidence.get("field"):
+            merged.append(
+                {
+                    "field": evidence["field"],
+                    "expected": evidence.get("expected"),
+                    "actual": None,
+                    "ok": True,
+                }
+            )
+    by_field = {entry["field"]: index for index, entry in enumerate(merged)}
+    for entry in results:
+        index = by_field.get(entry["field"])
+        if index is None:
+            by_field[entry["field"]] = len(merged)
+            merged.append(entry)
+        else:
+            merged[index] = entry
+    applied_targets, applied_fields, missing_checks = _applied_coverage(state, merged)
+    covered = not missing_checks
     state.setdefault("steps", {})["verified"] = {
         "ok": True,
+        "complete": covered,
         "at": now(),
+        "checks": merged,
         "evidence": {
             "target_key": target_key,
             "target_id": target_id,
-            "field": field,
-            "expected": expected,
+            "checks": merged,
+            "applied_targets": applied_targets,
+            "applied_fields": applied_fields,
+            "missing_checks": missing_checks,
         },
     }
+    if not covered:
+        state["next"] = "还有采纳字段未核对：" + "、".join(
+            f"{row['target']}:{row['field'] or '<任意字段>'}" for row in missing_checks
+        )
+        save(home, state)
+        install_mod.record(
+            home,
+            "test_loop",
+            "untested",
+            note="已核对部分写入；采纳目标字段尚未全部读回",
+            evidence={
+                "test_id": test_id,
+                "card_id": card_id,
+                "missing_checks": missing_checks,
+            },
+            recheck=True,
+        )
+        return {
+            "ok": False,
+            "reason": "verification_incomplete",
+            "test_id": test_id,
+            "status": state["status"],
+            "steps": sorted(state["steps"]),
+            "verified": False,
+            "checks": merged,
+            "applied_targets": applied_targets,
+            "applied_fields": applied_fields,
+            "missing_checks": missing_checks,
+            "next": state["next"],
+        }
     complete = all(name in state["steps"] for name in STEPS)
     state["status"] = "complete" if complete else state.get("status")
     state["next"] = None if complete else "还有未完成步骤"
@@ -498,6 +815,9 @@ def verify(
         "status": state["status"],
         "steps": sorted(state["steps"]),
         "verified": True,
+        "checks": merged,
+        "applied_targets": applied_targets,
+        "applied_fields": applied_fields,
         "next": state["next"],
     }
 
@@ -509,10 +829,8 @@ def status(home: Path) -> dict:
     if not state:
         return {"ok": False, "status": "none", "note": "尚未开始临时闭环"}
     done = [name for name in STEPS if name in (state.get("steps") or {})]
-    verified = (
-        "verified" in (state.get("steps") or {})
-        or state.get("test_status") == "complete"
-    )
+    verified_entry = (state.get("steps") or {}).get("verified") or {}
+    verified = bool(verified_entry.get("complete")) or state.get("test_status") == "complete"
     complete = state.get("status") == "complete" or state.get("test_status") == "complete"
     return {
         "ok": complete,

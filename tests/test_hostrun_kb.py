@@ -8,6 +8,14 @@ from hostrun import kb
 from hostrun.base import HostRunError
 
 
+def _empty_base(base) -> None:
+    """A genuinely empty Base; the shared fixture models a legacy partial one."""
+    base.meta = []
+    base.fields = {}
+    base.tables = {}
+    base.save()
+
+
 def test_parse_link_accepts_the_forms_users_paste():
     base = kb.parse_link("https://example.feishu.cn/base/bascnABC123?table=tblXyZ9")
     assert base["base_token"] == "bascnABC123"
@@ -41,6 +49,7 @@ def test_attach_reports_missing_tables_and_writes_nothing(offline_home, offline_
 
 
 def test_create_tables_fills_every_required_table(configured_home, offline_base):
+    _empty_base(offline_base)
     result = kb.create_tables(configured_home, client=offline_base)
 
     names = {row["name"] for row in offline_base.list_tables()}
@@ -103,6 +112,7 @@ def test_create_empty_refuses_to_switch_a_configured_base(offline_home, offline_
 
 
 def test_create_empty_does_not_copy_fixtures_into_the_base(offline_home, offline_base):
+    _empty_base(offline_base)
     result = kb.create_empty(offline_home, "bascnABC123", client=offline_base)
 
     assert result["verify"]["ok"] is True
@@ -123,3 +133,62 @@ def test_initial_themes_are_drafts_until_the_user_confirms(offline_home):
     assert ok["ok"] is True
     assert kb.initial_confirmed(offline_home)["confirmed"] == ["血红素合成"]
     assert kb.initial_confirmed(offline_home, theme="别的主题")["ok"] is False
+
+
+# ----------------------------------------------------- contract field read-back
+def _drop_field(base, home, table_name: str, field: str) -> None:
+    tables = {row["name"]: row["id"] for row in base.list_tables()}
+    base.fields[tables[table_name]].remove(field)
+    base.save()
+
+
+def test_new_base_has_no_field_gaps(configured_home, offline_base):
+    _empty_base(offline_base)
+    kb.create_tables(configured_home, client=offline_base)
+
+    report = kb.verify(configured_home, client=offline_base)
+
+    assert report["ok"] is True
+    assert report["missing_fields"] == {}
+
+
+@pytest.mark.parametrize(
+    "table_name, field, key",
+    [
+        ("知识卡片", "annotation", "cards"),
+        ("原文", "作者", "sources"),
+        ("问题", "问题 ID", "questions"),
+    ],
+)
+def test_verify_reports_missing_contract_fields(
+    configured_home, offline_base, table_name, field, key
+):
+    _empty_base(offline_base)
+    kb.create_tables(configured_home, client=offline_base)
+    _drop_field(offline_base, configured_home, table_name, field)
+
+    report = kb.verify(configured_home, client=offline_base)
+
+    assert report["ok"] is False
+    assert field in report["missing_fields"][key]
+
+
+def test_create_tables_reuses_configured_ids_when_display_names_change(
+    configured_home, offline_base
+):
+    _empty_base(offline_base)
+    kb.create_tables(configured_home, client=offline_base)
+    before = json.loads(
+        (configured_home / "knowledge" / "base.json").read_text(encoding="utf-8")
+    )
+    table_count = len(offline_base.list_tables())
+    names = {row["name"] for row in offline_base.list_tables()}
+
+    kb.create_tables(configured_home, client=offline_base, names={"cards": "新卡片名"})
+
+    after = json.loads(
+        (configured_home / "knowledge" / "base.json").read_text(encoding="utf-8")
+    )
+    assert len(offline_base.list_tables()) == table_count
+    assert {row["name"] for row in offline_base.list_tables()} == names
+    assert after["tables"]["cards"] == before["tables"]["cards"]

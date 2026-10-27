@@ -36,6 +36,12 @@ SECTION_LABELS = {
     "sources": "原文与数据",
 }
 
+# Rendered caption pills: the source of truth a rendered push must contain.
+CAPTION_LABELS = {
+    "paper": "原文图",
+    "generated": "生成图",
+}
+
 FIGURE_RE = re.compile(r'<figure\s+data-asset="([^"]+)"\s*>\s*</figure>', re.IGNORECASE)
 FORBIDDEN_TAG_RE = re.compile(
     r"<\s*(script|style|link|iframe|object|embed|form|input|button)\b", re.IGNORECASE
@@ -180,7 +186,7 @@ def expand_figures(
         if path is None or not path.exists():
             raise RenderError(f"asset {aid} not found: {asset.get('path')}")
         source = asset["source"]
-        pill = "原文图" if source == "paper" else "生成图"
+        pill = CAPTION_LABELS["paper"] if source == "paper" else CAPTION_LABELS["generated"]
         pill_class = "source-pill" if source == "paper" else "source-pill generated"
         alt = html.escape((asset.get("caption") or aid)[:160], quote=True)
         src = _data_uri(path) if inline else path.as_uri()

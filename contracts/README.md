@@ -482,10 +482,10 @@ python -m question_queue.cli try-start
 
 ## 12. 宿主运行（hostrun）
 
-由宿主 agent 驱动的安装、租约与有界运行。**不写持久环境变量、不创建服务/系统定时任务/常驻进程**；数据根优先用 `--home` 显式给出（`KL_HOME` 仅在未给时生效）。代码目录与数据根分开：工作区默认 `frontier/` 与 `frontier-archive/`。
+由宿主 agent 驱动的安装、租约与有界运行。**不写持久环境变量、不创建服务/系统定时任务/常驻进程**；数据根优先用 `--home` 显式给出（`KL_HOME` 仅在未给时生效）。代码目录与数据根分开：工作区默认 `frontier/` 与 `frontier-archive/`。uv 管理的私有环境与解释器属于**数据根**（`<home>/.venv`），代码目录只保留代码；uv 优先从工作区外解析，缺失时才装到 `<home>/bin`。
 
 ```bash
-# 工作区、私有 uv/解释器、frontier-run 入口指针
+# 工作区、数据根私有 uv/解释器、frontier-run 入口指针
 python -m hostrun.cli install workspace --root <workspace>
 python -m hostrun.cli --home <home> install toolchain --root <workspace>
 python -m hostrun.cli --home <home> install skill --root <workspace> --target <host-skill-dir>/frontier-run
@@ -498,6 +498,9 @@ python -m hostrun.cli lark discover|install|login|status --root <workspace>
 python -m hostrun.cli facilities plan|create|attach|status|rename
 
 # 关键词临时闭环 → 精确清理 → 正式知识
+# smoke record 的证据闸门：retrieved --plan（可选 --candidates 须一致）、
+# written --paper（可重复）、rendered --push + --html（校验渲染契约）、
+# sent --push --message --question；verify --field name=value（可重复）
 python -m hostrun.cli smoke start|plan|brief|status|record|verify|fail
 python -m hostrun.cli cleanup plan|run|status
 python -m hostrun.cli init intake|propose|review|confirm|apply|adopt-existing|retrieve|status
@@ -515,17 +518,19 @@ python -m hostrun.cli status
 
 ```
 <workspace>/
-├── .frontier/
-│   ├── install.json              # 代码 / 数据根 / uv / 解释器 / 技能绝对路径（技能移动后仍可定位）
-│   └── bin/                      # 缺失时的私有 uv（不改 PATH）
-├── frontier/                     # 代码副本（检查来源与改动，不覆盖）
+├── .frontier/install.json        # 代码 / 数据根 / uv / 私有环境 / 解释器 / 技能绝对路径（技能移动后仍可定位）
+├── frontier/                     # 代码副本（检查来源与改动，不覆盖；不放私有环境）
 └── frontier-archive/             # 数据根
+    ├── bin/                      # 缺失时的私有 uv（优先从工作区外解析；不改 PATH）
+    ├── .venv/                    # uv 管理的私有环境与解释器（绝对路径同时写入指针记录与安装配置）
     ├── install/
     │   ├── config.json           # 宿主、私有路径、时区、权限与任务（凭据字段一律 ***）
     │   ├── state.json            # 分步状态：host/workspace/dependencies/skill/lark_cli/identity/
     │   │                         #   permissions/facilities/test_loop/cleanup/knowledge/schedules/scheduled_run
     │   ├── facilities.json       # Base/表/目录的稳定 ID 与已确认展示名
-    │   ├── smoke.json            # 临时闭环测试 ID、步骤、副作用归属；清理后只留最小验收状态
+    │   ├── smoke.json            # 测试 ID、步骤、副作用归属（artifacts.candidates/plan/
+    │   │                         #   paper_ids/push_html）、verify 的 steps.verified.checks；
+    │   │                         #   清理后只留最小验收状态
     │   └── initial/              # 文献元数据、候选卡片、确认哈希、写入报告、标准检索计划
     ├── executor/                 # lease.json + events.jsonl（时间租约，不是 pid）
     ├── hostrun/runs.jsonl        # 意图、动作、是否安静；scheduled/task 仅由宿主任务写入
@@ -535,12 +540,12 @@ python -m hostrun.cli status
 约定：
 
 - `install report` 的 `working` / `blocked` / `untested` / `pending` 分项是验收依据；缺能力标 `blocked`，没测过标 `untested`，不得写成通过。
-- 工作区：已有副本有未提交改动、origin 不符或不是 git 仓库时阻塞，不拉取、不覆盖；重跑复用已验证组件。解释器失效时用 uv `--clear` 重建。
-- 飞书 CLI：可执行、登录、授权范围、真实资源读取分别验证；设施未创建前资源项只能是 `untested`。
+- 工作区与私有环境：已有副本有未提交改动、origin 不符或不是 git 仓库时阻塞，不拉取、不覆盖；重跑复用已验证组件。依赖步骤只认**记录的解释器**：未记录、不是绝对路径、文件不存在或位于代码目录内时标 `blocked`，并给出可照做的 `install toolchain ... --clear` 修复命令（含先切换到代码目录）；不回退到当前运行进程的解释器。`--clear` 才重建数据根环境，重复运行复用现有环境。
+- 飞书 CLI 与权限：可执行、登录、授权范围、真实资源读取分别验证；记到文件系统的绝对路径失效时 `blocked`，不静默回退到 PATH。`permissions=ok` 要求授权范围与**真实 Base + Drive 读取**均成功；`messages` 作为独立的 `untested` 子证据保留，不因登录成功或消息未测而伪造；配置中 `permissions.scope` 保存飞书 scope，宿主能力另记 `host_scope`，两者不互相覆盖。
 - 设施：按用户确认的展示名创建；使用稳定 ID，改名不影响读写。同名 Base 多个时阻塞；已有库只检查/补缺，不清空。部分失败如实报告并可从已创建项续接。
-- 临时闭环：临时卡片 ID 与推送/消息/文件/问题 ID 全部归属测试；成功必须包含读回核对。失败不开放正式初始化。
-- 清理：只按测试 ID 删除并读回确认；有残留或消息不可撤回时保持 `cleanup=blocked`，正式初始化闸门关闭。
-- 正式知识：**新建路径**仅在“测试通过 + 清理读回通过”后开放；卡片须用户确认，写入走本地档案 → 飞书同步 → 读回。**已有库**由用户显式确认后走 `init adopt-existing` 导入现有卡片，不经过新建测试闸门、不重建也不清空；两条路径完成后都做一次标准检索，测试关键词不复用。
+- 临时闭环：临时卡片 ID 与推送/消息/文件/问题/论文 ID 全部归属测试。`retrieved` 必须指向真实的 `--plan` 计划/候选文件并由文件得出候选数（可选 `--candidates` 必须一致）；`written` 至少一个 `--paper`；`rendered` 必须带 `--push` 与 `--html`，并按 `writer/render.py` 契约校验七段与 `原文图`/`生成图` 图注；`sent` 带推送、消息、问题 ID；`applied` 用 `--target`（被采纳目标 ID）与 `--applied-field`（每个被采纳字段）登记写入意图，省略时按临时卡片、只要求至少一个读回检查。`verify` 的逐字段读回累计在 `steps.verified.checks`，且必须覆盖每个已登记目标与字段才完整；覆盖不足返回 `verification_incomplete` 并保持 `test_loop` 未通过，字段不一致照常失败。成功必须包含完整读回核对，失败不开放正式初始化。
+- 清理：只按测试 ID 与记录中的卡片/推送/问题/文件/消息/选中论文 ID 删除并逐范围读回确认；有残留或消息不可撤回时保持 `cleanup=blocked`，正式初始化闸门关闭。
+- 正式知识：**新建路径**仅在“测试通过 + 清理读回通过”后开放；`init propose` 需要可读 intake（可读输入、可读全文与用户要求），并快照既有卡片 ID（快照读取失败即拒绝，不写草案）；卡片须用户确认且确认绑定草稿哈希；`init apply` 拒绝更新草案前已存在的卡片 ID（没有覆盖开关），同步后归一化比较字段读回，不一致即 `base_readback_mismatch`。**已有库**由用户显式确认后走 `init adopt-existing` 导入现有卡片，不经过新建测试闸门、不重建也不清空；两条路径完成后都做一次标准检索，测试关键词不复用。
 - `run` 的固定顺序：反馈 → 恢复未完成 → 维护（到期才做）→ 检索闸门。`feedback` 意图**从不**创建检索请求；维护并入当天首次小时检查，未答问题不阻止维护；错过的每日请求合并为一次。
 - 只创建两个宿主任务：`frontier-daily`（用户时区 08:00）与 `frontier-feedback`（每小时，默认第 5 分钟）。任务创建只写 `schedules`；`confirm` 为每个任务生成 proof 并写入命令，运行日志中的 `scheduled=true`、`task=<id>` 且 `proof` 匹配的真实到点记录才能写 `scheduled_run`，两类任务都至少一次后才为 `ok`。
 - 同一时刻只有一个执行端：另一宿主持有有效租约时返回 `executor_busy`；过期租约可被接管并在 `events.jsonl` 记 `taken_over`；换机必须 `handover`（旧端仍活跃时需 `--force` 并说明）。

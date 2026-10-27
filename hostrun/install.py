@@ -27,7 +27,6 @@ from hostrun.base import (
     HostRunError,
     load_config,
     redact,
-    resolve_executable,
     run_json,
     save_config,
     update_config,
@@ -52,7 +51,7 @@ STEPS = (
 STEP_NOTES = {
     "host": "宿主产品、版本、本机执行、内置调度与实际权限",
     "workspace": "代码目录与数据根分离，已有副本检查与续接",
-    "dependencies": "私有 uv、解释器、PyYAML/PyMuPDF 与仓库副本",
+    "dependencies": "数据根私有 uv、解释器、PyYAML/PyMuPDF 导入探针与仓库副本",
     "skill": "frontier-run 入口指针及参考文件可读",
     "lark_cli": "飞书 CLI 由显式私有路径解析（仅可执行，未证明已登录）",
     "identity": "飞书 user / bot 身份与登录有效期",
@@ -65,6 +64,9 @@ STEP_NOTES = {
     "scheduled_run": "至少一次真实到点的本地定时触发",
 }
 MIN_PYTHON = (3, 11)
+REQUIRED_PERMISSION_SCOPES = [
+    scope for scopes in lark_mod.REQUIRED_SCOPES.values() for scope in scopes
+]
 
 
 def state_path(home: Path) -> Path:
@@ -93,7 +95,11 @@ def step_status(home: Path) -> dict:
 
 
 def next_step(home: Path) -> str | None:
+    """The most actionable step: a blocked one first, else the first unfinished."""
     status = step_status(home)
+    for name in STEPS:
+        if status[name] == "blocked":
+            return name
     return next((name for name in STEPS if status[name] != "ok"), None)
 
 
@@ -183,13 +189,17 @@ def probe_dependencies(
     *,
     python: str | None = None,
     platform: str | None = None,
+    home: str | Path | None = None,
+    repair: str = "",
 ) -> dict:
-    """The *recorded* interpreter, PyYAML and a usable repository checkout."""
+    """The *recorded* interpreter, PyYAML and a usable repository checkout.
+
+    There is deliberately no fallback to this process's interpreter: an
+    unrecorded, missing, relative or in-repo interpreter blocks the dependency
+    step with the exact toolchain repair command.
+    """
     repo = Path(repo)
-    python = python or sys.executable
-    facts = _interpreter_facts(str(python))
-    version = facts["version"]
-    has_yaml = facts["yaml"]
+    repair_hint = repair or "install toolchain --root <workspace> --clear"
     require = [
         "skills/frontier-run/SKILL.md",
         "skills/frontier-run/references/installation.md",
@@ -198,40 +208,97 @@ def probe_dependencies(
         "common.py",
     ]
     missing = [name for name in require if not (repo / name).exists()]
-    ok = facts["ok"] and version >= MIN_PYTHON and has_yaml and not missing
-    notes = []
-    if not facts["ok"]:
-        notes.append(f"解释器不可用：{facts['error']}")
-    elif version < MIN_PYTHON:
-        notes.append(f"python {'.'.join(map(str, version))} < 3.11")
-    if facts["ok"] and not has_yaml:
-        notes.append("PyYAML missing in this interpreter")
+    recorded = bool(str(python or "").strip())
+    notes: list[str] = []
+    version = (0, 0, 0)
+    has_yaml = False
+    facts = {"ok": False, "error": ""}
+    outside_repo = False
+    in_data_root = False
+    python_path = Path(str(python)).expanduser() if recorded else Path("")
+    outside_repo = (
+        python_path.is_absolute() and not python_path.is_relative_to(repo)
+    )
+    if not recorded:
+        notes.append("未记录解释器的绝对路径；依赖未验证")
+    elif not python_path.is_absolute():
+        notes.append(f"解释器路径不是绝对路径：{python}")
+    elif not python_path.is_file():
+        notes.append(f"解释器不存在：{python}")
+    elif not outside_repo:
+        notes.append(f"解释器位于代码目录内，无法写数据根：{python}")
+    else:
+        facts = _interpreter_facts(str(python))
+        version = facts["version"]
+        has_yaml = facts["yaml"]
+        expected = (Path(home) / workspace_mod.ENV_DIRNAME) if home else None
+        in_data_root = bool(expected) and python_path.is_relative_to(expected)
+        if not facts["ok"]:
+            notes.append(f"解释器不可用：{facts['error']}")
+        elif version < MIN_PYTHON:
+            notes.append(f"python {'.'.join(map(str, version))} < 3.11")
+        elif not has_yaml:
+            notes.append("PyYAML missing in this interpreter")
     if missing:
         notes.append("repo missing: " + ", ".join(missing))
+    ok = (
+        recorded
+        and facts["ok"]
+        and python_path.is_absolute()
+        and python_path.is_file()
+        and outside_repo
+        and version >= MIN_PYTHON
+        and has_yaml
+        and not missing
+    )
+    if not ok:
+        notes.append(f"修复：{repair_hint}")
     return {
         "status": "ok" if ok else "blocked",
         "note": "；".join(notes) or "解释器与仓库可用",
         "evidence": {
-            "python": str(python),
+            "python": str(python) if recorded else "",
             "python_version": ".".join(map(str, version)),
             "platform": platform or sys.platform,
             "repo": str(repo),
             "yaml": has_yaml,
+            "recorded": recorded,
+            "outside_repo": outside_repo,
+            "in_data_root": in_data_root,
+            "repair": repair_hint,
         },
     }
 
 
 def probe_lark_cli(home: Path, spec: str | None, *, names: list[str] | None = None) -> dict:
-    """Executable presence only — never treated as a logged-in identity."""
-    found = resolve_executable(
+    """Executable presence only — never treated as a logged-in identity.
+
+    A recorded absolute path (``paths.lark_cli``) or explicit ``--lark-cli`` is
+    authoritative: when it no longer exists the step is blocked with
+    rediscovery guidance, even if another ``lark-cli`` is on PATH (ADR 0007).
+    """
+    found = lark_mod.resolve_cli(
         spec,
         private_dirs=[Path(home) / "bin"],
         names=names or ["lark-cli"],
     )
     if not found["found"]:
+        if found.get("stale"):
+            return {
+                "status": "blocked",
+                "note": found["note"],
+                "evidence": {
+                    "path": found.get("path"),
+                    "source": found.get("source"),
+                    "stale": True,
+                },
+            }
         return {
             "status": "blocked",
-            "note": "飞书 CLI 未找到：把它装到私有目录并在 install/config.json 的 paths.lark_cli 指向它",
+            "note": (
+                "飞书 CLI 未找到：用 `lark discover --cli <可执行文件绝对路径>` 记录已有 CLI，"
+                "或运行 `lark install --root <workspace>` 私有安装"
+            ),
             "evidence": {"source": found["source"]},
         }
     return {
@@ -263,29 +330,37 @@ def parse_auth_status(payload: dict) -> dict:
             if facts[name]["ready"]
             and facts[name]["status"] in lark_mod.REFRESHABLE_STATUSES
         ],
+        "scopes": facts["scopes"],
     }
 
 
 def probe_identity(lark_cli_path: str, *, runner=None, timeout: int = 30) -> dict:
-    """Authenticated access, distinguished from mere executable presence."""
+    """Authenticated access, distinguished from mere executable presence.
+
+    ``--verify`` is passed so this probe and ``lark status`` share one
+    readiness rule (refreshable is usable, expired is not).
+    """
     if not lark_cli_path:
-        return {"status": "blocked", "note": "缺少 lark-cli 路径", "evidence": {}}
+        return {"status": "blocked", "note": "缺少 lark-cli 路径", "evidence": {}, "scopes": []}
     kwargs = {"timeout": timeout}
     if runner is not None:
         kwargs["runner"] = runner
-    result = run_json([lark_cli_path, "auth", "status", "--json"], **kwargs)
+    result = run_json([lark_cli_path, "auth", "status", "--json", "--verify"], **kwargs)
     if not result.get("ok"):
         return {
             "status": "blocked",
             "note": f"auth status 无法读取：{result.get('error')}",
             "evidence": {},
+            "scopes": [],
         }
     facts = parse_auth_status(result["payload"])
+    scopes = facts.pop("scopes", [])
     if facts["user_ready"] and facts["bot_ready"]:
         return {
             "status": "ok",
             "note": "user 与 bot 身份均可用",
             "evidence": {k: v for k, v in facts.items() if k != "user_open_id_present"},
+            "scopes": scopes,
         }
     missing = []
     if not facts["user_ready"]:
@@ -296,6 +371,7 @@ def probe_identity(lark_cli_path: str, *, runner=None, timeout: int = 30) -> dic
         "status": "blocked",
         "note": "需要用户完成飞书登录/授权：" + "、".join(missing),
         "evidence": {k: v for k, v in facts.items() if k != "user_open_id_present"},
+        "scopes": scopes,
     }
 
 
@@ -436,16 +512,80 @@ def check(
             update_config(home, paths={"python": ws["python"]})
         if ws.get("uv"):
             update_config(home, paths={"uv": ws["uv"]})
+        if ws.get("venv"):
+            update_config(home, paths={"venv": ws["venv"]})
 
+    repair = (
+        workspace_mod.repair_command(workspace_root, home)
+        if workspace_root
+        else f'python -m hostrun.cli --home "{home}" install toolchain '
+        f"--root <workspace> --clear"
+    )
     results["dependencies"] = probe_dependencies(
-        repo_path, python=python or config["paths"].get("python"), platform=platform
+        repo_path,
+        python=python or config["paths"].get("python"),
+        platform=platform,
+        home=home,
+        repair=repair,
     )
     lark_result = probe_lark_cli(home, lark_cli or config["paths"].get("lark_cli"))
     results["lark_cli"] = lark_result
-    lark_path = (lark_result.get("evidence") or {}).get("path", "")
+    lark_path = (
+        (lark_result.get("evidence") or {}).get("path", "")
+        if lark_result["status"] == "ok"
+        else ""
+    )
     results["identity"] = probe_identity(lark_path, runner=runner)
 
-    for step in ("host", "workspace", "dependencies", "skill", "lark_cli", "identity"):
+    # Authorization and real resource reads are a separate fact from login:
+    # a successful identity probe never stands in for them.
+    facilities = read_json(home / "install" / "facilities.json") or {}
+    folders = facilities.get("folders") or {}
+    authz = lark_mod.authorization(
+        results["identity"].get("scopes") or [],
+        required=REQUIRED_PERMISSION_SCOPES,
+    )
+    resources = lark_mod.resource_preflight(
+        home,
+        lark_path or None,
+        base_token=(facilities.get("base") or {}).get("token"),
+        source_folder=folders.get("source"),
+        push_folder=folders.get("push"),
+        runner=runner,
+    )
+    if authz["status"] == "blocked" or resources["status"] == "blocked":
+        permissions_status = "blocked"
+    elif authz["status"] == "ok" and resources["status"] == "ok":
+        permissions_status = "ok"
+    else:
+        permissions_status = "untested"
+    if not lark_path:
+        permissions_note = "飞书 CLI 不可用，登录、授权范围与资源读取均未验证"
+    elif permissions_status == "ok":
+        permissions_note = "授权范围与资源读取均已验证"
+    else:
+        permissions_note = authz.get("note") or resources.get("note", "")
+    results["permissions"] = {
+        "status": permissions_status,
+        "note": permissions_note,
+        "evidence": {
+            "granted": authz.get("granted"),
+            "missing": authz.get("missing"),
+            "base": resources.get("base"),
+            "drive": resources.get("drive"),
+            "messages": resources.get("messages"),
+        },
+    }
+
+    for step in (
+        "host",
+        "workspace",
+        "dependencies",
+        "skill",
+        "lark_cli",
+        "identity",
+        "permissions",
+    ):
         result = results.get(step)
         if not result:
             continue
@@ -455,12 +595,27 @@ def check(
             result["status"],
             note=result["note"],
             evidence=result["evidence"],
-            recheck=step in {"workspace", "dependencies", "skill"},
+            recheck=step
+            in {"workspace", "dependencies", "skill", "identity", "permissions"},
         )
 
+    host_permissions = (
+        list(host.get("permissions") or [])
+        if host and host.get("product")
+        else None
+    )
+    permissions_update = {
+        "scope": authz.get("granted") or [],
+        "missing": authz.get("missing") or [],
+        "checked_at": now(),
+    }
+    if host_permissions is not None:
+        permissions_update["host_scope"] = host_permissions
+        permissions_update["granted_at"] = now()
     update_config(
         home,
         paths={"repo": str(repo_path), "lark_cli": lark_path or config["paths"].get("lark_cli", "")},
+        permissions=permissions_update,
         timezone=timezone_name or config.get("timezone") or default_timezone(),
     )
     if host and host.get("product"):
@@ -471,7 +626,6 @@ def check(
                 "version": str(host.get("version") or ""),
                 "mode": str(host.get("mode") or ""),
             },
-            permissions={"scope": host.get("permissions") or [], "granted_at": now()},
         )
     return summary(home)
 
