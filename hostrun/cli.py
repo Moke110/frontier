@@ -1010,12 +1010,13 @@ def _lark(args, root: Path) -> tuple[int, dict]:
 
 def _schedules(args, root: Path) -> tuple[int, dict]:
     if args.action == "plan":
-        return 0, schedules.plan(
+        result = schedules.plan(
             root,
             timezone_name=args.timezone_name,
             daily=args.daily,
             feedback_minute=args.feedback_minute,
         )
+        return (0 if result.get("ok") else 1), result
     if args.action == "confirm":
         task_ids = _pairs(args.task_id)
         result = schedules.confirm(
