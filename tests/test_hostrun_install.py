@@ -167,6 +167,7 @@ def test_check_works_with_chinese_and_space_paths(tmp_path, monkeypatch):
     assert result["steps"]["host"] == "ok"
     assert result["steps"]["dependencies"] == "ok"
     assert result["steps"]["lark_cli"] == "blocked"
+    assert result["steps"]["permissions"] == "blocked"
     config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
     assert config["host"]["product"] == "WorkBuddy"
     assert config["timezone"]
@@ -256,4 +257,170 @@ def test_toolchain_step_blocks_with_a_repair_command_then_recovers(
     config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
     assert config["paths"]["python"] == str(python)
     assert config["paths"]["uv"] == "uv"
+
+
+# --------------------------------------------- Lark CLI / identity / permissions
+GRANULAR_SCOPES = [
+    "base:app:read",
+    "base:table:read",
+    "base:field:read",
+    "base:record:read",
+    "base:record:create",
+    "base:record:update",
+    "base:record:delete",
+    "drive:file:upload",
+    "drive:file:download",
+    "space:folder:create",
+    "space:document:delete",
+    "im:message",
+]
+
+
+class _Proc:
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def _auth_payload(**over):
+    payload = {
+        "identities": {
+            "user": {
+                "available": True,
+                "tokenStatus": "valid",
+                "userOpenId": "ou_x",
+                "accessToken": "secret-access",
+            },
+            "bot": {"available": True, "tokenStatus": "valid", "refreshToken": "secret-refresh"},
+            "tenant": {"matched": True},
+        },
+        "scopes": list(GRANULAR_SCOPES),
+    }
+    payload.update(over)
+    return payload
+
+
+def test_probe_lark_cli_blocks_a_stale_recorded_path_without_path_fallback(
+    tmp_path, monkeypatch
+):
+    path_dir = tmp_path / "pathbin"
+    path_dir.mkdir()
+    (path_dir / ("lark-cli.cmd" if os.name == "nt" else "lark-cli")).write_text(
+        "", encoding="utf-8"
+    )
+    monkeypatch.setenv("PATH", str(path_dir))
+    stale = tmp_path / "retired" / "lark-cli"
+
+    result = install.probe_lark_cli(tmp_path / "home", str(stale))
+
+    assert result["status"] == "blocked"
+    assert result["evidence"]["stale"] is True
+    assert result["evidence"]["path"] == str(stale)
+    assert "discover --cli" in result["note"]
+    assert "重装" in result["note"]
+
+
+def test_probe_identity_requests_verify(tmp_path):
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append([str(item) for item in argv])
+        return _Proc(stdout=json.dumps(_auth_payload()))
+
+    result = install.probe_identity("lark-cli", runner=runner)
+
+    assert result["status"] == "ok"
+    assert "--verify" in calls[0]
+    assert result["scopes"] == GRANULAR_SCOPES
+    assert "ou_x" not in json.dumps(result)
+
+
+def test_check_records_the_permissions_step_from_the_real_preflight(tmp_path):
+    home = tmp_path / "home"
+    binary = home / "bin" / "lark-cli"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append([str(item) for item in argv])
+        if "auth" in argv:
+            return _Proc(stdout=json.dumps(_auth_payload()))
+        return _Proc(stdout="{}")
+
+    result = install.check(
+        home, repo=Path(__file__).resolve().parents[1], host=_host(), runner=runner
+    )
+
+    assert result["steps"]["permissions"] == "untested"
+    entry = install.load_state(home)["steps"]["permissions"]
+    assert entry["note"]
+    assert entry["evidence"]["granted"] == sorted(GRANULAR_SCOPES)
+    assert entry["evidence"]["missing"] == []
+    assert entry["evidence"]["base"]["status"] == "untested"
+    assert entry["evidence"]["drive"]["status"] == "untested"
+    assert any("--verify" in call for call in calls)
+    report = install.report(home)
+    assert "permissions" in [row["step"] for row in report["untested"]]
+    blob = json.dumps(report, ensure_ascii=False)
+    assert "secret-access" not in blob
+    assert "secret-refresh" not in blob
+
+
+def test_check_reads_facilities_folders_for_the_resource_preflight(tmp_path):
+    home = tmp_path / "home"
+    binary = home / "bin" / "lark-cli"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+    (home / "install").mkdir(parents=True)
+    (home / "install" / "facilities.json").write_text(
+        json.dumps(
+            {
+                "base": {"token": "bas_x"},
+                "folders": {"source": "fld_src", "push": "fld_push"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append([str(item) for item in argv])
+        joined = " ".join(str(item) for item in argv)
+        if "auth" in argv:
+            return _Proc(stdout=json.dumps(_auth_payload()))
+        if "+table-list" in argv:
+            return _Proc(stdout=json.dumps({"ok": True, "data": {"tables": []}}))
+        if "files" in argv and "list" in argv:
+            return _Proc(stdout=json.dumps({"ok": True, "data": {"files": []}}))
+        return _Proc(stdout="{}")
+
+    result = install.check(
+        home, repo=Path(__file__).resolve().parents[1], host=_host(), runner=runner
+    )
+
+    assert result["steps"]["permissions"] == "untested"
+    entry = install.load_state(home)["steps"]["permissions"]
+    assert entry["evidence"]["base"]["status"] == "ok"
+    assert entry["evidence"]["drive"]["status"] == "ok"
+    drive_calls = [call for call in calls if "files" in call and "list" in call]
+    assert drive_calls
+    assert any("fld_src" in " ".join(call) for call in drive_calls)
+    assert any("fld_push" in " ".join(call) for call in drive_calls)
+
+
+def test_check_without_a_cli_records_permissions_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = install.check(
+        home, repo=Path(__file__).resolve().parents[1], host=_host()
+    )
+
+    assert result["steps"]["lark_cli"] == "blocked"
+    assert result["steps"]["permissions"] == "blocked"
+    entry = install.load_state(home)["steps"]["permissions"]
+    assert "CLI" in entry["note"]
 
