@@ -1,6 +1,6 @@
 # frontier
 
-Research knowledge base and paper-report delivery system. This file is the development guide; `CONTEXT.md` is the project glossary. Maintain these through the Matt Pocock skills as working rules and terminology are resolved.
+Research knowledge base and paper-report delivery system. This file is the development guide; `GLOSSARY.md` is the project glossary. Maintain these through the Matt Pocock skills as working rules and terminology are resolved.
 
 ## Development responsibilities
 
@@ -34,11 +34,11 @@ Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `
 
 ### Domain docs
 
-Single-context layout (`CONTEXT.md` + `docs/adr/` at the repo root). See `docs/agents/domain.md`.
+Single-context layout (`GLOSSARY.md` + `docs/adr/` at the repo root). See `docs/agents/domain.md`.
 
 ### Runtime and user documentation
 
-`README.md` is the user-facing installation and usage guide. The product's host agent loads `skills/frontier-run/SKILL.md`; its installation and workflow references are runtime instructions, not development skills. Module contracts live in `contracts/`; current acceptance evidence and blockers live in `docs/acceptance/` and GitHub Issues. Keep root documentation limited to `AGENTS.md`, `CONTEXT.md` and `README.md`, with `LICENSE` retained at the root.
+`README.md` is the user-facing installation and usage guide. The product's host agent loads `skills/frontier-run/SKILL.md`; its installation and workflow references are runtime instructions, not development skills. Module contracts live in `contracts/`; current acceptance evidence and blockers live in `docs/acceptance/` and GitHub Issues. Keep root documentation limited to `AGENTS.md`, `GLOSSARY.md` and `README.md`, with `LICENSE` retained at the root.
 
 Keep `docs/adr/` for Matt-maintained decisions, `docs/agents/` for Matt skill configuration, and `docs/acceptance/README.md` for concise evidence and outstanding acceptance gaps. Put schemas/state machines in `contracts/`, sample/generated documentation beside its fixtures, and historical process logs in Git history rather than duplicate local trackers or reports.
 
@@ -50,4 +50,4 @@ Read the relevant `SKILL.md` before applying a skill. Shared Matt Pocock skills 
 
 The planning/implementation skills above are user-invoked workflows. Follow each skill's approval gates and delegated skills (including testing and code review); do not automatically start implementation merely because its skill is installed.
 
-The tracker config those skills read is `docs/agents/issue-tracker.md`; `setup-matt-pocock-skills` only needs re-running if the tracker moves.
+The per-repo configuration those skills read is `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md` and `docs/agents/domain.md`. Edit those files directly; `setup-matt-pocock-skills` only needs re-running to switch issue trackers or restart the setup.

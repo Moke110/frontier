@@ -4,7 +4,7 @@
 
 - 票：[统一问题队列的状态机与闸门 #10](https://github.com/Moke110/frontier/issues/10)
 - 状态：定稿（供 #16 / #17 / #18 实现）
-- 术语：见 `CONTEXT.md`；卡片/命题契约见 `contracts/README.md`
+- 术语：见 `GLOSSARY.md`；卡片/命题契约见 `contracts/README.md`
 
 ## 1. 目标与不变量
 
