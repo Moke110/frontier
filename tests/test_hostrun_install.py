@@ -200,20 +200,37 @@ def test_resolve_executable_prefers_explicit_then_private(tmp_path, monkeypatch)
 # ------------------------------------------------------------------- check
 def test_check_works_with_chinese_and_space_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", "")
-    home = tmp_path / "我的 数据" / "home"
+    layout = tmp_path / "我的 工作 目录"
+    home = layout / "我的 数据" / "home"
     home.mkdir(parents=True)
-    repo = Path(__file__).resolve().parents[1]
+    # A seeded code checkout under a Chinese/space path: the running
+    # interpreter (repo .venv) is genuinely outside it, so the recorded
+    # interpreter probe succeeds no matter which python runs the suite.
+    repo = layout / "代码 checkout"
+    _seed_repo_files(repo)
 
     result = install.check(home, repo=repo, host=_host())
 
     assert result["steps"]["host"] == "ok"
     assert result["steps"]["dependencies"] == "ok"
-    assert install.load_state(home)["steps"]["dependencies"]["evidence"]["outside_repo"] is True
+    evidence = install.load_state(home)["steps"]["dependencies"]["evidence"]
+    assert evidence["outside_repo"] is True
+    assert evidence["repo"] == str(repo)
+    assert evidence["in_data_root"] is False
     assert result["steps"]["lark_cli"] == "blocked"
     assert result["steps"]["permissions"] == "blocked"
     config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
     assert config["host"]["product"] == "WorkBuddy"
     assert config["timezone"]
+    # The Chinese/space layout round-trips into the persisted config and the
+    # report without being mangled or crashing anything.
+    assert config["paths"]["repo"] == str(repo)
+    assert config["paths"]["home"] == str(home)
+    report = install.report(home)
+    assert report["paths"]["repo"] == str(repo)
+    assert report["paths"]["home"] == str(home)
+    assert "dependencies" in report["working"]
+    assert "dependencies" not in [row["step"] for row in report["blocked"]]
 
 
 def test_check_never_falls_back_to_the_running_interpreter(tmp_path, monkeypatch):
