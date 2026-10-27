@@ -2,6 +2,10 @@
 
 给下一个接手 frontier 仓库的 agent 看。本文只写**当前状态、卡在哪、下一步怎么做**；已落在别处的内容用路径引用，不复制。
 
+> 本文是 WorkBuddy 开发结束时的历史交接。后续开发职责与 Git 流程以 [AGENTS.md](AGENTS.md) 为准：Codex / DeepSeek Harness 规划，DeepSeek Harness 实施，所有修改在 dev 上完成后合并 main 并推送。下文的提交、测试与验收状态是当时的快照，继续工作前须重新读取 GitHub issue。
+
+> 环境复查：原 `.venv` 的解释器指向已不存在的 WorkBuddy Python，不能直接沿用下文的旧命令。可用独立临时环境验证：`uv run --no-project --python C:\Python314\python.exe --with pytest --with PyYAML --with PyMuPDF python -X utf8 -m pytest -q`。`-X utf8` 只影响该进程，避免现有测试在 Windows 默认 GBK 下读取 UTF-8 文件失败，无需设置环境变量。后续开发可由 DeepSeek Harness 重建私有环境，避免依赖已退役开发工具的运行时。
+
 - 仓库：`E:\Desktop\frontier`（GitHub `Moke110/frontier`），原生 Windows（非 WSL），Python 3.13 venv 在 `.venv/`
 - 当前提交：`362d005` `feat(hostrun): host-owned install, queue durability and bounded runs (#30-#36)`
 - 工作树：干净；测试 `188 passed, 3 skipped`
@@ -68,8 +72,7 @@ Ticket 实现类 #30–#36 已关闭。#37 / #38 / #39 / #40 与 spec #29 **保�
 - `--home` 的**位置**：argparse 只认全局位置；`hostrun/cli.py` 的 `_normalize()` 已兜住子命令后的写法，但自己拼命令时仍建议 `python -m hostrun.cli --home X <cmd>`。
 - `hostrun kb create-tables` 在离线模式下必须显式传 `client=`，否则会去构造真实 LarkDrive；见 `tests/test_hostrun_kb.py` 的用法。
 - `library/offline.py` 的 `JsonBase` 建表后自带一行配置数据，断言「库为空」时要逐表检查 `list(table) == []`，不要断言 `list_tables() == []`。
-- `.workbuddy/` 已加入 `.gitignore`（工作记忆与临时文件，不进版本库）。
-- 不要用 `git add -A` 前忘了 `.workbuddy/` 已被忽略——上一轮正是靠 `git add -A ':!.workbuddy'`。
+- 仓库内 `.workbuddy/` 专属开发记忆已退役并移除；忽略规则保留以防再次生成的工具元数据进入版本库。提交时显式选择文件。
 - `docs/legacy/2026-10-systemd-install.md` 里的 `WINDOWS-TRANSFER.md` 相对链接指向同目录，实际文件在仓库根；属历史文档，未修。
 
 ## 5. 常用命令

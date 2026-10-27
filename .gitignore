@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .scratch/lark-file-test/
+# Retired development agent: keep regenerated local metadata out of Git.
 .workbuddy/
