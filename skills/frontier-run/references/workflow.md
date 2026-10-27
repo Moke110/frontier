@@ -10,7 +10,7 @@
 2. `lark-cli` 装在私有目录并已登录；登录状态由 `hostrun install` 的 `identity` 步骤验证，不靠 `command -v` 猜。
 3. 运行方式是「宿主唤醒 → 一次有界运行 → 退出」；不装常驻监听、不装 systemd、不写持久环境变量。
 
-所有命令在**本仓库根**执行，数据根用 `--home` 显式给出（默认 `~/knowledge-loop`）：
+所有命令在**本仓库根**执行，数据根用 `--home` 显式给出（安装默认记录为工作区的 `frontier-archive/`；未配置时回退 `~/knowledge-loop`）：
 
 ```bash
 python -m hostrun.cli --home <home> install status

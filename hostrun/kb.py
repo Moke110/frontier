@@ -206,7 +206,37 @@ def _drive_for(home: Path, client, drive=None):
     return None
 
 
-def create_tables(home: Path, *, client=None, dry_run: bool = False, drive=None) -> dict:
+def register_base(home: Path, base_token: str, *, base_url: str = "", name: str = "") -> dict:
+    """Record a Base the agent just created (no link parsing involved)."""
+    home = Path(home)
+    config = read_json(home / "knowledge" / "base.json") or {}
+    previous = config.get("base_token")
+    if previous and previous != base_token:
+        raise HostRunError(
+            f"已配置另一个知识库 {previous}；不静默切换到 {base_token}"
+        )
+    payload = {
+        **config,
+        "schema_version": config.get("schema_version") or 1,
+        "base_token": base_token,
+        "base_url": base_url or config.get("base_url") or f"https://feishu.cn/base/{base_token}",
+        "name": name or config.get("name") or "",
+        "tables": config.get("tables") or {},
+    }
+    path = home / "knowledge" / "base.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, payload)
+    return payload
+
+
+def create_tables(
+    home: Path,
+    *,
+    client=None,
+    dry_run: bool = False,
+    drive=None,
+    names: dict | None = None,
+) -> dict:
     """Create any missing knowledge/base/library/feedback tables in the Base."""
     home = Path(home)
     config = read_json(home / "knowledge" / "base.json") or {}
@@ -217,8 +247,12 @@ def create_tables(home: Path, *, client=None, dry_run: bool = False, drive=None)
     by_name = _existing(client)
     tables = dict(config.get("tables") or {})
     actions: list[str] = []
+    names = names or {}
+    knowledge_tables = {
+        key: str(names.get(key) or default) for key, default in KNOWLEDGE_TABLES.items()
+    }
 
-    for key, name in KNOWLEDGE_TABLES.items():
+    for key, name in knowledge_tables.items():
         if name in by_name:
             tables.setdefault(key, by_name[name])
             continue
@@ -247,9 +281,9 @@ def create_tables(home: Path, *, client=None, dry_run: bool = False, drive=None)
 
     from library.setup import setup as library_setup
 
-    library_report = library_setup(home, client=client, drive=drive)
+    library_report = library_setup(home, client=client, drive=drive, names=names)
     actions.extend(library_report.get("actions") or [])
-    feedback_report = feedback_mod.setup(home, client=client)
+    feedback_report = feedback_mod.setup(home, client=client, names=names)
     actions.extend(feedback_report.get("actions") or [])
     return {
         "ok": True,
@@ -257,6 +291,8 @@ def create_tables(home: Path, *, client=None, dry_run: bool = False, drive=None)
         "actions": actions,
         "tables": tables,
         "base_token": config.get("base_token"),
+        "library": library_report,
+        "feedback": feedback_report,
     }
 
 

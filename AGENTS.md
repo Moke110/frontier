@@ -38,7 +38,7 @@ Single-context layout (`CONTEXT.md` + `docs/adr/` at the repo root). See `docs/a
 
 ### Runtime and user documentation
 
-`README.md` is the user-facing installation and usage guide. The product's host agent loads `skills/frontier/SKILL.md`; its installation and workflow references are runtime instructions, not development skills. Module contracts live in `contracts/`; current acceptance evidence and blockers live in `docs/acceptance/` and GitHub Issues. Keep root documentation limited to `AGENTS.md`, `CONTEXT.md` and `README.md`, with `LICENSE` retained at the root.
+`README.md` is the user-facing installation and usage guide. The product's host agent loads `skills/frontier-run/SKILL.md`; its installation and workflow references are runtime instructions, not development skills. Module contracts live in `contracts/`; current acceptance evidence and blockers live in `docs/acceptance/` and GitHub Issues. Keep root documentation limited to `AGENTS.md`, `CONTEXT.md` and `README.md`, with `LICENSE` retained at the root.
 
 Keep `docs/adr/` for Matt-maintained decisions, `docs/agents/` for Matt skill configuration, and `docs/acceptance/README.md` for concise evidence and outstanding acceptance gaps. Put schemas/state machines in `contracts/`, sample/generated documentation beside its fixtures, and historical process logs in Git history rather than duplicate local trackers or reports.
 

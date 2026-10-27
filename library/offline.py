@@ -139,6 +139,19 @@ class JsonBase:
         self.save()
         return fields
 
+    def delete(self, table: str, record_ids: list[str]) -> dict:
+        wanted = {str(record_id) for record_id in record_ids}
+        before = len(self._rows(table))
+        self.tables[table] = [
+            row for row in self._rows(table) if row["record_id"] not in wanted
+        ]
+        self.save()
+        return {
+            "ok": True,
+            "deleted": sorted(wanted),
+            "removed": before - len(self.tables[table]),
+        }
+
     def rename_table(self, table: str, name: str) -> None:
         for row in self.meta:
             if row["id"] == table:

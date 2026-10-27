@@ -1,6 +1,11 @@
 # Runtime dependencies (Python 3.11+). Everything else is stdlib.
 PyYAML>=6.0
 
+# PDF initialization (`init intake --pdf`) and PDF ingestion. Required for the
+# standard installation flow; a missing wheel must be reported as blocked, not
+# replaced by invented text.
+PyMuPDF>=1.24
+
 # Tests only:
 #   pip install pytest
 

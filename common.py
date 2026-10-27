@@ -10,6 +10,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import unicodedata
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -19,6 +20,25 @@ from typing import Any, Iterable, Iterator
 import yaml
 
 DEFAULT_HOME = "~/knowledge-loop"
+
+
+def _replace_with_retry(tmp: Path, target: Path, *, attempts: int = 20) -> None:
+    """Atomic replace, retrying short Windows sharing violations.
+
+    Antivirus/indexers can hold the destination open for a few milliseconds;
+    the temporary file is already complete, so retrying is safe and keeps the
+    write atomic. POSIX replaces on the first attempt.
+    """
+    last: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            tmp.replace(target)
+            return
+        except PermissionError as exc:  # Windows sharing violation
+            last = exc
+            time.sleep(0.02 * (attempt + 1))
+    raise last or OSError(f"could not replace {target}")
+
 
 
 def home(override: str | None = None) -> Path:
@@ -118,7 +138,7 @@ def write_json(path: Path, obj: Any) -> None:
     with tmp.open("w", encoding="utf-8") as fh:
         json.dump(obj, fh, ensure_ascii=False, indent=2)
         fh.write("\n")
-    tmp.replace(path)
+    _replace_with_retry(tmp, path)
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -161,7 +181,7 @@ def write_yaml(path: Path, obj: Any) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as fh:
         yaml.safe_dump(obj, fh, allow_unicode=True, sort_keys=False)
-    tmp.replace(path)
+    _replace_with_retry(tmp, path)
 
 
 def emit(obj: Any) -> None:

@@ -103,6 +103,35 @@ def update_card(token: str, card: dict, identity: str = "bot") -> dict:
     )
 
 
+def delete_message(
+    message_id: str, identity: str = "bot", executable: str = BIN
+) -> dict:
+    """Recall one test message using the *recorded* CLI path, not PATH.
+
+    Authority and age limits are the server's; either can legitimately refuse,
+    which the caller reports as an unretractable message.
+    """
+    proc = subprocess.run(
+        [executable, "im", "messages", "delete", "--message-id", message_id, "--as", identity],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    text = (proc.stdout or "").strip()
+    try:
+        payload = json.loads(text or "{}")
+    except json.JSONDecodeError:
+        raise FeishuError(
+            f"{executable} messages delete returned non-JSON: {text[:300]}"
+        ) from None
+    if proc.returncode != 0 or payload.get("ok") is False:
+        raise FeishuError(
+            f"{executable} messages delete failed: "
+            f"{json.dumps(payload.get('error') or payload, ensure_ascii=False)[:400]}"
+        )
+    return {"ok": True, "message_id": message_id, "payload": payload}
+
+
 def consume_events(
     identity: str = "bot",
     max_events: int = 0,

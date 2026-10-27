@@ -108,11 +108,27 @@ def save_base_config(home: Path, config: dict) -> Path:
     return path
 
 
-def base_client(home: Path, *, identity: str = "user", offline: bool = False, client=None):
+def lark_bin(home: Path) -> str:
+    """The recorded private CLI path, never a bare PATH lookup when recorded."""
+    home = Path(home)
+    cfg = read_json(home / CONFIG_REL) or {}
+    return str((cfg.get("paths") or {}).get("lark_cli") or "lark-cli")
+
+
+def base_client(
+    home: Path,
+    *,
+    identity: str = "user",
+    offline: bool = False,
+    client=None,
+    bin: str | None = None,
+):
     """Return a Base client exposing list/create/update/field_names/create_table.
 
     ``offline`` swaps the lark-cli client for the persisted JSON fixture, which
     is what demos and tests use so no live tenant is ever touched by accident.
+    The live client uses the recorded private CLI path (``bin=`` overrides it
+    for an explicit probe).
     """
     if client is not None:
         return client
@@ -123,7 +139,7 @@ def base_client(home: Path, *, identity: str = "user", offline: bool = False, cl
         return JsonBase(home / "library" / "offline-base.json")
     from library.base import LarkBaseClient
 
-    return LarkBaseClient(base_config(home), identity=identity)
+    return LarkBaseClient(base_config(home), identity=identity, bin=bin or lark_bin(home))
 
 
 def table_id(config: dict, key: str) -> str:

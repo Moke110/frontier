@@ -136,7 +136,7 @@ def load_tables(home: Path, client=None) -> dict:
     return {name: tables[name] for name in TABLE_NAMES}
 
 
-def setup(home: Path, *, client=None, dry_run: bool = False) -> dict:
+def setup(home: Path, *, client=None, dry_run: bool = False, names: dict | None = None) -> dict:
     """Create the three feedback tables when they are missing (idempotent)."""
     home = Path(home)
     cfg = base_config(home)
@@ -145,7 +145,9 @@ def setup(home: Path, *, client=None, dry_run: bool = False) -> dict:
     existing = {row["name"]: row["id"] for row in listing}
     tables = dict(cfg.get("tables") or {})
     actions = []
-    for key, name in TABLE_NAMES.items():
+    names = names or {}
+    for key, default in TABLE_NAMES.items():
+        name = str(names.get(key) or default)
         if name in existing:
             tables[key] = existing[name]
             continue

@@ -42,13 +42,15 @@ def test_record_rejects_unknown_step_and_status(tmp_path):
 
 def test_state_is_resumable_across_calls(tmp_path):
     install.record(tmp_path, "host", "ok")
+    install.record(tmp_path, "workspace", "ok")
     install.record(tmp_path, "dependencies", "ok")
+    install.record(tmp_path, "skill", "ok")
     install.record(tmp_path, "lark_cli", "blocked", note="未安装")
 
     assert install.next_step(tmp_path) == "lark_cli"
     status = install.step_status(tmp_path)
     assert status["host"] == "ok"
-    assert status["knowledge_base"] == "pending"
+    assert status["facilities"] == "pending"
 
     # a fresh call reads the same state from disk
     assert install.summary(tmp_path)["steps"]["lark_cli"] == "blocked"
@@ -101,7 +103,7 @@ def test_probe_dependencies_reports_the_missing_piece(tmp_path, monkeypatch):
     empty.mkdir()
     result = install.probe_dependencies(empty, python="python")
     assert result["status"] == "blocked"
-    assert "skills/frontier/SKILL.md" in result["note"]
+    assert "skills/frontier-run/SKILL.md" in result["note"]
 
     good = Path(__file__).resolve().parents[1]
     result = install.probe_dependencies(good)

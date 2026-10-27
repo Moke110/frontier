@@ -207,14 +207,35 @@ def run(
     library=None,
     date: str | None = None,
     finish: str | None = None,
+    scheduled: bool = False,
+    task: str | None = None,
+    proof: str | None = None,
 ) -> dict:
-    """Entry point of ``python -m hostrun.cli run --intent ...``."""
+    """Entry point of ``python -m hostrun.cli run --intent ...``.
+
+    ``scheduled`` / ``task`` / ``proof`` are set only by the host scheduler
+    command.  The proof must match the task recorded by ``schedules confirm``;
+    a hand-written run without it is logged as an ordinary run and can never
+    feed ``scheduled_run`` acceptance.
+    """
     if intent not in INTENTS:
         raise HostRunError(f"unknown intent: {intent}")
     home = Path(home)
     config = load_config(home, repo=Path(repo) if repo else None)
     repo_path = Path(repo or config["paths"]["repo"])
     room = host or (config.get("host") or {}).get("product") or "host"
+
+    scheduled_ok = False
+    if scheduled and task:
+        recorded = next(
+            (
+                row
+                for row in ((config.get("schedules") or {}).get("tasks") or [])
+                if row.get("id") == task
+            ),
+            None,
+        )
+        scheduled_ok = bool(recorded and recorded.get("proof") and proof == recorded.get("proof"))
 
     if finish:
         return finish_run(home, intent, finish, host=room)
@@ -230,6 +251,9 @@ def run(
         "intent": intent,
         "at": now(),
         "host": room,
+        "scheduled": scheduled_ok,
+        "task": task if scheduled_ok else None,
+        "scheduled_rejected": bool(scheduled and not scheduled_ok),
         "ok": True,
         "actions": [],
         "quiet": True,
@@ -269,8 +293,9 @@ def run(
             result["notify"] = "有失败的问题需要处理：" + "、".join(resume["failed"])
             result["quiet"] = False
 
-        # 3. maintenance (daily must fold it in, hourly never does)
-        if intent in ("daily", "maintenance") and maintenance_due(home, date=date):
+        # 3. maintenance: the first hourly check of each day folds it in; the
+        # daily push and a manual recovery run may also do it when still due.
+        if intent in ("daily", "feedback", "maintenance") and maintenance_due(home, date=date):
             maintenance = run_maintenance(home, date=date, offline=offline, library=library)
             result["maintenance"] = maintenance
             result["actions"].append("maintenance:ok" if maintenance.get("ok") else "maintenance:failed")
@@ -282,29 +307,49 @@ def run(
                 result["notify"] = "原文库/推送库对账有差异或配额提醒，详见维护记录"
                 result["quiet"] = False
 
-        # 4. retrieval gate
+        # 4. retrieval gate — only the daily task may request/start a push.
+        # The hourly task processes feedback and maintenance and then stops.
+        # A daily push also requires formal knowledge to be ready.
         queue = _queue(home)
         if intent == "daily":
-            queue.request_push("scheduled")
-            result["actions"].append("request:daily")
-        start = queue.try_start(minutes)
-        if start and start.get("ok"):
-            result["retrieval"] = {"requested": True, "started": True}
-            checkpoint = start.get("card_id")
-            result["brief"] = _brief(home, repo_path, intent, checkpoint, extra_lines)
-            result["next"] = FINISH_HINT.format(intent=intent)
-            result["actions"].append("retrieval:started")
-            result["quiet"] = False
+            from hostrun.install import step_status
+
+            if step_status(home).get("knowledge") != "ok":
+                result["retrieval"] = {
+                    "requested": False,
+                    "started": False,
+                    "reason": "knowledge_not_ready",
+                }
+                result["actions"].append("retrieval:blocked(knowledge_not_ready)")
+                result["next"] = "先完成正式知识初始化，再开始每日推送"
+            else:
+                queue.request_push("scheduled")
+                result["actions"].append("request:daily")
+                start = queue.try_start(minutes)
+                if start and start.get("ok"):
+                    result["retrieval"] = {"requested": True, "started": True}
+                    checkpoint = start.get("card_id")
+                    result["brief"] = _brief(home, repo_path, intent, checkpoint, extra_lines)
+                    result["next"] = FINISH_HINT.format(intent=intent)
+                    result["actions"].append("retrieval:started")
+                    result["quiet"] = False
+                else:
+                    reason = (start or {}).get("reason", "no_request")
+                    result["retrieval"] = {"requested": True, "started": False, "reason": reason}
+                    if reason in ("queue_busy", "queue_blocked"):
+                        result["actions"].append(f"retrieval:queued({reason})")
+                        if extra_lines:
+                            result["brief"] = _brief(home, repo_path, intent, None, extra_lines)
+                            result["next"] = "先把队列里的题处理完；完成后 hostrun 会在下一次运行继续"
+                    elif reason == "no_request":
+                        result["actions"].append("retrieval:none")
         else:
-            reason = (start or {}).get("reason", "no_request")
-            result["retrieval"] = {"requested": intent == "daily", "started": False, "reason": reason}
-            if reason in ("queue_busy", "queue_blocked"):
-                result["actions"].append(f"retrieval:queued({reason})")
-                if extra_lines:
-                    result["brief"] = _brief(home, repo_path, intent, None, extra_lines)
-                    result["next"] = "先把队列里的题处理完；完成后 hostrun 会在下一次运行继续"
-            elif reason == "no_request":
-                result["actions"].append("retrieval:none")
+            result["retrieval"] = {
+                "requested": False,
+                "started": False,
+                "reason": "not_a_retrieval_intent",
+            }
+            result["actions"].append("retrieval:skipped")
     finally:
         executor.release(home, host=room, ok=result["ok"], reason=result.get("notify") or "")
 
@@ -313,6 +358,10 @@ def run(
         {
             "intent": intent,
             "host": room,
+            "scheduled": scheduled_ok,
+            "task": task if scheduled_ok else None,
+            "proof": proof if scheduled_ok else None,
+            "scheduled_rejected": bool(scheduled and not scheduled_ok),
             "ok": result["ok"],
             "quiet": result["quiet"],
             "actions": result["actions"],

@@ -1,0 +1,497 @@
+"""Lark CLI: discover or privately install it, then check identity and access.
+
+The three facts are reported separately, because none of them implies another:
+
+    executable   the CLI file exists and answers
+    identity     a user and/or bot token is actually logged in
+    access       the granted scopes *and* real read operations on Base/Drive
+
+Installation never delegates to a global npm install and never writes PATH or
+the registry: a missing CLI is installed under ``<root>/.frontier`` and wrapped
+by a small launcher whose absolute path is recorded.  A login is interactive,
+so this module only prepares the exact command, then re-checks; it never stores
+or prints a credential.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+from common import ensure_dir, now
+from hostrun.base import HostRunError, base_config, resolve_executable, run_json
+
+SCHEMA_VERSION = 1
+CLI_NAMES = ["lark-cli", "lark-cli.cmd", "lark-cli.exe", "lark-cli.bat"]
+REQUIRED_SCOPES = {
+    "base": ["bitable:app"],
+    "drive": ["drive:drive"],
+    "messages": ["im:message:send_as_bot"],
+}
+SCOPE_KEYS = (
+    "scopes",
+    "scope",
+    "grantedScopes",
+    "granted_scopes",
+    "permissions",
+    "authorizedScopes",
+)
+
+
+# --------------------------------------------------------------------- helpers
+def _run(argv: list[str], *, runner=subprocess.run, timeout: int = 120) -> dict:
+    try:
+        proc = runner(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {
+        "ok": proc.returncode == 0,
+        "code": proc.returncode,
+        "out": (proc.stdout or "").strip(),
+        "err": (proc.stderr or "").strip(),
+    }
+
+
+def _tail(text: str, limit: int = 400) -> str:
+    return " ".join((text or "").split())[-limit:]
+
+
+def private_bin(root: str | Path) -> Path:
+    return Path(root).expanduser().resolve() / ".frontier" / "bin"
+
+
+def discover_cli(root: str | Path, *, spec: str | None = None, home: str | Path | None = None) -> dict:
+    """Resolve the CLI from explicit config, private directories, then PATH."""
+    root = Path(root).expanduser().resolve()
+    found = resolve_executable(
+        spec,
+        private_dirs=[root / ".frontier" / "bin", *( [Path(home) / "bin"] if home else [])],
+        names=CLI_NAMES,
+    )
+    return {"ok": bool(found["found"]), **found}
+
+
+def _launcher(binary: Path, node: Path | None, *, target: Path) -> Path:
+    ensure_dir(target.parent)
+    if os.name == "nt":
+        target = target.with_suffix(".cmd")
+        if node is not None and binary.suffix in (".js", ".mjs"):
+            body = f'@echo off\r\n"{node}" "{binary}" %*\r\n'
+        else:
+            body = f'@echo off\r\n"{binary}" %*\r\n'
+        target.write_text(body, encoding="utf-8", newline="")
+        return target
+    if node is not None and binary.suffix in (".js", ".mjs"):
+        body = f'#!/bin/sh\nexec "{node}" "{binary}" "$@"\n'
+    else:
+        body = f'#!/bin/sh\nexec "{binary}" "$@"\n'
+    target.write_text(body, encoding="utf-8")
+    target.chmod(0o755)
+    return target
+
+
+def _find_package_entry(prefix: Path) -> Path | None:
+    for rel in (
+        "node_modules/@larksuite/cli/bin/lark-cli.js",
+        "node_modules/@larksuite/cli/bin/lark-cli",
+        "node_modules/@larksuite/cli/index.js",
+    ):
+        candidate = prefix / rel
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def install_cli(
+    root: str | Path,
+    *,
+    runner=subprocess.run,
+    registry: str | None = None,
+) -> dict:
+    """Install @larksuite/cli under the workspace and expose a private wrapper."""
+    root = Path(root).expanduser().resolve()
+    npm = resolve_executable(None, private_dirs=[root / ".frontier" / "node"], names=["npm", "npm.cmd"])
+    if not npm["found"]:
+        return {
+            "ok": False,
+            "reason": "npm_missing",
+            "note": "未找到 npm。请先让宿主安装 Node.js/npm，再重试；未修改 PATH 或全局包",
+        }
+    node = resolve_executable(None, names=["node", "node.exe"])
+    prefix = root / ".frontier" / "lark"
+    argv = [
+        npm["path"],
+        "install",
+        "--prefix",
+        str(prefix),
+        "--no-fund",
+        "--no-audit",
+        "--loglevel",
+        "error",
+    ]
+    if registry:
+        argv += ["--registry", registry]
+    argv.append("@larksuite/cli")
+    installed = _run(argv, runner=runner, timeout=900)
+    if not installed["ok"]:
+        return {
+            "ok": False,
+            "reason": "npm_install_failed",
+            "note": "npm 私有安装失败：" + (_tail(installed["err"] or installed["out"]) or "退出非零"),
+            "prefix": str(prefix),
+        }
+    entry = _find_package_entry(prefix)
+    if entry is None:
+        shim = prefix / "node_modules" / ".bin" / ("lark-cli.cmd" if os.name == "nt" else "lark-cli")
+        if not shim.is_file():
+            return {
+                "ok": False,
+                "reason": "cli_entry_missing",
+                "note": "npm 安装完成但找不到 lark-cli 入口；保留进度，可重试或手动指定路径",
+                "prefix": str(prefix),
+            }
+        entry = shim
+    launcher = _launcher(
+        entry,
+        Path(node["path"]) if node["found"] else None,
+        target=root / ".frontier" / "bin" / "lark-cli",
+    )
+    version = _run([str(launcher), "--version"], runner=runner, timeout=120)
+    return {
+        "ok": True,
+        "path": str(launcher),
+        "entry": str(entry),
+        "source": "private",
+        "version": version["out"].splitlines()[0] if version["ok"] and version["out"] else "",
+        "evidence": _tail(version["err"] or version["out"]) if not version["ok"] else "",
+    }
+
+
+# --------------------------------------------------------------------- identity
+def parse_auth(payload: dict) -> dict:
+    """Booleans and status words only — the payload may carry tokens."""
+    identities = (payload or {}).get("identities") or {}
+    user = identities.get("user") or {}
+    bot = identities.get("bot") or {}
+
+    def facts(entry: dict) -> dict:
+        status = str(entry.get("tokenStatus") or entry.get("status") or "").lower()
+        available = (
+            bool(entry.get("available"))
+            if "available" in entry
+            else status in {"valid", "ready"}
+        )
+        return {
+            "available": available,
+            "status": status,
+            "ready": available and status in {"valid", "ready"},
+            "expired": status in {"expired", "invalid"},
+        }
+
+    user_facts, bot_facts = facts(user), facts(bot)
+    return {
+        "user": user_facts,
+        "bot": bot_facts,
+        "user_open_id_present": bool(user.get("userOpenId") or user.get("openId")),
+        "tenant_matches": (identities.get("tenant") or {}).get("matched"),
+        "scopes": _extract_scopes(payload),
+    }
+
+
+def _extract_scopes(payload: dict) -> list[str]:
+    for key in SCOPE_KEYS:
+        value = (payload or {}).get(key)
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            return list(value)
+        if isinstance(value, str) and value.strip():
+            return [part for part in re.split(r"[\s,]+", value.strip()) if part]
+        if isinstance(value, dict):
+            flat = [name for name, granted in value.items() if granted]
+            if flat:
+                return flat
+    identities = (payload or {}).get("identities") or {}
+    for side in ("user", "bot"):
+        entry = identities.get(side) or {}
+        for key in SCOPE_KEYS:
+            value = entry.get(key)
+            if isinstance(value, list) and all(isinstance(item, str) for item in value):
+                return list(value)
+            if isinstance(value, str) and value.strip():
+                return [part for part in re.split(r"[\s,]+", value.strip()) if part]
+    return []
+
+
+def identity(cli: str | None, *, runner=subprocess.run, timeout: int = 30) -> dict:
+    if not cli:
+        return {"status": "blocked", "note": "缺少 lark-cli 路径", "evidence": {}}
+    result = run_json([cli, "auth", "status", "--json", "--verify"], runner=runner, timeout=timeout)
+    if not result.get("ok"):
+        return {
+            "status": "blocked",
+            "note": f"auth status 无法读取：{result.get('error')}",
+            "evidence": {"expired": False},
+        }
+    facts = parse_auth(result["payload"])
+    ready = [name for name in ("user", "bot") if facts[name]["ready"]]
+    missing = [name for name in ("user", "bot") if not facts[name]["ready"]]
+    return {
+        "status": "ok" if not missing else "blocked",
+        "note": (
+            "user 与 bot 身份均可用"
+            if not missing
+            else "需要用户完成飞书登录/授权：" + "、".join(missing)
+        ),
+        "evidence": {
+            "ready": ready,
+            "missing": missing,
+            "expired": any(facts[name]["expired"] for name in ("user", "bot")),
+            "tenant_matches": facts["tenant_matches"],
+            "scope_count": len(facts["scopes"]),
+        },
+        "scopes": facts["scopes"],
+    }
+
+
+def authorization(
+    scopes: list[str],
+    *,
+    required: list[str] | None = None,
+    source: str = "auth status",
+) -> dict:
+    """Compare declared required scopes with what the CLI reports.
+
+    Without a scope list the honest answer is ``untested``: a successful login
+    does not prove any permission.
+    """
+    required = list(required or [])
+    if not scopes:
+        return {
+            "status": "untested",
+            "note": "登录状态未报告授权范围；不能据此声明权限齐全",
+            "required": required,
+            "granted": [],
+            "missing": [],
+            "source": source,
+        }
+    granted = sorted({str(item) for item in scopes})
+    if required:
+        missing = [scope for scope in required if scope not in granted]
+        status = "ok" if not missing else "blocked"
+        note = (
+            "所需授权范围已具备"
+            if not missing
+            else "缺少授权范围：" + "、".join(missing)
+        )
+    else:
+        missing = []
+        status = "ok"
+        note = "已取得授权范围列表；具体资源访问另行验证"
+    return {
+        "status": status,
+        "note": note,
+        "required": required,
+        "granted": granted,
+        "missing": missing,
+        "source": source,
+    }
+
+
+# -------------------------------------------------------------------- resources
+def _call(cli: str, args: list[str], *, runner=subprocess.run) -> dict:
+    result = _run([cli, *args, "--format", "json"], runner=runner, timeout=120)
+    if not result["ok"]:
+        return {"ok": False, "error": _tail(result["err"] or result["out"]) or f"exit {result['code']}"}
+    try:
+        payload = json.loads(result["out"] or "{}")
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "non-JSON output"}
+    if payload.get("ok") is False:
+        return {"ok": False, "error": _tail(json.dumps(payload.get("error") or payload, ensure_ascii=False))}
+    return {"ok": True, "data": payload.get("data") or {}}
+
+
+def resource_preflight(
+    home: str | Path,
+    cli: str | None,
+    *,
+    base_token: str | None = None,
+    source_folder: str | None = None,
+    push_folder: str | None = None,
+    runner=subprocess.run,
+) -> dict:
+    """Read-only proof for Base and Drive; messages stay for the real loop."""
+    home = Path(home)
+    if not cli:
+        return {
+            "status": "blocked",
+            "note": "缺少 lark-cli 路径",
+            "base": {"status": "blocked"},
+            "drive": {"status": "blocked"},
+            "messages": {"status": "untested", "note": "真实消息发送由临时闭环验收"},
+        }
+    if base_token is None:
+        try:
+            base_token = base_config(home).get("base_token")
+        except HostRunError:
+            base_token = None
+    checks = {}
+    if not base_token:
+        checks["base"] = {"status": "untested", "note": "设施尚未创建或接入"}
+    else:
+        result = _call(
+            cli,
+            ["base", "+table-list", "--as", "user", "--base-token", base_token],
+            runner=runner,
+        )
+        checks["base"] = {
+            "status": "ok" if result["ok"] else "blocked",
+            "note": "可读取 Base 表结构" if result["ok"] else "Base 读取失败：" + result["error"],
+        }
+    folders = [folder for folder in (source_folder, push_folder) if folder]
+    if not folders:
+        checks["drive"] = {"status": "untested", "note": "云盘目录尚未创建或接入"}
+    else:
+        failures = []
+        for folder in folders:
+            result = _call(
+                cli,
+                [
+                    "drive",
+                    "files",
+                    "list",
+                    "--as",
+                    "user",
+                    "--params",
+                    json.dumps(
+                        {"folder_token": folder, "page_size": 10}, ensure_ascii=False
+                    ),
+                ],
+                runner=runner,
+            )
+            if not result["ok"]:
+                failures.append(result["error"])
+        checks["drive"] = {
+            "status": "ok" if not failures else "blocked",
+            "note": "可读取原文库与推送库目录" if not failures else "云盘读取失败：" + "；".join(failures),
+        }
+    checks["messages"] = {
+        "status": "untested",
+        "note": "发送权限与真实投递由临时闭环验证，不用登录状态代替",
+    }
+    statuses = {value["status"] for value in checks.values()}
+    if "blocked" in statuses:
+        status = "blocked"
+    elif "untested" in statuses:
+        status = "untested"
+    else:
+        status = "ok"
+    return {"status": status, "note": "资源级证据见各分项", **checks}
+
+
+# ----------------------------------------------------------------------- driver
+def status(
+    root: str | Path,
+    *,
+    home: str | Path | None = None,
+    required: list[str] | None = None,
+    runner=subprocess.run,
+    spec: str | None = None,
+) -> dict:
+    root = Path(root).expanduser().resolve()
+    found = discover_cli(root, spec=spec, home=home)
+    if not found["ok"]:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "ok": False,
+            "cli": {"status": "blocked", "note": "未找到 lark-cli", **found},
+            "identity": {"status": "blocked"},
+            "authorization": {"status": "blocked"},
+            "resources": {"status": "blocked"},
+            "next": f"python -m hostrun.cli lark install --root {root}",
+        }
+    identity_result = identity(found["path"], runner=runner)
+    authz = authorization(
+        identity_result.get("scopes") or [], required=required
+    )
+    home_path = Path(home).expanduser().resolve() if home else None
+    resources = (
+        resource_preflight(home_path, found["path"], runner=runner)
+        if home_path
+        else {"status": "untested", "note": "未提供数据根，跳过资源预检"}
+    )
+    ok = (
+        identity_result["status"] == "ok"
+        and authz["status"] == "ok"
+        and resources["status"] == "ok"
+    )
+    next_step = None
+    if identity_result["status"] != "ok":
+        next_step = f"python -m hostrun.cli lark login --root {root}"
+    elif authz["status"] == "blocked":
+        next_step = "在飞书管理后台补齐授权范围，然后重试 lark status"
+    elif resources["status"] == "blocked":
+        next_step = "检查设施链接、身份租户与资源权限"
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "ok": ok,
+        "cli": {"status": "ok", "path": found["path"], "source": found["source"]},
+        "identity": identity_result,
+        "authorization": authz,
+        "resources": resources,
+        "next": next_step,
+        "checked_at": now(),
+    }
+
+
+def login_command(cli: str | None, *, identity_name: str = "user") -> dict:
+    """Prepare the real split-flow login; this module never fakes a login.
+
+    ``lark-cli auth login`` must carry ``--domain`` / ``--scope`` / ``--recommend``
+    and ``--no-wait --json`` so the host can show the URL and finish later with
+    the returned device code.  Bot scopes are configured in the developer
+    console; ``auth login`` is never used for a bot.
+    """
+    if not cli:
+        return {"ok": False, "note": "先安装或指定 lark-cli"}
+    if identity_name == "bot":
+        return {
+            "ok": False,
+            "status": "action_required",
+            "steps": [
+                "在飞书开发者后台为应用开通 bot scope（不要对 bot 执行 auth login）",
+                "用错误响应里的 console_url 直达后台；完成后重跑 lark status",
+            ],
+            "storage": "应用凭证由 lark-cli 的 config init 保存；frontier 不读取、不复制",
+        }
+    command = f'"{cli}" auth login --domain all --no-wait --json'
+    return {
+        "ok": True,
+        "status": "action_required",
+        "command": command,
+        "steps": [
+            "首次使用先运行 `lark-cli config init` 完成应用配置（若 CLI 已配置则跳过）",
+            "运行上面的命令；从 JSON 读取 verification_url 与 device_code",
+            "把 verification_url 原样发给用户，并用 `lark-cli auth qrcode <url> --output <png>` 附二维码",
+            "用户完成授权后，由你运行 `lark-cli auth login --device-code <device_code>`",
+            "完成后运行 hostrun lark status 复核；未复核前不声明权限就绪",
+        ],
+        "storage": "凭据只保存在 lark-cli 自己的机制里；frontier 不读取、不复制 token",
+    }
+
+
+def complete_login(cli: str, device_code: str, *, runner=subprocess.run) -> dict:
+    if not cli or not device_code:
+        return {"ok": False, "note": "需要 CLI 路径与 device_code"}
+    result = _run(
+        [cli, "auth", "login", "--device-code", device_code],
+        runner=runner,
+        timeout=300,
+    )
+    return {
+        "ok": result["ok"],
+        "exit": result["code"],
+        "note": "" if result["ok"] else _tail(result["err"] or result["out"]),
+    }
