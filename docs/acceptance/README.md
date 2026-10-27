@@ -2,6 +2,31 @@
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下为 2026-10-27 已记录证据的归并；未重新执行飞书或宿主实测。代码通过离线测试不等于产品通过真实验收。
 
+## 2026-10-27 安装增量（#41 的子票据）
+
+本轮实现了工作区/uv、飞书 CLI 预检、设施创建、关键词临时闭环、精确清理、正式知识初始化和两类宿主任务。离线证据：
+
+| 能力 | 代码 | 离线测试 |
+|---|---|---|
+| 工作区获取/复用、私有 uv、uv 解释器、`frontier-run` 指针 | `hostrun/workspace.py` | `tests/test_hostrun_workspace.py`（16） |
+| CLI 发现/私有安装、登录状态、授权范围、Base/Drive 读取预检 | `hostrun/lark.py`、`library/admin.py` | `tests/test_hostrun_lark.py`（12） |
+| Base 本身/表/目录创建、确认命名、稳定 ID、同名去重、已有库接入 | `hostrun/facilities.py` | `tests/test_hostrun_facilities.py`（11） |
+| 关键词临时卡片、步骤状态机、读回验证 | `hostrun/smoke.py` | `tests/test_hostrun_smoke.py`（9） |
+| 按测试 ID 清理、删除读回、不可撤回/残留报告、幂等重跑、私有 CLI 撤回 | `hostrun/cleanup.py` | `tests/test_hostrun_cleanup.py`（8） |
+| 文献/要求摄取、卡片校验、用户确认、写入飞书、标准检索、已有库导入 | `hostrun/initialize.py` | `tests/test_hostrun_initialize.py`（11） |
+| 两类任务、小时维护、启用闸门、任务 ID 去重、真实触发证据 | `hostrun/schedules.py`、`hostrun/intents.py` | `tests/test_hostrun_schedules.py`（10） |
+
+本机（2026-10-27）全量离线结果：排除两个依赖 PyMuPDF 的测试文件后 **251 passed, 3 skipped**。`tests/test_initial_build.py` 与 `tests/test_pdf_ingest.py` 本机无法运行：PyMuPDF 未能安装（PyPI 连接中断）。这不等于 PDF 路径已通过。
+
+仍缺的真实证据：
+
+1. 本机没有可用的 `lark-cli`，`lark status`、设施创建、真实推送与反馈尚未真实执行；只有进程边界与离线 Base/Drive 测试。
+2. 两款宿主的**内置调度真实触发**与无人值守权限仍无证据；`schedules trigger` 只接受运行日志中的 `scheduled=true` 记录，手动调用不计。
+3. 真实飞书展示、评分、采纳写入、消息撤回和清理读回需要目标租户与用户操作。
+4. 真实 PDF 摄取需安装 PyMuPDF 后重跑。
+
+因此 #42–#48 的代码与离线验收标准已满足；#49/#50 保持开放，直到真实宿主与飞书证据齐全。
+
 ## 宿主与恢复
 
 | 范围 | 已有证据 | 尚缺证据 | 任务 |
@@ -10,6 +35,7 @@
 | WorkBuddy 本地宿主 | 历史开发会话验证过项目访问、技能加载、本地命令 | 内置调度实际触发、无人值守权限、真实飞书闭环 | [WorkBuddy 接入与本地定时验收](https://github.com/Moke110/frontier/issues/38) |
 | 云端存量恢复 | 基线核对、分片顺序、配额计算与故障测试；空库会正确报告缺失 | 真实 174 篇核对、云端恢复演练、配额实测与连续三天零差异 | [存量核对与云端恢复验收](https://github.com/Moke110/frontier/issues/39) |
 | 安装说明 | 现行用户入口与运行时技能已统一 | 在目标宿主按最终说明完成新装、恢复并留证 | [统一安装说明并退役旧部署入口](https://github.com/Moke110/frontier/issues/40) |
+| 新安装增量 | 工作区、uv、CLI 预检、设施、临时闭环、清理、正式知识、两类任务均有离线测试 | 真实 CLI/租户/宿主触发 | [#41](https://github.com/Moke110/frontier/issues/41) 的子票据 #42–#50 |
 
 核对时发现 ChatGPT 任务已被标为关闭，但其最后一条验收评论仍写“未实测”，未附新的通过证据；因此本表保留证据缺口，不以 issue 状态推断验收通过。后续执行者须先核对关闭原因与最新证据；本轮不更改 tracker 状态。
 

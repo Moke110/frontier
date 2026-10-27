@@ -15,11 +15,13 @@ scheduler entries.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from common import ensure_dir, now, read_json, write_json
+from hostrun import workspace as workspace_mod
 from hostrun.base import (
     HostRunError,
     load_config,
@@ -33,21 +35,33 @@ from hostrun.base import (
 STATE_STATUSES = ("ok", "blocked", "untested", "pending")
 STEPS = (
     "host",
+    "workspace",
     "dependencies",
+    "skill",
     "lark_cli",
     "identity",
-    "knowledge_base",
+    "permissions",
+    "facilities",
+    "test_loop",
+    "cleanup",
+    "knowledge",
     "schedules",
-    "first_run",
+    "scheduled_run",
 )
 STEP_NOTES = {
     "host": "宿主产品、版本、本机执行、内置调度与实际权限",
-    "dependencies": "私有解释器、PyYAML、仓库副本",
+    "workspace": "代码目录与数据根分离，已有副本检查与续接",
+    "dependencies": "私有 uv、解释器、PyYAML/PyMuPDF 与仓库副本",
+    "skill": "frontier-run 入口指针及参考文件可读",
     "lark_cli": "飞书 CLI 由显式私有路径解析（仅可执行，未证明已登录）",
-    "identity": "飞书 user / bot 身份与所需访问能力",
-    "knowledge_base": "新建空库或连接既有知识库并校验结构",
-    "schedules": "每日检索、每小时反馈、每日维护的启用确认",
-    "first_run": "一次有界真实运行（推送或反馈处理）",
+    "identity": "飞书 user / bot 身份与登录有效期",
+    "permissions": "Base、Drive、消息、反馈所需权限的真实资源预检",
+    "facilities": "Base 本身、各表、原文库与推送库目录的稳定 ID",
+    "test_loop": "关键词驱动的临时闭环（推送、评分、采纳、写入）",
+    "cleanup": "本次测试副作用的删除与无残留验证",
+    "knowledge": "文献库与用户要求确认后的正式知识卡片",
+    "schedules": "每日推送与每小时反馈两类宿主任务",
+    "scheduled_run": "至少一次真实到点的本地定时触发",
 }
 MIN_PYTHON = (3, 11)
 
@@ -89,8 +103,15 @@ def record(
     *,
     note: str = "",
     evidence: dict | None = None,
+    recheck: bool = False,
 ) -> dict:
-    """Record one step result. ``ok`` is terminal for this install."""
+    """Record one step result.
+
+    ``ok`` is terminal for a declared capability, so a flaky re-check cannot
+    erase verified evidence.  ``recheck=True`` is for components that can
+    actually break (workspace paths, interpreter, registered skill): it may
+    downgrade the status but keeps ``first_ok_at``.
+    """
     if step not in STEPS:
         raise HostRunError(f"unknown install step: {step}")
     if status not in STATE_STATUSES:
@@ -98,7 +119,7 @@ def record(
     state = load_state(home)
     steps = state["steps"]
     previous = steps.get(step) or {}
-    if previous.get("status") == "ok" and status != "ok":
+    if previous.get("status") == "ok" and status != "ok" and not recheck:
         # Re-checking must not erase a verified component.
         return state
     entry = {
@@ -109,41 +130,80 @@ def record(
     }
     if status == "ok":
         entry["first_ok_at"] = previous.get("first_ok_at") or now()
+    else:
+        entry["first_ok_at"] = previous.get("first_ok_at")
     steps[step] = entry
     save_state(home, state)
     return state
 
 
 # ------------------------------------------------------------------- probes
+def _interpreter_facts(python: str) -> dict:
+    """Version and PyYAML from the *recorded* interpreter, not this process."""
+    try:
+        if Path(python).resolve() == Path(sys.executable).resolve():
+            version = tuple(sys.version_info[:3])
+            try:
+                import yaml  # noqa: F401
+
+                has_yaml = True
+            except ModuleNotFoundError:
+                has_yaml = False
+            return {"ok": True, "version": version, "yaml": has_yaml, "error": ""}
+        proc = subprocess.run(
+            [
+                python,
+                "-c",
+                "import sys, yaml; print('%d.%d.%d' % sys.version_info[:3]); print(yaml.__version__)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "version": (0, 0, 0), "yaml": False, "error": str(exc)}
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "version": (0, 0, 0),
+            "yaml": False,
+            "error": (proc.stderr or proc.stdout or "interpreter failed")[-400:],
+        }
+    lines = (proc.stdout or "").strip().splitlines()
+    try:
+        version = tuple(int(part) for part in lines[0].split("."))
+    except (IndexError, ValueError):
+        version = (0, 0, 0)
+    return {"ok": bool(lines), "version": version, "yaml": len(lines) > 1, "error": ""}
+
+
 def probe_dependencies(
     repo: str | Path,
     *,
     python: str | None = None,
     platform: str | None = None,
 ) -> dict:
-    """Interpreter, PyYAML and a usable repository checkout."""
+    """The *recorded* interpreter, PyYAML and a usable repository checkout."""
     repo = Path(repo)
     python = python or sys.executable
-    version = tuple(sys.version_info[:3])
+    facts = _interpreter_facts(str(python))
+    version = facts["version"]
+    has_yaml = facts["yaml"]
     require = [
-        "skills/frontier/SKILL.md",
-        "skills/frontier/references/installation.md",
-        "skills/frontier/references/workflow.md",
+        "skills/frontier-run/SKILL.md",
+        "skills/frontier-run/references/installation.md",
+        "skills/frontier-run/references/workflow.md",
         "contracts/README.md",
         "common.py",
     ]
     missing = [name for name in require if not (repo / name).exists()]
-    try:
-        import yaml  # noqa: F401
-
-        has_yaml = True
-    except ModuleNotFoundError:
-        has_yaml = False
-    ok = version >= MIN_PYTHON and has_yaml and not missing
+    ok = facts["ok"] and version >= MIN_PYTHON and has_yaml and not missing
     notes = []
-    if version < MIN_PYTHON:
+    if not facts["ok"]:
+        notes.append(f"解释器不可用：{facts['error']}")
+    elif version < MIN_PYTHON:
         notes.append(f"python {'.'.join(map(str, version))} < 3.11")
-    if not has_yaml:
+    if facts["ok"] and not has_yaml:
         notes.append("PyYAML missing in this interpreter")
     if missing:
         notes.append("repo missing: " + ", ".join(missing))
@@ -276,8 +336,24 @@ def probe_host(host: dict | None) -> dict:
     }
 
 
+_TZ_ALIASES = {
+    "中国标准时间": "Asia/Shanghai",
+    "China Standard Time": "Asia/Shanghai",
+    "UTC": "UTC",
+    "Coordinated Universal Time": "UTC",
+    "Tokyo Standard Time": "Asia/Tokyo",
+    "Korea Standard Time": "Asia/Seoul",
+    "Pacific Standard Time": "America/Los_Angeles",
+    "Eastern Standard Time": "America/New_York",
+    "Central European Standard Time": "Europe/Berlin",
+    "GMT Standard Time": "Europe/London",
+}
+
+
 def default_timezone() -> str:
-    return datetime.now().astimezone().tzname() or "UTC"
+    """A stable zone name; Windows ``tzname()`` is localized, so map common ones."""
+    name = datetime.now().astimezone().tzname() or "UTC"
+    return _TZ_ALIASES.get(name, name)
 
 
 # ------------------------------------------------------------------- driver
@@ -291,6 +367,7 @@ def check(
     timezone_name: str | None = None,
     runner=None,
     platform: str | None = None,
+    workspace_root: str | Path | None = None,
 ) -> dict:
     """Run every probe that can run offline, record it, return the summary."""
     home = Path(home)
@@ -301,6 +378,57 @@ def check(
 
     results: dict[str, dict] = {}
     results["host"] = probe_host(host)
+
+    if workspace_root:
+        ws = workspace_mod.status(workspace_root)
+        repo_ok = bool(ws.get("repo")) and (Path(ws["repo"]) / ".git").exists()
+        home_ok = bool(ws.get("home")) and Path(ws["home"]).is_dir()
+        layout_ok = repo_ok and home_ok
+        layout_problems = []
+        if not repo_ok:
+            layout_problems.append(f"代码目录不可用：{ws.get('repo') or '<未记录>'}")
+        if not home_ok:
+            layout_problems.append(f"数据根不可用：{ws.get('home') or '<未记录>'}")
+        results["workspace"] = {
+            "status": "ok" if layout_ok else "blocked",
+            "note": (
+                "代码目录与数据根已记录且可用"
+                if layout_ok
+                else "；".join(layout_problems)
+            ),
+            "evidence": {
+                "root": ws.get("root"),
+                "repo": ws.get("repo"),
+                "home": ws.get("home"),
+                "commit": ws.get("commit"),
+            },
+        }
+        skill = workspace_mod.verify_skill(ws)
+        results["skill"] = {
+            "status": "ok" if skill["ok"] else "blocked",
+            "note": f"入口 {skill['skill']}" if skill["ok"] else "；".join(skill["problems"]),
+            "evidence": {
+                "skill": skill["skill"],
+                "entry": skill["entry"],
+                "references": skill["references"],
+            },
+        }
+        if ws.get("repo"):
+            repo_path = Path(ws["repo"])
+        update_config(
+            home,
+            workspace={
+                "root": ws.get("root"),
+                "repo": ws.get("repo"),
+                "home": ws.get("home"),
+                "skill": ws.get("skill"),
+            },
+        )
+        if ws.get("python"):
+            update_config(home, paths={"python": ws["python"]})
+        if ws.get("uv"):
+            update_config(home, paths={"uv": ws["uv"]})
+
     results["dependencies"] = probe_dependencies(
         repo_path, python=python or config["paths"].get("python"), platform=platform
     )
@@ -309,9 +437,18 @@ def check(
     lark_path = (lark_result.get("evidence") or {}).get("path", "")
     results["identity"] = probe_identity(lark_path, runner=runner)
 
-    for step in ("host", "dependencies", "lark_cli", "identity"):
-        result = results[step]
-        record(home, step, result["status"], note=result["note"], evidence=result["evidence"])
+    for step in ("host", "workspace", "dependencies", "skill", "lark_cli", "identity"):
+        result = results.get(step)
+        if not result:
+            continue
+        record(
+            home,
+            step,
+            result["status"],
+            note=result["note"],
+            evidence=result["evidence"],
+            recheck=step in {"workspace", "dependencies", "skill"},
+        )
 
     update_config(
         home,
@@ -373,6 +510,10 @@ def report(home: Path) -> dict:
         for entry in [steps[name]]
         if entry["status"] in ("blocked", "untested")
     ]
+    workspace_root = (config.get("workspace") or {}).get("root")
+    workspace = (
+        workspace_mod.status(workspace_root) if workspace_root else None
+    )
     return {
         "schema_version": 1,
         "generated_at": now(),
@@ -380,6 +521,7 @@ def report(home: Path) -> dict:
         "partial": result["partial"],
         "host": config.get("host") or {},
         "paths": config.get("paths") or {},
+        "workspace": workspace,
         "timezone": config.get("timezone") or default_timezone(),
         "schedules": config.get("schedules") or {},
         "permissions": config.get("permissions") or {},

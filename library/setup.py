@@ -170,11 +170,20 @@ def setup(
     identity: str = "user",
     client=None,
     drive=None,
+    names: dict | None = None,
 ) -> dict:
     home = Path(home)
     cfg = base_mod.load_base_config(home)
     if base_token:
         cfg["base_token"] = base_token
+    names = names or {}
+    source_table = str(names.get("source") or SOURCE_TABLE)
+    push_table = str(names.get("push") or PUSH_TABLE)
+    decision_table = str(names.get("decision") or DECISION_TABLE)
+    config_table = str(names.get("config") or CONFIG_TABLE)
+    root_folder_name = str(names.get("root_folder") or "frontier")
+    source_folder_name = str(names.get("source_folder") or "原文")
+    push_folder_name = str(names.get("push_folder") or "推送")
     client = client or base_mod.LarkBaseClient(cfg, identity=identity)
     drive = drive or LarkDrive(identity=identity)
 
@@ -184,22 +193,22 @@ def setup(
     tables = dict(cfg["tables"])
     actions: list[str] = []
 
-    source_id, acts = _ensure_table(client, existing, SOURCE_TABLE, SOURCE_FIELDS, dry_run=dry_run)
+    source_id, acts = _ensure_table(client, existing, source_table, SOURCE_FIELDS, dry_run=dry_run)
     actions += acts
     actions += _ensure_fields(client, source_id, SOURCE_FIELDS, dry_run=dry_run)
     tables[base_mod.SOURCE] = source_id
 
-    push_id, acts = _ensure_table(client, existing, PUSH_TABLE, PUSH_FIELDS, dry_run=dry_run)
+    push_id, acts = _ensure_table(client, existing, push_table, PUSH_FIELDS, dry_run=dry_run)
     actions += acts
     actions += _ensure_fields(client, push_id, PUSH_FIELDS, dry_run=dry_run)
     tables[base_mod.PUSH] = push_id
 
-    decision_id, acts = _ensure_table(client, existing, DECISION_TABLE, DECISION_FIELDS, dry_run=dry_run)
+    decision_id, acts = _ensure_table(client, existing, decision_table, DECISION_FIELDS, dry_run=dry_run)
     actions += acts
     actions += _ensure_fields(client, decision_id, DECISION_FIELDS, dry_run=dry_run)
     tables[base_mod.DECISION] = decision_id
 
-    config_id, acts = _ensure_table(client, existing, CONFIG_TABLE, CONFIG_FIELDS, dry_run=dry_run)
+    config_id, acts = _ensure_table(client, existing, config_table, CONFIG_FIELDS, dry_run=dry_run)
     actions += acts
     actions += _ensure_fields(client, config_id, CONFIG_FIELDS, dry_run=dry_run)
     tables[base_mod.CONFIG] = config_id
@@ -208,7 +217,7 @@ def setup(
     papers_id = tables.get("papers")
     if papers_id and not papers_id.startswith("tbl_dry_"):
         current_name = names_by_id.get(papers_id)
-        if current_name and current_name != "报道":
+        if current_name and current_name != "报道" and not names:
             actions.append(f"rename {papers_id} {current_name} -> 报道")
             if not dry_run:
                 client.rename_table(papers_id, "报道")
@@ -221,7 +230,8 @@ def setup(
             field = {**spec, "link_table": target}
             actions += _ensure_fields(client, push_id, [field], dry_run=dry_run)
         for spec in LINK_FIELDS[DECISION_TABLE]:
-            actions += _ensure_fields(client, decision_id, [spec], dry_run=dry_run)
+            field = {**spec, "link_table": push_id}
+            actions += _ensure_fields(client, decision_id, [field], dry_run=dry_run)
 
     # reverse link on 报道 → 原文
     if papers_id and not source_id.startswith("tbl_dry_"):
@@ -237,11 +247,11 @@ def setup(
     root = getattr(drive, "root", "")
     source_folder = push_folder = ""
     if dry_run:
-        actions.append("ensure folders frontier/原文 and frontier/推送")
+        actions.append(f"ensure folders {root_folder_name}/{source_folder_name} and {root_folder_name}/{push_folder_name}")
     else:
-        frontier = drive.ensure_folder(root, "frontier")
-        source_folder = drive.ensure_folder(frontier, "原文")
-        push_folder = drive.ensure_folder(frontier, "推送")
+        frontier = drive.ensure_folder(root, root_folder_name)
+        source_folder = drive.ensure_folder(frontier, source_folder_name)
+        push_folder = drive.ensure_folder(frontier, push_folder_name)
         actions.append(f"folders: {source_folder} / {push_folder}")
 
     # config row (create once; never overwrite a user-set limit)

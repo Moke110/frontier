@@ -670,6 +670,36 @@ class QueueStore:
             self.event("retried", item_id=item_id)
             return {"ok": True, "item": item, "active": state.get("active_id")}
 
+    def discard_push(self, push_ids: list[str], *, reason: str = "test_cleanup") -> dict:
+        """Remove only the given push's local queue items (exact test scope)."""
+        wanted = {str(push_id) for push_id in push_ids if push_id}
+        with self.locked():
+            state = self.load()
+            removed = [
+                item for item in state["items"] if item.get("push_id") in wanted
+            ]
+            if not removed:
+                return {"ok": True, "removed": [], "reason": reason}
+            state["items"] = [
+                item for item in state["items"] if item.get("push_id") not in wanted
+            ]
+            if state.get("active_id") in {item["id"] for item in removed}:
+                state["active_id"] = None
+                self._activate(state)
+            self._save(state)
+            self.event(
+                "discarded",
+                push_ids=sorted(wanted),
+                item_ids=[item["id"] for item in removed],
+                reason=reason,
+            )
+            return {
+                "ok": True,
+                "removed": [item["id"] for item in removed],
+                "active": state.get("active_id"),
+                "reason": reason,
+            }
+
     def abandon(self, item_id: str, reason: str = "manual_abandon") -> dict:
         with self.locked():
             state = self.load()

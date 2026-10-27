@@ -5,7 +5,7 @@
 
 > editor / writer 的 agent 任务包（`editor-task.json`、`writer-task.json`）与校验规则见 [`agent-tasks.md`](agent-tasks.md)。
 
-数据根由环境变量 `KL_HOME` 指定（默认 `~/knowledge-loop`）：
+数据根由 `--home` 显式指定；安装默认记录为工作区的 `frontier-archive/`，CLI 在未提供时回退环境变量 `KL_HOME` 或 `~/knowledge-loop`：
 
 ```
 $KL_HOME/
@@ -482,38 +482,66 @@ python -m question_queue.cli try-start
 
 ## 12. 宿主运行（hostrun）
 
-由宿主 agent 驱动的安装、租约与有界运行。**不写持久环境变量、不创建服务/系统定时任务/常驻进程**；数据根优先用 `--home` 显式给出（`KL_HOME` 仅在未给时生效）。
+由宿主 agent 驱动的安装、租约与有界运行。**不写持久环境变量、不创建服务/系统定时任务/常驻进程**；数据根优先用 `--home` 显式给出（`KL_HOME` 仅在未给时生效）。代码目录与数据根分开：工作区默认 `frontier/` 与 `frontier-archive/`。
 
 ```bash
-python -m hostrun.cli install check|report|status|record
-python -m hostrun.cli kb attach|create|create-tables|verify|initial-confirm|initial-status
+# 工作区、私有 uv/解释器、frontier-run 入口指针
+python -m hostrun.cli install workspace --root <workspace>
+python -m hostrun.cli --home <home> install toolchain --root <workspace>
+python -m hostrun.cli --home <home> install skill --root <workspace> --target <host-skill-dir>/frontier-run
+python -m hostrun.cli install check|report|status|record|locate
+
+# 飞书 CLI：可执行 / 身份 / 授权范围 / 资源读取分项
+python -m hostrun.cli lark discover|install|login|status --root <workspace>
+
+# 设施：Base 本身、全部表、原文库与推送库目录（稳定 ID）
+python -m hostrun.cli facilities plan|create|attach|status|rename
+
+# 关键词临时闭环 → 精确清理 → 正式知识
+python -m hostrun.cli smoke start|plan|brief|status|record|verify|fail
+python -m hostrun.cli cleanup plan|run|status
+python -m hostrun.cli init intake|propose|review|confirm|apply|adopt-existing|retrieve|status
+
+# 两类宿主任务与真实触发
+python -m hostrun.cli schedules plan|confirm|status|pause|resume|trigger
+
+# 运行、反馈与恢复
 python -m hostrun.cli feedback setup|sync|status|process|rebuild|submit|correct
 python -m hostrun.cli run --intent daily|feedback|maintenance [--finish ok|error]
-python -m hostrun.cli schedules plan|confirm|status
 python -m hostrun.cli audit run --baseline <manifest>|streak
 python -m hostrun.cli executor status|handover
 python -m hostrun.cli status
 ```
 
 ```
-$KL_HOME/
-├── install/
-│   ├── config.json               # 宿主产品/版本/模式、私有路径、时区、已授予权限（凭据字段一律 ***）
-│   ├── state.json                # 安装七步状态：ok / blocked / untested / pending（ok 为终态，复检不降级）
-│   └── initial-build.json        # 用户确认过的初始主题（未确认不写）
-├── executor/
-│   ├── lease.json                # 单执行端时间租约（host / run_id / lease_until），不是 pid 租约
-│   └── events.jsonl              # acquired / blocked / taken_over / released / handover
-├── hostrun/
-│   └── runs.jsonl                # 每次有界运行的意图、动作、是否安静、是否需要通知
-└── library/
-    ├── maintenance/<date>.json   # 每天至多一次的对账 + 配额；失败不写 ok，下次重试
-    └── audit/<date>.json         # 存量核对结果（zero_diff 决定 streak）
+<workspace>/
+├── .frontier/
+│   ├── install.json              # 代码 / 数据根 / uv / 解释器 / 技能绝对路径（技能移动后仍可定位）
+│   └── bin/                      # 缺失时的私有 uv（不改 PATH）
+├── frontier/                     # 代码副本（检查来源与改动，不覆盖）
+└── frontier-archive/             # 数据根
+    ├── install/
+    │   ├── config.json           # 宿主、私有路径、时区、权限与任务（凭据字段一律 ***）
+    │   ├── state.json            # 分步状态：host/workspace/dependencies/skill/lark_cli/identity/
+    │   │                         #   permissions/facilities/test_loop/cleanup/knowledge/schedules/scheduled_run
+    │   ├── facilities.json       # Base/表/目录的稳定 ID 与已确认展示名
+    │   ├── smoke.json            # 临时闭环测试 ID、步骤、副作用归属；清理后只留最小验收状态
+    │   └── initial/              # 文献元数据、候选卡片、确认哈希、写入报告、标准检索计划
+    ├── executor/                 # lease.json + events.jsonl（时间租约，不是 pid）
+    ├── hostrun/runs.jsonl        # 意图、动作、是否安静；scheduled/task 仅由宿主任务写入
+    └── library/                  # maintenance/<date>.json、audit/<date>.json
 ```
 
 约定：
 
-- `install report` 的 `working` / `blocked` / `untested` 三段是验收依据；缺能力标 `blocked`，没测过标 `untested`，不得写成通过。
-- `run` 的固定顺序：反馈 → 恢复未完成 → 维护（到期才做）→ 检索闸门。`feedback` 意图**从不**创建检索请求；错过的每日请求合并为一次。
+- `install report` 的 `working` / `blocked` / `untested` / `pending` 分项是验收依据；缺能力标 `blocked`，没测过标 `untested`，不得写成通过。
+- 工作区：已有副本有未提交改动、origin 不符或不是 git 仓库时阻塞，不拉取、不覆盖；重跑复用已验证组件。解释器失效时用 uv `--clear` 重建。
+- 飞书 CLI：可执行、登录、授权范围、真实资源读取分别验证；设施未创建前资源项只能是 `untested`。
+- 设施：按用户确认的展示名创建；使用稳定 ID，改名不影响读写。同名 Base 多个时阻塞；已有库只检查/补缺，不清空。部分失败如实报告并可从已创建项续接。
+- 临时闭环：临时卡片 ID 与推送/消息/文件/问题 ID 全部归属测试；成功必须包含读回核对。失败不开放正式初始化。
+- 清理：只按测试 ID 删除并读回确认；有残留或消息不可撤回时保持 `cleanup=blocked`，正式初始化闸门关闭。
+- 正式知识：**新建路径**仅在“测试通过 + 清理读回通过”后开放；卡片须用户确认，写入走本地档案 → 飞书同步 → 读回。**已有库**由用户显式确认后走 `init adopt-existing` 导入现有卡片，不经过新建测试闸门、不重建也不清空；两条路径完成后都做一次标准检索，测试关键词不复用。
+- `run` 的固定顺序：反馈 → 恢复未完成 → 维护（到期才做）→ 检索闸门。`feedback` 意图**从不**创建检索请求；维护并入当天首次小时检查，未答问题不阻止维护；错过的每日请求合并为一次。
+- 只创建两个宿主任务：`frontier-daily`（用户时区 08:00）与 `frontier-feedback`（每小时，默认第 5 分钟）。任务创建只写 `schedules`；`confirm` 为每个任务生成 proof 并写入命令，运行日志中的 `scheduled=true`、`task=<id>` 且 `proof` 匹配的真实到点记录才能写 `scheduled_run`，两类任务都至少一次后才为 `ok`。
 - 同一时刻只有一个执行端：另一宿主持有有效租约时返回 `executor_busy`；过期租约可被接管并在 `events.jsonl` 记 `taken_over`；换机必须 `handover`（旧端仍活跃时需 `--force` 并说明）。
 - `feedback rebuild` 从「问题」表重建本地队列，已处理的决定不会被再次应用。

@@ -42,15 +42,16 @@ def save_base_config(home: Path, config: dict) -> None:
 class LarkBaseClient:
     """List / create / update records, and read a table's field names."""
 
-    def __init__(self, config: dict, *, identity: str = "user"):
+    def __init__(self, config: dict, *, identity: str = "user", bin: str = "lark-cli"):
         self.config = config
         self.identity = identity
+        self.bin = bin
         self.base = config["base_token"]
         self._fields: dict[str, list[str]] = {}
 
     def _run(self, *args: str, yes: bool = False) -> dict:
         cmd = [
-            "lark-cli", *args,
+            self.bin, *args,
             "--as", self.identity,
             "--base-token", self.base,
             "--format", "json",
@@ -165,6 +166,17 @@ class LarkBaseClient:
         )
         self._fields.pop(table, None)
         return payload["data"].get("fields") or []
+
+    def delete(self, table: str, record_ids: list[str]) -> dict:
+        """Delete explicit rows only; never a table, field or a whole Base."""
+        ids = [str(record_id) for record_id in record_ids if record_id]
+        if not ids:
+            return {"ok": True, "deleted": []}
+        argv = ["base", "+record-delete", "--table-id", table]
+        for record_id in ids:
+            argv += ["--record-id", record_id]
+        self._run(*argv)
+        return {"ok": True, "deleted": ids}
 
     def rename_table(self, table: str, name: str) -> None:
         self._run("base", "+table-update", "--table-id", table, "--json",

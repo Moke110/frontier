@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from conftest import seed_queue
-from hostrun import audit, cli, executor, feedback, intents
+from hostrun import audit, cli, executor, feedback, install, intents
 
 
 def _at(minutes: int = 0) -> datetime:
@@ -125,6 +125,7 @@ def test_feedback_intent_never_creates_a_retrieval_request(configured_home, offl
 
 def test_daily_intent_requests_one_push_and_folds_maintenance_in(configured_home, offline_base):
     home = _home(configured_home, offline_base, [])
+    install.record(home, "knowledge", "ok")
     library = FakeLibrary()
 
     result = intents.run(
@@ -300,7 +301,7 @@ def test_cli_rejects_an_unknown_intent(configured_home, capsys):
 
 # ---------------------------------------------------------------- schedules
 def test_schedules_are_unconfirmed_until_the_user_says_yes(configured_home):
-    from hostrun import schedules
+    from hostrun import install, schedules
 
     pending = schedules.confirm(configured_home, daily="08:00", confirmed_by_user=False)
     assert pending["ok"] is False
@@ -314,8 +315,13 @@ def test_schedules_are_unconfirmed_until_the_user_says_yes(configured_home):
     assert agreed["created"] is False  # the host has not created anything yet
     assert schedules.status(configured_home)["enabled"] is False
 
+    install.record(configured_home, "knowledge", "ok")
     created = schedules.confirm(
-        configured_home, daily="08:00", confirmed_by_user=True, host_created=True
+        configured_home,
+        daily="08:00",
+        confirmed_by_user=True,
+        host_created=True,
+        task_ids={"frontier-daily": "host-1", "frontier-feedback": "host-2"},
     )
     assert created["created"] is True
     assert schedules.status(configured_home)["enabled"] is True
@@ -327,7 +333,8 @@ def test_schedule_commands_are_actually_runnable(configured_home):
 
     spec = schedules.plan(configured_home)
 
-    assert [task["intent"] for task in spec["tasks"]] == ["daily", "feedback", "maintenance"]
+    assert [task["intent"] for task in spec["tasks"]] == ["daily", "feedback"]
+    assert all(task["load_skill"] for task in spec["tasks"])
     for task in spec["tasks"]:
         tokens = task["command"].split()
         argv = tokens[tokens.index("hostrun.cli") + 1 :]  # drop the interpreter path
@@ -335,6 +342,8 @@ def test_schedule_commands_are_actually_runnable(configured_home):
         assert parsed.cmd == "run"
         assert parsed.intent == task["intent"]
         assert parsed.home
+        assert parsed.scheduled is True
+        assert parsed.task == task["id"]
 
 
 def test_invalid_clock_is_rejected(configured_home):
@@ -356,7 +365,7 @@ def test_home_flag_works_after_the_subcommand(configured_home, capsys):
 
 # ---------------------------------------------------------------- schedules
 def test_schedules_are_unconfirmed_until_the_user_says_yes(configured_home):
-    from hostrun import schedules
+    from hostrun import install, schedules
 
     pending = schedules.confirm(configured_home, daily="08:00", confirmed_by_user=False)
     assert pending["ok"] is False
@@ -370,8 +379,13 @@ def test_schedules_are_unconfirmed_until_the_user_says_yes(configured_home):
     assert agreed["created"] is False  # the host has not created anything yet
     assert schedules.status(configured_home)["enabled"] is False
 
+    install.record(configured_home, "knowledge", "ok")
     created = schedules.confirm(
-        configured_home, daily="08:00", confirmed_by_user=True, host_created=True
+        configured_home,
+        daily="08:00",
+        confirmed_by_user=True,
+        host_created=True,
+        task_ids={"frontier-daily": "host-1", "frontier-feedback": "host-2"},
     )
     assert created["created"] is True
     assert schedules.status(configured_home)["enabled"] is True
@@ -383,7 +397,8 @@ def test_schedule_commands_are_actually_runnable(configured_home):
 
     spec = schedules.plan(configured_home)
 
-    assert [task["intent"] for task in spec["tasks"]] == ["daily", "feedback", "maintenance"]
+    assert [task["intent"] for task in spec["tasks"]] == ["daily", "feedback"]
+    assert all(task["load_skill"] for task in spec["tasks"])
     for task in spec["tasks"]:
         tokens = task["command"].split()
         argv = tokens[tokens.index("hostrun.cli") + 1 :]  # drop the interpreter path
@@ -391,6 +406,8 @@ def test_schedule_commands_are_actually_runnable(configured_home):
         assert parsed.cmd == "run"
         assert parsed.intent == task["intent"]
         assert parsed.home
+        assert parsed.scheduled is True
+        assert parsed.task == task["id"]
 
 
 def test_invalid_clock_is_rejected(configured_home):

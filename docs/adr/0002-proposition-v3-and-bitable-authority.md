@@ -2,7 +2,7 @@
 
 - 日期：2026-10-22
 - 状态：已接受；第 3 条中"原文、推送仍存本地"部分由 ADR 0003 取代
-- 相关决策：每篇推送 2 个实体名额；HTML 推送；运行时 skill（现为 `skills/frontier/SKILL.md`，完整流程见其 `references/workflow.md`）
+- 相关决策：每篇推送 2 个实体名额；HTML 推送；运行时 skill（现为 `skills/frontier-run/SKILL.md`，完整流程见其 `references/workflow.md`）
 
 ## 背景
 

@@ -29,15 +29,16 @@ class LarkDrive:
 
     root = ""
 
-    def __init__(self, *, identity: str = "user"):
+    def __init__(self, *, identity: str = "user", bin: str = "lark-cli"):
         self.identity = identity
+        self.bin = bin
         self._listing: dict[str, list[dict]] = {}
 
     def _folder_args(self, folder_token: str) -> list[str]:
         return ["--folder-token", folder_token] if folder_token else []
 
     def _run(self, *args: str, yes: bool = False, cwd: str | None = None) -> dict:
-        cmd = ["lark-cli", *args, "--as", self.identity, "--format", "json"]
+        cmd = [self.bin, *args, "--as", self.identity, "--format", "json"]
         if yes:
             cmd.append("--yes")
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
@@ -58,21 +59,29 @@ class LarkDrive:
         self._listing.clear()
 
     def list(self, folder_token: str) -> list[dict]:
-        data = self._run(
-            "drive", "files", "list",
-            *self._folder_args(folder_token), "--page-all", "--page-size", "200",
-        )
-        entries = []
-        for row in data.get("files") or []:
-            entries.append(
-                {
-                    "name": row.get("name") or "",
-                    "token": row.get("token") or "",
-                    "type": row.get("type") or "file",
-                    "url": row.get("url") or "",
-                    "size": int(row.get("size") or 0),
-                }
+        entries: list[dict] = []
+        page_token = ""
+        while True:
+            params = {"folder_token": folder_token, "page_size": 200}
+            if page_token:
+                params["page_token"] = page_token
+            data = self._run(
+                "drive", "files", "list",
+                "--params", json.dumps(params, ensure_ascii=False),
             )
+            for row in data.get("files") or []:
+                entries.append(
+                    {
+                        "name": row.get("name") or "",
+                        "token": row.get("token") or "",
+                        "type": row.get("type") or "file",
+                        "url": row.get("url") or "",
+                        "size": int(row.get("size") or 0),
+                    }
+                )
+            page_token = data.get("next_page_token") or ""
+            if not data.get("has_more") or not page_token:
+                break
         self._listing[folder_token] = entries
         return entries
 

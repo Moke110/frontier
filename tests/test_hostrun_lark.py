@@ -1,0 +1,195 @@
+"""Lark CLI: private install, login facts, permission preflight, no secrets."""
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from hostrun import lark
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _auth_payload(**over):
+    payload = {
+        "identities": {
+            "user": {"available": True, "tokenStatus": "valid", "userOpenId": "ou_x"},
+            "bot": {"available": True, "tokenStatus": "valid"},
+            "tenant": {"matched": True},
+        },
+        "scopes": ["bitable:app", "drive:drive"],
+    }
+    payload.update(over)
+    return payload
+
+
+class Proc:
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_discover_prefers_private_launcher(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+    binary = tmp_path / ".frontier" / "bin" / ("lark-cli.cmd" if os.name == "nt" else "lark-cli")
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+
+    found = lark.discover_cli(tmp_path)
+
+    assert found["ok"] is True
+    assert Path(found["path"]) == binary
+    assert found["source"] == "private"
+
+
+def test_missing_npm_reports_actionable_block(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+    result = lark.install_cli(tmp_path)
+
+    assert result["ok"] is False
+    assert result["reason"] == "npm_missing"
+    assert "Node.js" in result["note"]
+
+
+def test_private_npm_install_writes_launcher_under_workspace(tmp_path, monkeypatch):
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir()
+    npm = bindir / ("npm.cmd" if os.name == "nt" else "npm")
+    npm.write_text("", encoding="utf-8")
+    node = bindir / ("node.exe" if os.name == "nt" else "node")
+    node.write_text("", encoding="utf-8")
+    monkeypatch.setenv("PATH", str(bindir))
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if "install" in argv:
+            entry = tmp_path / ".frontier" / "lark" / "node_modules" / "@larksuite" / "cli" / "bin"
+            entry.mkdir(parents=True, exist_ok=True)
+            (entry / "lark-cli.js").write_text("// fake", encoding="utf-8")
+            return Proc(stdout="added 1 package")
+        return Proc(stdout="lark-cli 1.2.3")
+
+    calls = []
+    result = lark.install_cli(tmp_path, runner=runner)
+
+    assert result["ok"] is True
+    launcher = Path(result["path"])
+    assert launcher.parent == tmp_path / ".frontier" / "bin"
+    assert launcher.is_file()
+    if os.name == "nt":
+        text = launcher.read_text(encoding="utf-8").lower()
+        assert "node" in text
+        assert "lark-cli.js" in text
+    assert any("--prefix" in call for call in calls)
+    assert not any("--global" in call or "-g" in call for call in calls)
+
+
+def test_auth_status_parses_booleans_and_scopes_only():
+    facts = lark.parse_auth(_auth_payload())
+
+    assert facts["user"]["ready"] is True
+    assert facts["bot"]["ready"] is True
+    assert facts["scopes"] == ["bitable:app", "drive:drive"]
+    assert "accessToken" not in json.dumps(facts)
+
+
+def test_expired_token_is_not_ready():
+    payload = _auth_payload()
+    payload["identities"]["user"]["tokenStatus"] = "expired"
+    facts = lark.parse_auth(payload)
+
+    assert facts["user"]["ready"] is False
+    assert facts["user"]["expired"] is True
+
+
+def test_identity_reports_missing_side():
+    def runner(argv, **kwargs):
+        payload = _auth_payload()
+        payload["identities"]["bot"]["available"] = False
+        return Proc(stdout=json.dumps(payload))
+
+    result = lark.identity("lark-cli", runner=runner)
+
+    assert result["status"] == "blocked"
+    assert "bot" in result["note"]
+    assert result["evidence"]["missing"] == ["bot"]
+
+
+def test_authorization_without_reported_scopes_is_untested():
+    result = lark.authorization([], required=["bitable:app"])
+
+    assert result["status"] == "untested"
+    assert "不能据此声明" in result["note"]
+
+
+def test_authorization_reports_missing_scopes():
+    result = lark.authorization(["drive:drive"], required=["bitable:app", "drive:drive"])
+
+    assert result["status"] == "blocked"
+    assert result["missing"] == ["bitable:app"]
+
+
+def test_resource_preflight_proves_base_and_drive_reads(tmp_path):
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if "+table-list" in argv:
+            return Proc(stdout=json.dumps({"ok": True, "data": {"tables": []}}))
+        if "files" in argv and "list" in argv:
+            return Proc(stdout=json.dumps({"ok": True, "data": {"files": []}}))
+        return Proc(stdout="{}")
+
+    result = lark.resource_preflight(
+        tmp_path,
+        "lark-cli",
+        base_token="bas_x",
+        source_folder="fld_src",
+        push_folder="fld_push",
+        runner=runner,
+    )
+
+    assert result["base"]["status"] == "ok"
+    assert result["drive"]["status"] == "ok"
+    assert result["messages"]["status"] == "untested"
+    assert result["status"] == "untested"
+    assert any("--base-token" in call for call in calls)
+
+
+def test_resource_preflight_never_claims_permission_from_a_failure(tmp_path):
+    def runner(argv, **kwargs):
+        return Proc(stdout=json.dumps({"ok": False, "error": {"code": 99991672}}))
+
+    result = lark.resource_preflight(tmp_path, "lark-cli", base_token="bas_x", runner=runner)
+
+    assert result["base"]["status"] == "blocked"
+    assert result["status"] == "blocked"
+
+
+def test_status_never_echoes_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+    binary = tmp_path / ".frontier" / "bin" / ("lark-cli.cmd" if os.name == "nt" else "lark-cli")
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+
+    def runner(argv, **kwargs):
+        payload = _auth_payload(accessToken="secret-token", refreshToken="refresh-secret")
+        return Proc(stdout=json.dumps(payload))
+
+    result = lark.status(tmp_path, required=["bitable:app", "drive:drive"], runner=runner)
+
+    blob = json.dumps(result, ensure_ascii=False)
+    assert "secret-token" not in blob
+    assert "refresh-secret" not in blob
+    assert result["identity"]["status"] == "ok"
+    assert result["authorization"]["status"] == "ok"
+
+
+def test_login_is_guidance_not_a_fake_success(tmp_path):
+    guidance = lark.login_command(str(tmp_path / "lark-cli"))
+
+    assert guidance["status"] == "action_required"
+    assert "auth login" in guidance["command"]
+    assert "凭据" in guidance["storage"]
