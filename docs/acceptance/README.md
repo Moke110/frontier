@@ -21,7 +21,7 @@
 
 阻塞（未执行任何写操作的原因）：当前宿主沙箱对**位于工作区内部的可执行文件**施加写入限制。实测：仓库 `.venv` 的 `python.exe` 与复制进仓库的 `python.exe` 只能写 `E:\Desktop\frontier`，创建 `E:\Desktop\frontier-archive`、写 `%USERPROFILE%\.lark-cli` 均返回 `WinError 5`；而 `C:\Python314\python.exe`、`D:\uv` 的基础解释器不受此限制。影响：按 [ADR 0005](../adr/0005-agent-owned-execution.md) 放在"仓库内"的 uv 环境无法创建数据根、也无法驱动 lark-cli 的令牌存储，`install workspace` 在写 `.frontier` 指针时即失败。
 
-待决定（尚未执行，不在此宣称方案）：私有环境与数据根的相对位置如何在该宿主下成立——改用工作区外解释器、把环境移出代码目录、或由用户在宿主外执行安装命令。任一选择都需要先确认是否符合 ADR 0005 的"代码与数据分离"和不改用户环境的约束。
+决定（2026-10-27，尚未执行）：私有 uv 环境与解释器移到数据根内，代码目录只保留代码，uv 从工作区外解析；见 [ADR 0005 修订](../adr/0005-agent-owned-execution.md) 与规格 [#51](https://github.com/Moke110/frontier/issues/51)。
 
 本轮**未**创建 Base、未发送消息、未建定时任务；`install` 各阶段仍为 pending，真实 `smoke`/`cleanup`/`init`/`schedules` 均未实测。
 

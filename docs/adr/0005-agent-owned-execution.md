@@ -60,3 +60,9 @@ frontier 面向无编程背景的研究者，提供知识库与论文报道推�
 - ChatGPT Windows 桌面端的本地执行模式：官方文档确认支持本地项目、skills 和定时任务；需要电脑开机且应用运行。网页云端任务不能直接使用本机文件夹。依据：[定时任务](https://learn.chatgpt.com/docs/automations)、[Windows 桌面端](https://learn.chatgpt.com/docs/app/windows)。修正此前将 ChatGPT 一律解释为 Codex 的表述。
 - WorkBuddy Windows 本地任务：官方文档确认可按计划在指定工作目录运行 Agent，权限模式支持终端和外部程序；需要电脑与客户端保持运行。云端任务不能代替对本地依赖的访问。依据：[自动化](https://www.codebuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/Automation-Guide)、[权限模式](https://www.codebuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/Permission-Modes)。
 - 上述属于文档层面的能力确认，不等于 frontier 已完成两款宿主的端到端验收。安装时还需检查当前账号、版本、权限及真实的本地定时执行能力。
+
+## 修订：私有环境移入数据根（2026-10-27）
+
+首发验收在 DeepSeek Harness 上发现：宿主限制**位于工作区内部的可执行文件**的写入范围，仓库内解释器无法创建数据根、也无法写飞书 CLI 的令牌存储，`install workspace` 因此失败。因此本文第 42 条与安装细化中"仓库内独立环境"的表述修订为：**私有 uv 环境与解释器放在数据根内，代码目录只保留代码**；uv 从工作区外解析，解释器绝对路径写入工作区指针记录与安装配置。
+
+代码与数据仍然分离，仍不修改系统或用户环境变量、PATH、注册表，也不注册服务或系统任务；改变的只是私有环境的位置。实施规格见 [首次真实安装 #51](https://github.com/Moke110/frontier/issues/51)，宿主选择见 [ADR 0006](0006-deepseek-harness-as-a-host.md)。
