@@ -229,14 +229,17 @@ def test_acquire_rejects_a_data_root_inside_the_code_checkout(tmp_path):
 
 
 def test_cli_workspace_rejection_reports_the_reason_and_writes_nothing(tmp_path, capsys):
-    from hostrun import cli
+    from hostrun import cli, install
 
     root = tmp_path / "ws"
     repo = _seed_repo(root / "frontier")
     before = _files_under(repo)
+    data_root = tmp_path / "data-root"
 
     code = cli.main(
         [
+            "--home",
+            str(data_root),
             "install",
             "workspace",
             "--root",
@@ -253,7 +256,10 @@ def test_cli_workspace_rejection_reports_the_reason_and_writes_nothing(tmp_path,
     assert "数据根不能放在代码目录内" in payload["blocked"]
     assert _files_under(repo) == before
     assert not workspace.record_path(root).exists()
-    assert not (root / "frontier-archive").exists()
+    assert not (root / "frontier" / "archive").exists()
+    entry = install.load_state(data_root)["steps"]["workspace"]
+    assert entry["status"] == "blocked"
+    assert "数据根不能放在代码目录内" in entry["note"]
 
 
 def test_reusable_checkout_is_not_cloned_again(tmp_path):
@@ -452,8 +458,26 @@ def test_toolchain_blocks_a_broken_interpreter_with_a_repair_command(
     assert "install toolchain" in note
     assert "--clear" in note
     assert str(root) in note
+    repair = note.split("修复：", 1)[1]
+    assert repair.startswith(("cd /d ", "cd "))
     assert not runner.ran("venv")
     assert not (home / "install" / "config.json").exists()
+    if breakage == "failing_probe":
+        assert "yaml" in result["environment"]["probe"]["error"]
+
+
+def test_repair_command_changes_directory_before_running(tmp_path):
+    root = tmp_path / "ws"
+    home = root / "frontier-archive"
+    command = workspace.repair_command(root, home)
+
+    if os.name == "nt":
+        assert command.startswith(f'cd /d "{root}" && ')
+    else:
+        assert command.startswith(f"cd {root} && ")
+    assert "install toolchain" in command
+    assert "--clear" in command
+    assert str(home) in command
 
 
 def test_toolchain_clear_rebuilds_a_broken_interpreter_and_rerun_is_ok(tmp_path):

@@ -155,7 +155,11 @@ def resolve_cli(
 
 
 def discover_cli(root: str | Path, *, spec: str | None = None, home: str | Path | None = None) -> dict:
-    """Resolve the CLI from explicit config, private directories, then PATH."""
+    """Resolve the CLI from explicit config, private directories, then PATH.
+
+    A recorded absolute path that no longer exists is *stale* and blocks with
+    rediscovery guidance; it never falls back to a different CLI on PATH.
+    """
     root = Path(root).expanduser().resolve()
     private_dirs = [root / ".frontier" / "bin"]
     if home:
@@ -519,14 +523,21 @@ def resource_preflight(
         "status": "untested",
         "note": "发送权限与真实投递由临时闭环验证，不用登录状态代替",
     }
-    statuses = {value["status"] for value in checks.values()}
+    statuses = {checks["base"]["status"], checks["drive"]["status"]}
     if "blocked" in statuses:
         status = "blocked"
-    elif "untested" in statuses:
-        status = "untested"
-    else:
+    elif statuses == {"ok"}:
+        # Real Base + Drive reads are the permission proof; messages stay a
+        # separate, untested sub-fact until the temporary loop proves delivery.
         status = "ok"
-    return {"status": status, "note": "资源级证据见各分项", **checks}
+    else:
+        status = "untested"
+    note = (
+        "Base 与 Drive 读取已证明；消息投递由临时闭环单独验收"
+        if status == "ok"
+        else "资源级证据见各分项"
+    )
+    return {"status": status, "note": note, **checks}
 
 
 # ----------------------------------------------------------------------- driver
@@ -559,11 +570,21 @@ def status(
         identity_result.get("scopes") or [], required=required
     )
     home_path = Path(home).expanduser().resolve() if home else None
-    resources = (
-        resource_preflight(home_path, found["path"], runner=runner)
-        if home_path
-        else {"status": "untested", "note": "未提供数据根，跳过资源预检"}
-    )
+    if home_path:
+        from hostrun import facilities as facilities_mod
+
+        record = facilities_mod.load_facilities(home_path)
+        folders = record.get("folders") or {}
+        resources = resource_preflight(
+            home_path,
+            found["path"],
+            base_token=(record.get("base") or {}).get("token"),
+            source_folder=folders.get("source"),
+            push_folder=folders.get("push"),
+            runner=runner,
+        )
+    else:
+        resources = {"status": "untested", "note": "未提供数据根，跳过资源预检"}
     ok = (
         identity_result["status"] == "ok"
         and authz["status"] == "ok"

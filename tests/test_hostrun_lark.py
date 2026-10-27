@@ -181,8 +181,47 @@ def test_resource_preflight_proves_base_and_drive_reads(tmp_path):
     assert result["base"]["status"] == "ok"
     assert result["drive"]["status"] == "ok"
     assert result["messages"]["status"] == "untested"
-    assert result["status"] == "untested"
+    # real Base+Drive reads are sufficient; messages stay separate evidence
+    assert result["status"] == "ok"
     assert any("--base-token" in call for call in calls)
+
+
+def test_status_reaches_ok_from_real_base_and_drive_reads(tmp_path):
+    home = tmp_path / "home"
+    (home / "knowledge").mkdir(parents=True)
+    (home / "knowledge" / "base.json").write_text(
+        json.dumps({"schema_version": 1, "base_token": "bas_x", "tables": {}}),
+        encoding="utf-8",
+    )
+    (home / "install").mkdir(parents=True)
+    (home / "install" / "facilities.json").write_text(
+        json.dumps(
+            {
+                "base": {"token": "bas_x"},
+                "folders": {"source": "fld_src", "push": "fld_push"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    root = tmp_path / "ws"
+    binary = root / ".frontier" / "bin" / ("lark-cli.cmd" if os.name == "nt" else "lark-cli")
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+
+    def runner(argv, **kwargs):
+        if "auth" in argv:
+            return Proc(stdout=json.dumps(_auth_payload()))
+        if "+table-list" in argv:
+            return Proc(stdout=json.dumps({"ok": True, "data": {"tables": []}}))
+        if "files" in argv and "list" in argv:
+            return Proc(stdout=json.dumps({"ok": True, "data": {"files": []}}))
+        return Proc(stdout="{}")
+
+    result = lark.status(root, home=home, required=[], runner=runner)
+
+    assert result["resources"]["status"] == "ok"
+    assert result["resources"]["messages"]["status"] == "untested"
+    assert result["ok"] is True
 
 
 def test_resource_preflight_never_claims_permission_from_a_failure(tmp_path):

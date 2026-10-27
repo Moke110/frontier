@@ -236,39 +236,42 @@ def _intake_gate(home: Path) -> dict:
         "readable": int(literature.get("readable") or 0),
         "fulltext": int(literature.get("fulltext") or 0),
     }
-    if not literature:
-        return {
-            "ok": False,
-            "reason": "intake_missing",
-            "note": "没有文献/文本录入记录；先运行 init intake 提供可读输入与用户要求",
-            "gaps": [],
-            **counts,
-        }
     gaps = literature.get("gaps") or []
-    if not str(literature.get("requirements") or "").strip():
-        return {
-            "ok": False,
-            "reason": "intake_requirements_missing",
-            "note": "录入记录缺少用户要求；重新运行 init intake 补充要求",
-            "gaps": gaps,
-            **counts,
-        }
-    if counts["readable"] <= 0:
-        return {
-            "ok": False,
-            "reason": "intake_not_readable",
-            "note": "录入的文献/文本没有可读内容；先按 gaps 修复后重新 intake",
-            "gaps": gaps,
-            **counts,
-        }
-    if counts["fulltext"] <= 0:
-        return {
-            "ok": False,
-            "reason": "intake_no_fulltext",
-            "note": "录入内容只有索引/元数据，没有可读全文；草案不能脱离全文编造",
-            "gaps": gaps,
-            **counts,
-        }
+    checks = (
+        (
+            not literature,
+            "intake_missing",
+            "没有文献/文本录入记录；先运行 init intake 提供可读输入与用户要求",
+            [],
+        ),
+        (
+            not str(literature.get("requirements") or "").strip(),
+            "intake_requirements_missing",
+            "录入记录缺少用户要求；重新运行 init intake 补充要求",
+            gaps,
+        ),
+        (
+            counts["readable"] <= 0,
+            "intake_not_readable",
+            "录入的文献/文本没有可读内容；先按 gaps 修复后重新 intake",
+            gaps,
+        ),
+        (
+            counts["fulltext"] <= 0,
+            "intake_no_fulltext",
+            "录入内容只有索引/元数据，没有可读全文；草案不能脱离全文编造",
+            gaps,
+        ),
+    )
+    for failed, reason, note, gap_rows in checks:
+        if failed:
+            return {
+                "ok": False,
+                "reason": reason,
+                "note": note,
+                "gaps": gap_rows,
+                **counts,
+            }
     return {
         "ok": True,
         "gaps": gaps,
@@ -278,24 +281,42 @@ def _intake_gate(home: Path) -> dict:
 
 
 def _existing_card_ids(home: Path, client=None) -> set[str]:
-    """Card ids that already existed before the draft (Base + local archive)."""
+    """Card ids that already existed before the draft (Base + local archive).
+
+    Fail closed: if either snapshot cannot be read the caller must refuse to
+    propose, because an empty snapshot would disable the apply-time guard.
+    """
     ids: set[str] = set()
+    errors: list[str] = []
+    config = read_json(home / "knowledge" / "base.json") or {}
+    table = (config.get("tables") or {}).get("cards")
     try:
-        config = read_json(home / "knowledge" / "base.json") or {}
-        table = (config.get("tables") or {}).get("cards")
+        if not table:
+            raise HostRunError("知识卡片表尚未创建，无法建立既有卡片快照")
         remote = client or base_client(home)
-        if table:
-            ids.update(
-                str((row.get("fields") or {}).get("卡片 ID") or "").strip()
-                for row in _remote_cards(remote, table)
-            )
-    except Exception:  # noqa: BLE001 - snapshot is best effort; confirmation gates the write
-        pass
+        for row in _remote_cards(remote, table):
+            card_id = str((row.get("fields") or {}).get("卡片 ID") or "").strip()
+            if card_id:
+                ids.add(card_id)
+    except Exception as exc:  # noqa: BLE001 - snapshot failure must refuse
+        errors.append(f"Base：{exc}")
     try:
         ids.update(card["id"] for card in Archive(home).list_cards())
-    except Exception:  # noqa: BLE001
-        pass
-    return {value for value in ids if value}
+    except Exception as exc:  # noqa: BLE001 - snapshot failure must refuse
+        errors.append(f"本地档案：{exc}")
+    if errors:
+        raise HostRunError("无法读取草案前既有卡片快照：" + "；".join(errors))
+    return ids
+
+
+def _same_text(left, right) -> bool:
+    return " ".join(str(left or "").split()) == " ".join(str(right or "").split())
+
+
+def _same_ontology(left, right) -> bool:
+    return {part.strip() for part in _normalize_ontology(left)} == {
+        part.strip() for part in _normalize_ontology(right)
+    }
 
 
 def propose(
@@ -324,6 +345,14 @@ def propose(
         errors.extend(_validate_initial_card(card, seen))
     if errors:
         return {"ok": False, "reason": "invalid_cards", "errors": errors, "cards": normalized}
+    try:
+        pre_existing = sorted(_existing_card_ids(home, client))
+    except HostRunError as exc:
+        return {
+            "ok": False,
+            "reason": "pre_existing_snapshot_failed",
+            "note": str(exc),
+        }
     draft_dir = ensure_dir(home / DRAFT_REL)
     with (draft_dir / "cards.jsonl").open("w", encoding="utf-8") as handle:
         for card in normalized:
@@ -331,7 +360,6 @@ def propose(
     (draft_dir / "propositions.jsonl").write_text("", encoding="utf-8")
     (draft_dir / "sources.jsonl").write_text("", encoding="utf-8")
     hash_value = draft_hash(normalized)
-    pre_existing = sorted(_existing_card_ids(home, client))
     meta = {
         "schema_version": 1,
         "proposed_at": now(),
@@ -483,7 +511,7 @@ def standard_retrieval(home: Path, *, days: int = 7) -> dict:
     }
 
 
-def apply_draft(home: Path, *, client=None, overwrite: bool = False) -> dict:
+def apply_draft(home: Path, *, client=None) -> dict:
     """Write confirmed cards locally, sync to the Base, then read them back."""
     home = Path(home).expanduser().resolve()
     cleanup_mod.require_cleaned(home)
@@ -504,18 +532,19 @@ def apply_draft(home: Path, *, client=None, overwrite: bool = False) -> dict:
     if errors:
         return {"ok": False, "reason": "invalid_cards", "errors": errors}
 
-    # A draft must never overwrite a card that already existed before it.
+    # A draft must never overwrite a card that already existed before it, and
+    # there is no override: an id collision is always refused.
     meta = read_json(home / DRAFT_REL / "draft.json") or {}
     pre_existing = {str(value) for value in (meta.get("pre_existing_ids") or []) if value}
     conflicts = sorted(card["id"] for card in cards if card["id"] in pre_existing)
-    if conflicts and not overwrite:
+    if conflicts:
         return {
             "ok": False,
             "reason": "pre_existing_card",
             "conflicts": conflicts,
             "note": (
-                "这些卡片 ID 在草案生成前已存在于正式库；如确需覆盖既有研究内容，"
-                "显式使用 init apply --overwrite"
+                "这些卡片 ID 在草案生成前已存在于正式库；不会覆盖既有研究内容，"
+                "请为新卡片使用新的 ID"
             ),
             "counts": {"created": 0, "updated": 0, "skipped": 0},
         }
@@ -569,11 +598,9 @@ def apply_draft(home: Path, *, client=None, overwrite: bool = False) -> dict:
     for card in cards:
         fields = remote.get(card["id"]) or {}
         same = (
-            str(fields.get("label") or "") == str(card.get("label") or "")
-            and set(_normalize_ontology(fields.get("ontology")))
-            == set(_normalize_ontology(card.get("ontology")))
-            and str(fields.get("annotation") or "")
-            == str(card.get("annotation") or "")
+            _same_text(fields.get("label"), card.get("label"))
+            and _same_ontology(fields.get("ontology"), card.get("ontology"))
+            and _same_text(fields.get("annotation"), card.get("annotation"))
         )
         if not same:
             mismatched.append(card["id"])

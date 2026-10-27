@@ -82,6 +82,10 @@ _Avoid_: workspace, install directory, app folder
 The local location for configuration, run state, cache and offline backups for one installation.
 _Avoid_: cache, backup, home
 
+**Data-root private environment（数据根私有环境）**:
+The uv-managed Python environment and interpreter kept inside the data root (`<home>/.venv`), created by a uv resolved from outside the workspace first; the code directory holds no environment, and later runs use the recorded absolute interpreter.
+_Avoid_: repo venv, workspace virtualenv, system Python
+
 **Source document（原文）**:
 A paper's PDF original, keyed by `paper_id`; a paper has at most one source file.
 _Avoid_: literature, reference, attachment

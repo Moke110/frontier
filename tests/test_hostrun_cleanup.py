@@ -10,6 +10,24 @@ from hostrun.base import HostRunError
 from library.drive import FixtureDrive
 from library.offline import JsonBase
 from question_queue.store import QueueStore
+from writer.render import CAPTION_LABELS, SECTION_LABELS
+
+
+def _plan_file(directory):
+    path = Path(directory) / "candidates.jsonl"
+    path.write_text(json.dumps({"paper_id": "p1"}) + "\n", encoding="utf-8")
+    return path
+
+
+def _rendered_file(directory):
+    path = Path(directory) / "push.html"
+    text = "".join(f"<h2>{label}</h2>" for label in SECTION_LABELS.values())
+    text += "".join(
+        f'<span class="source-pill">{label}</span>'
+        for label in CAPTION_LABELS.values()
+    )
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def _fresh_base(tmp_path) -> JsonBase:
@@ -51,9 +69,9 @@ def _ready(tmp_path, *, with_artifacts=True):
     push_id = f"push_{test_id}"
     message = "om_test_message"
     question = f"q_{push_id}_rating"
-    smoke.record(home, "retrieved", candidates=2, plan="install/smoke-plan.json")
+    smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.record(home, "written", papers=[f"paper_{test_id}"])
-    smoke.record(home, "rendered", push=push_id, html="out/push.html")
+    smoke.record(home, "rendered", push=push_id, html=str(_rendered_file(tmp_path)))
     smoke.record(
         home, "sent", push=push_id, message=message, question=question
     )
@@ -236,7 +254,7 @@ def test_failed_test_cannot_be_reported_as_cleaned_success(tmp_path):
     drive = FixtureDrive()
     facilities.create(home, confirmed=True, admin=Admin(base), client=base, drive=drive)
     smoke.start(home, "虚拟细胞", confirmed=True, client=base)
-    smoke.record(home, "retrieved", candidates=1)
+    smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.fail(home, "send_timeout")
 
     refused = cleanup.run(home, confirmed=True, client=base, drive=drive, messenger=lambda x: None)

@@ -75,17 +75,19 @@ python -m hostrun.cli facilities status --home <home>
 python -m hostrun.cli smoke start --home <home> --keyword "<用户给的关键词>" --owner <open_id> --yes
 python -m hostrun.cli smoke plan  --home <home>
 python -m hostrun.cli smoke brief --home <home>          # 给宿主 agent 的下一步命令
-python -m hostrun.cli smoke record --home <home> --step retrieved --candidates <候选数> --plan <plan 路径>
+python -m hostrun.cli smoke record --home <home> --step retrieved --plan <已存在的计划/候选文件>
 python -m hostrun.cli smoke record --home <home> --step written --paper <选中 paper_id>（可重复）
-# ... rendered / sent（sent 必须带 --push --message --question；上传文件用 --file，可重复）
+python -m hostrun.cli smoke record --home <home> --step rendered --push <push_id> --html <渲染文件>
+# ... sent（必须带 --push --message --question；上传文件用 --file，可重复）
 python -m hostrun.cli smoke record --home <home> --step rated --item <id> --verdict great
 python -m hostrun.cli smoke record --home <home> --step decided --item <id> --decision agree_all
-python -m hostrun.cli smoke record --home <home> --step applied
-python -m hostrun.cli smoke verify --home <home> --target-key cards --target-id <card_id> --field <字段> --expected <值>
+python -m hostrun.cli smoke record --home <home> --step applied --target <被采纳目标 id> --applied-field <字段>（每字段重复一次）
+python -m hostrun.cli smoke verify --home <home> --target-key cards --target-id <card_id> --field <字段>=<值>（可重复）
 ```
 
 - 只取本次临时卡片的检索式；临时卡片同时写入本地与 Base，ID/标签带测试标记。
-- `retrieved` 必须带真实检索证据（`--candidates` 候选数 > 0，可用 `--plan` 记录计划），`written` 必须带至少一个选中论文 ID（`--paper`）；与 `sent` 的副作用 ID 一并写入测试记录，供精确清理。
+- `retrieved` 必须指向真实存在的计划/候选文件，候选数由该文件得出（可选 `--candidates` 必须与之一致）；`written` 至少一个选中论文 ID（`--paper`）；`rendered` 必须带推送 ID 与渲染文件，并按 `writer/render.py` 契约校验七段段落和 `原文图`/`生成图` 图注；这些证据与 `sent` 的副作用 ID 一并写入测试记录，供精确清理。
+- `applied` 用 `--target` 与 `--applied-field` 登记被采纳的目标与字段（省略时按临时卡片、只要求至少一个字段）；`verify` 必须覆盖每个已登记目标字段才完整，覆盖不足返回 `verification_incomplete`，字段不一致判失败。
 - 使用标准检索、写作、publisher、统一队列与反馈链路；只推一篇，评分先行，采纳后才写入。
 - 用户在飞书检查展示并提交反馈；agent 处理并读回验证。只有全部步骤 + 读回一致才算通过。
 - 任何失败先核对；发送超时不能确认则暂停，不重发。失败不开启正式初始化或日常推送。
@@ -99,7 +101,7 @@ python -m hostrun.cli cleanup run  --home <home> --yes
 python -m hostrun.cli cleanup run  --home <home> --yes --abort
 ```
 
-- 只按本次测试的卡片 ID、推送 ID、问题 ID、文件 token、消息 ID 删除；不用目录/名称匹配或清空整库。
+- 只按本次测试的卡片 ID、推送 ID、问题 ID、选中论文 ID、文件 token、消息 ID 删除；不用目录/名称匹配或清空整库。
 - 删除 Base 记录、上传文件、临时卡片、推送 JSON、问题与反馈、可撤回消息；正式数据与用户原件不动。
 - 删除后**读回确认**；不可删除或不可撤回的产物如实报告为清理未完成，正式初始化闸门保持关闭。
 - 保留安装环境、配置、空设施与最小验收状态（不含论文内容）。
@@ -115,8 +117,10 @@ python -m hostrun.cli init apply   --home <home>
 ```
 
 - 仅在临时闭环通过且清理读回通过后开放。
+- `init propose` 需要先完成 `init intake` 且至少有可读全文与用户要求；缺输入、无可读全文或既有卡片快照读取失败时拒绝生成草案。
 - 支持 PDF、文本、索引列表（JSON/JSONL/CSV/逐行标题）加用户直接要求；读不到的文献列为缺口，不编造全文或引文。
-- 候选卡片由宿主 agent 提炼，写出前必须经用户确认；确认后通过当前写入路径写本地档案并同步到飞书，读回校验。
+- 候选卡片由宿主 agent 提炼，写出前必须经用户确认；确认与草稿哈希绑定，草案改动后需重新确认。写入后按归一化字段读回校验，不一致即报告 `base_readback_mismatch`。
+- `init apply` **不会覆盖**草案生成前已存在的卡片 ID（没有覆盖开关）；冲突时拒绝并保留 Base 原行，请为新卡片使用新 ID。
 - 重复执行幂等；中断后重跑只补未完成部分。已有库使用 `init adopt-existing` 导入现有卡片，不重建、不清空。
 - 就绪后执行一次标准知识卡片检索（`init retrieve`），不把安装测试关键词当作研究计划。
 

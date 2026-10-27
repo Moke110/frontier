@@ -148,6 +148,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="written: selected paper id; repeat for each selected paper")
     sr.add_argument("--html", dest="html",
                     help="rendered: path of the rendered push html artifact")
+    sr.add_argument("--target", dest="targets", action="append", default=[],
+                    help="applied: adopted target id (card/proposition); repeat for each")
+    sr.add_argument("--applied-field", dest="applied_fields", action="append", default=[],
+                    help="applied: field name whose adopted value must be verified; repeat for each")
     sv = ssub.add_parser("verify", help="read the Base and require the accepted change")
     sv.add_argument("--target-key", required=True, choices=["cards", "propositions", "evidence"])
     sv.add_argument("--target-id", required=True)
@@ -184,8 +188,6 @@ def build_parser() -> argparse.ArgumentParser:
     ic.add_argument("--yes", action="store_true")
     ic.add_argument("--note", default="")
     ap = isub.add_parser("apply")
-    ap.add_argument("--overwrite", action="store_true",
-                    help="explicitly overwrite cards that existed before this draft")
     ia = isub.add_parser("adopt-existing")
     ia.add_argument("--yes", action="store_true", help="the user confirmed keeping the existing library")
     isub.add_parser("retrieve")
@@ -418,35 +420,55 @@ def _install(args, root: Path) -> tuple[int, dict]:
             data_dirname=args.data_dir,
             dry_run=args.dry_run,
         )
-        # A rejected layout has no safe data root to write into: report it and
-        # leave the code checkout (and the data-root candidate inside it) alone.
-        if not args.dry_run and result.get("layout_valid", True):
-            data_root = Path(result["home"])
-            ensure_dir(data_root / "install")
-            install.record(
-                data_root,
-                "workspace",
-                "ok" if result["ok"] else "blocked",
-                note="代码与数据根已就绪" if result["ok"] else result.get("blocked", ""),
-                evidence={
-                    "root": result["root"],
-                    "repo": result["repo"],
-                    "home": result["home"],
-                    "action": result["action"],
-                    "commit": result.get("commit"),
-                },
-                recheck=True,
-            )
-            update_config(
-                data_root,
-                workspace={
-                    "root": result["root"],
-                    "repo": result["repo"],
-                    "home": result["home"],
-                    "repo_url": args.repo_url,
-                },
-                paths={"repo": result["repo"], "home": result["home"]},
-            )
+        # A rejected layout has no safe data root to write into: record the
+        # blocked state under the CLI's data root so `install report` surfaces
+        # the actionable reason, and leave the code checkout untouched.
+        if not args.dry_run:
+            if result.get("layout_valid", True):
+                data_root = Path(result["home"])
+                ensure_dir(data_root / "install")
+                install.record(
+                    data_root,
+                    "workspace",
+                    "ok" if result["ok"] else "blocked",
+                    note="代码与数据根已就绪" if result["ok"] else result.get("blocked", ""),
+                    evidence={
+                        "root": result["root"],
+                        "repo": result["repo"],
+                        "home": result["home"],
+                        "action": result["action"],
+                        "commit": result.get("commit"),
+                    },
+                    recheck=True,
+                )
+                update_config(
+                    data_root,
+                    workspace={
+                        "root": result["root"],
+                        "repo": result["repo"],
+                        "home": result["home"],
+                        "repo_url": args.repo_url,
+                    },
+                    paths={"repo": result["repo"], "home": result["home"]},
+                )
+            else:
+                report_root = Path(root)
+                ensure_dir(report_root / "install")
+                install.record(
+                    report_root,
+                    "workspace",
+                    "blocked",
+                    note=result.get("blocked", "工作区布局被拒绝"),
+                    evidence={
+                        "root": result.get("root"),
+                        "repo": result.get("repo"),
+                        "home": result.get("home"),
+                        "action": result.get("action"),
+                        "layout_valid": False,
+                        "writes": "仅记录本拒绝状态，未创建数据根或代码副本",
+                    },
+                    recheck=True,
+                )
         return (0 if result["ok"] else 1), result
 
     if args.action == "toolchain":
@@ -457,9 +479,9 @@ def _install(args, root: Path) -> tuple[int, dict]:
             clear=args.clear,
         )
         record = workspace_mod.load_record(args.root)
-        data_root = Path(record.get("home") or root)
-        if not args.root or not record:
+        if not record:
             return 1, result
+        data_root = Path(record.get("home") or root)
         ensure_dir(data_root / "install")
         environment = result.get("environment") or {}
         install.record(
@@ -778,6 +800,8 @@ def _smoke(args, root: Path, offline: bool) -> tuple[int, dict]:
             plan=args.plan,
             papers=args.paper_ids,
             html=args.html,
+            targets=args.targets,
+            applied_fields=args.applied_fields,
         )
         return 0, result
     if args.action == "verify":
@@ -785,12 +809,13 @@ def _smoke(args, root: Path, offline: bool) -> tuple[int, dict]:
         expecteds = args.expected or []
         if len(expecteds) > len(fields):
             raise HostRunError("--expected 数量多于 --field")
-        checks: list[str] = []
+        checks: list[tuple[str, str]] = []
         for index, raw in enumerate(fields):
             if "=" in raw:
-                checks.append(raw)
+                name, value = raw.split("=", 1)
+                checks.append((name, value))
             elif index < len(expecteds):
-                checks.append(f"{raw}={expecteds[index]}")
+                checks.append((raw, expecteds[index]))
             else:
                 raise HostRunError(
                     f"--field {raw} 缺少对应 --expected；也可写成 --field name=value"
@@ -857,18 +882,17 @@ def _init(args, root: Path, offline: bool) -> tuple[int, dict]:
         cards = read_json(Path(args.cards)) or []
         if isinstance(cards, dict):
             cards = cards.get("cards") or []
-        return 0, initialize.propose(
+        result = initialize.propose(
             root, cards, rationale=args.rationale, client=client
         )
+        return (0 if result.get("ok") else 1), result
     if args.action == "review":
         return 0, initialize.review(root)
     if args.action == "confirm":
         result = initialize.confirm(root, confirmed_by_user=args.yes, note=args.note)
         return (0 if result.get("ok") else 1), result
     if args.action == "apply":
-        result = initialize.apply_draft(
-            root, client=client, overwrite=bool(getattr(args, "overwrite", False))
-        )
+        result = initialize.apply_draft(root, client=client)
         return (0 if result.get("ok") else 1), result
     if args.action == "adopt-existing":
         result = initialize.adopt_existing(root, client=client, confirmed=args.yes)
