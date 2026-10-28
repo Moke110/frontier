@@ -64,7 +64,7 @@
 |---|---|---|
 | 工作区获取/复用、私有 uv、uv 解释器、`frontier-run` 指针 | `hostrun/workspace.py` | `tests/test_hostrun_workspace.py`（16） |
 | CLI 发现/私有安装、登录状态、授权范围、Base/Drive 读取预检 | `hostrun/lark.py`、`library/admin.py` | `tests/test_hostrun_lark.py`（12） |
-| Base 本身/表/目录创建、确认命名、稳定 ID、同名去重、已有库接入 | `hostrun/facilities.py` | `tests/test_hostrun_facilities.py`（11） |
+| Base 本身/表/目录创建、确认命名、稳定 ID、同名 Base 提示而不复用、已有库显式接入 | `hostrun/facilities.py` | `tests/test_hostrun_facilities.py`（15） |
 | 关键词临时卡片、步骤状态机、读回验证 | `hostrun/smoke.py` | `tests/test_hostrun_smoke.py`（9） |
 | 按测试 ID 清理、删除读回、不可撤回/残留报告、幂等重跑、私有 CLI 撤回 | `hostrun/cleanup.py` | `tests/test_hostrun_cleanup.py`（8） |
 | 文献/要求摄取、卡片校验、用户确认、写入飞书、标准检索、已有库导入 | `hostrun/initialize.py` | `tests/test_hostrun_initialize.py`（11） |

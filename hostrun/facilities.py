@@ -16,9 +16,10 @@ Rules:
 
 - display names are confirmed by the user before anything is created; reruns
   reuse the recorded IDs and never create a second Base with the same name;
-- a locally lost record is recovered by title lookup only when the match is
-  unique *and* already contains frontier's first table; ambiguity blocks
-  instead of silently switching to an unrelated Base;
+- ``create`` always makes a *new* Base and never adopts a Base found by display
+  name, because the default name may match a library the user already owns;
+  same-name Bases are reported as a warning so the user can rename first, and
+  ``attach`` is the explicit way to connect an existing Base;
 - attaching an existing Base inspects identity, structure and content, reports
   missing pieces and never clears or rebuilds them;
 - a partial creation is reported with the actions that did happen; rerunning
@@ -85,9 +86,42 @@ def normalize(overrides: dict | None = None) -> dict:
     return names
 
 
-def plan(home: Path, overrides: dict | None = None) -> dict:
-    names = normalize(overrides)
+def _same_name_warning(admin, names: dict) -> dict | None:
+    """Report same-name Bases as read-only information; never adopt them.
+
+    ``create`` always makes a new Base, so this is only a pre-flight hint: the
+    user may prefer to rename, or to connect the existing library explicitly
+    with ``attach``. A failed lookup must not turn into a creation blocker.
+    """
+    if admin is None:
+        return None
+    try:
+        resolved = admin.resolve_title(names["base"])
+    except Exception as exc:  # noqa: BLE001 - a warning cannot block creation
+        return {
+            "count": None,
+            "names": [],
+            "error": str(exc),
+            "note": f"无法确认是否已有同名 Base：{exc}",
+        }
+    matches = (resolved or {}).get("matches") or []
+    if not matches:
+        return None
+    labels = [str(match.get("name") or names["base"]) for match in matches]
     return {
+        "count": len(matches),
+        "names": labels,
+        "note": (
+            f"已存在 {len(matches)} 个同名 Base（{'、'.join(labels)}）；"
+            "create 会新建一个独立 Base，不会复用或修改它们；"
+            "如需连接已有库请用 facilities attach，或先换一个名称"
+        ),
+    }
+
+
+def plan(home: Path, overrides: dict | None = None, *, admin=None) -> dict:
+    names = normalize(overrides)
+    payload = {
         "ok": True,
         "data_root": str(Path(home).expanduser().resolve()),
         "names": names,
@@ -96,6 +130,10 @@ def plan(home: Path, overrides: dict | None = None) -> dict:
         "needs_user_confirmation": True,
         "note": "确认数据根、Base、各表与两个目录的名称后再创建；确认前不会写入飞书",
     }
+    warning = _same_name_warning(admin, names)
+    if warning:
+        payload["existing_same_name"] = warning
+    return payload
 
 
 def confirm_names(home: Path, names: dict) -> dict:
@@ -369,50 +407,13 @@ def create(
         reused = True
         actions.append("reuse Base from facilities record")
 
+    existing_warning: dict | None = None
     if not base_token:
-        try:
-            resolved_base = admin.resolve_title(resolved["base"])
-        except AdminError as exc:
-            _record_blocked(home, f"无法按名称查找已有 Base：{exc}")
-            return {"ok": False, "reason": "base_lookup_failed", "note": str(exc)}
-        matches = resolved_base.get("matches") or []
-        if len(matches) > 1:
-            note = (
-                f"找到 {len(matches)} 个同名 Base，未创建也未切换；"
-                "请确认哪个是要接入的库，或换一个名称"
-            )
-            _record_blocked(home, note, {"matches": [m.get("base_token") for m in matches]})
-            return {"ok": False, "reason": "ambiguous_base", "note": note, "matches": matches}
-        if len(matches) == 1:
-            candidate = matches[0]
-            # A candidate is only reused when it already carries frontier's first table.
-            from library.base import LarkBaseClient
-
-            probe = LarkBaseClient({"base_token": candidate["base_token"]}, bin=cli_bin)
-            try:
-                listing = probe.list_tables()
-            except Exception as exc:  # noqa: BLE001 - permission failures are results
-                _record_blocked(home, f"同名 Base 无法读取：{exc}")
-                return {"ok": False, "reason": "base_unreadable", "note": str(exc)}
-            names_present = {row.get("name") for row in listing}
-            if resolved["tables"]["cards"] not in names_present:
-                note = (
-                    f"同名 Base {candidate['name']} 不含「{resolved['tables']['cards']}」，"
-                    "未复用它；请换名称或手动接入"
-                )
-                _record_blocked(home, note, {"base_token": candidate["base_token"]})
-                return {"ok": False, "reason": "unrelated_base", "note": note}
-            base_token = candidate["base_token"]
-            base_info = {
-                "token": base_token,
-                "url": candidate.get("url") or f"https://feishu.cn/base/{base_token}",
-                "name": candidate.get("name") or resolved["base"],
-            }
-            kb.register_base(
-                home, base_token, base_url=base_url or base_info["url"], name=base_info["name"]
-            )
-            actions.append(f"reuse Base {base_info['name']}")
-            reused = True
+        # A same-name Base is reported, never adopted: the default name can
+        # match a library the user already owns, and create must not touch it.
+        existing_warning = _same_name_warning(admin, resolved)
+        if existing_warning:
+            actions.append(existing_warning["note"])
 
     if not base_token:
         try:
@@ -423,7 +424,10 @@ def create(
             )
         except (AdminError, HostRunError) as exc:
             _record_blocked(home, f"创建 Base 失败：{exc}")
-            return {"ok": False, "reason": "base_create_failed", "note": str(exc)}
+            result = {"ok": False, "reason": "base_create_failed", "note": str(exc)}
+            if existing_warning:
+                result["existing_same_name"] = existing_warning
+            return result
         base_token = created["base_token"]
         base_info = {
             "token": base_token,
@@ -471,7 +475,7 @@ def create(
             f"创建表/目录中断：{exc}",
             {"actions": actions, "missing": missing, "missing_fields": missing_fields},
         )
-        return {
+        result = {
             "ok": False,
             "reason": "facility_create_partial",
             "note": str(exc),
@@ -482,6 +486,9 @@ def create(
             "problems": field_problems,
             "actions": actions,
         }
+        if existing_warning:
+            result["existing_same_name"] = existing_warning
+        return result
     actions.extend(created.get("actions") or [])
     config = read_json(home / "knowledge" / "base.json") or {}
     tables, missing = _tables_snapshot(client, config.get("tables") or {}, resolved)
@@ -494,7 +501,7 @@ def create(
     }
     if not folders["source"] or not folders["push"]:
         folders = {**folders, **_folders_from_config(home, client)}
-    return _finish(
+    result = _finish(
         home,
         names=resolved,
         base=base_info,
@@ -506,6 +513,9 @@ def create(
         missing_fields=missing_fields,
         problems=field_problems,
     )
+    if existing_warning:
+        result["existing_same_name"] = existing_warning
+    return result
 
 
 def attach(

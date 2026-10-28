@@ -692,7 +692,14 @@ def _facilities(args, root: Path, offline: bool) -> tuple[int, dict]:
     home = Path(root).expanduser().resolve()
     overrides = _name_overrides(args) if args.action in ("plan", "create", "attach") else {}
     if args.action == "plan":
-        return 0, facilities.plan(home, overrides)
+        if offline:
+            client, _drive = _offline_assets(home)
+            admin = _OfflineAdmin(home, client)
+        else:
+            from library.admin import LarkAdminClient
+
+            admin = LarkAdminClient(bin=_cli_bin(home))
+        return 0, facilities.plan(home, overrides, admin=admin)
 
     client = None
     drive = None
