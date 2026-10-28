@@ -137,3 +137,37 @@ def test_editor_task_skips_already_pushed_papers(kl_home, fixtures_dir):
     candidate_ids = {row["paper_id"] for row in task["candidates"]}
     assert pushed_id not in candidate_ids
     assert len(candidate_ids) == len(rows) - 1
+
+
+def test_temporary_smoke_cards_are_excluded_from_editor_and_writer_context(
+    kl_home, fixtures_dir
+):
+    temp = kl_home / "archive" / "cards" / "card_smoke_acceptance.json"
+    temp.write_text(
+        json.dumps(
+            {
+                "id": "card_smoke_acceptance",
+                "label": "[临时验收] 虚拟细胞",
+                "ontology": ["虚拟细胞"],
+                "annotation": "⛔ 验收内容 ⚠️ 不得进入正式上下文",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    rows, selection = _pipeline(kl_home, fixtures_dir)
+    editor_task = editor_tasks.build_task(
+        kl_home, rows, "2026-10-20", limit=4, per_checkpoint=2
+    )
+    assert "card_smoke_acceptance" not in editor_task["checkpoints"]
+    assert "card_hmbs" in editor_task["checkpoints"]
+
+    writer_task = writer_tasks.build_task(kl_home, selection, "2026-10-20")
+    card_ids = {
+        card["id"]
+        for item in writer_task["items"]
+        for card in item["context"]["cards"]
+    }
+    assert "card_smoke_acceptance" not in card_ids
+    assert "card_hmbs" in card_ids

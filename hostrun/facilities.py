@@ -412,7 +412,9 @@ def create(
         # A same-name Base is reported, never adopted: the default name can
         # match a library the user already owns, and create must not touch it.
         existing_warning = _same_name_warning(admin, resolved)
-        if existing_warning:
+        # A warning whose lookup failed has ``count: None``: it belongs in the
+        # result, but it is not an action the creation actually performed.
+        if existing_warning and existing_warning.get("count"):
             actions.append(existing_warning["note"])
 
     if not base_token:

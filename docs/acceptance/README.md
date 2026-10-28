@@ -9,7 +9,7 @@
 | 项目 | 实测结果 |
 |---|---|
 | 数据根写入 | 创建 `E:\Desktop\frontier-archive` 失败（`E:\Desktop` 不可写）；在 `E:\Desktop` 内写探测文件被拒绝（Access denied）。会话工作区 `E:\Desktop\frontier` 与会话临时目录可写。 |
-| CLI 凭据存储写入 | 写 `C:\Users\Chang\.lark-cli` 被拒绝（Access denied）。`lark-cli auth status --json --verify` 告警 `local DPoP setup failed ... failed to acquire key storage lock`；`dpopKeyStatus: missing`。 |
+| CLI 凭据存储写入 | 写 `%USERPROFILE%\.lark-cli` 被拒绝（Access denied）。`lark-cli auth status --json --verify` 告警 `local DPoP setup failed ... failed to acquire key storage lock`；`dpopKeyStatus: missing`。 |
 | CLI 可执行 | `lark-cli 1.0.98`（npx 缓存中的绝对路径）可运行。 |
 | 身份 | bot `ready` 且 `verified: true`；user `missing`（DPoP 密钥不可用；令牌 `needs_refresh`，刷新窗口至 2026-11-03）。 |
 | 授权 / 真实资源读取 | user：`drive files list --as user` → 退出码 5，`file_io: failed to acquire token storage lock`；bot：→ 退出码 3，`app_scope_not_applied`，缺 `drive:drive`、`drive:drive:readonly`、`space:document:retrieve`。真实 Base 与 Drive 读取均未成功。 |
@@ -17,7 +17,7 @@
 
 结论：#53 的真实预检仍然阻塞，阻塞项为（1）宿主对数据根与 CLI 凭据存储的写入权限；（2）飞书 user 身份（DPoP 存储锁）；（3）应用未申请 Drive scope。三者都是宿主/账号层前置条件，属于需要用户完成的登录、授权与宿主权限，不能通过移动解释器、重建数据根或改用全局完全访问绕过。因此 #53–#59 继续保持开放；本轮不宣称任何真实闭环通过。
 
-**会话边界。** 安装设计要求宿主会话的工作区是“安装工作区”，即同时包含代码目录与数据根两个子目录的宿主项目文件夹（README 的“工作区”）。本次会话工作区是代码目录 `E:\Desktop\frontier` 本身，数据根 `E:\Desktop\frontier-archive` 因而位于会话工作区之外，这是本轮数据根写权限阻塞的直接原因之一；需要在以安装工作区（例如 `E:\Desktop`）为工作区的宿主会话中重新预检。CLI 凭据存储位于用户目录（`C:\Users\Chang\.lark-cli`），即使工作区正确也仍需宿主允许该路径写入；前置条件未具备时按要求记录 blocked，不迁移凭据。
+**会话边界。** 安装设计要求宿主会话的工作区是“安装工作区”，即同时包含代码目录与数据根两个子目录的宿主项目文件夹（README 的“工作区”）。本次会话工作区是代码目录 `E:\Desktop\frontier` 本身，数据根 `E:\Desktop\frontier-archive` 因而位于会话工作区之外，这是本轮数据根写权限阻塞的直接原因之一；需要在以安装工作区（例如 `E:\Desktop`）为工作区的宿主会话中重新预检。CLI 凭据存储位于用户目录（`%USERPROFILE%\.lark-cli`），即使工作区正确也仍需宿主允许该路径写入；前置条件未具备时按要求记录 blocked，不迁移凭据。
 
 ## 2026-10-29 规格 #51 修订标准补全（离线完成；真实验收未执行）
 
@@ -42,7 +42,7 @@
 
 ## 2026-10-28 规格 #51 实现（离线完成；真实验收阻塞）
 
-用户当日决定：本轮只实现代码与离线测试，真实验收记为阻塞，不写入真实飞书数据。宿主机为 DeepSeek Harness 44.7.0（[ADR 0006](../adr/0006-deepseek-harness-as-a-host.md)），其 workspace-write 策略实测把整个进程树限制在会话工作区与会话临时目录：
+用户当日决定：本轮只实现代码与离线测试，真实验收记为阻塞，不写入真实飞书数据。宿主机当时记录为 DeepSeek Harness 44.7.0（2026-10-27 的历史版本号；2026-10-29 重新预检时产品版本为 0.2.1-rc.3，见上节；[ADR 0006](../adr/0006-deepseek-harness-as-a-host.md)），其 workspace-write 策略实测把整个进程树限制在会话工作区与会话临时目录：
 
 - 允许写 `E:\Desktop\frontier` 与会话临时目录；拒绝写 `E:\Desktop\frontier-archive`、`%USERPROFILE%\.lark-cli`、`C:\Python314`、`D:\nodejs`。
 - 用仓库 `.venv` 解释器、`C:\Python314\python.exe` 与 `node.exe` 分别验证，结果一致：限制与解释器位置、工作目录无关。因此规格“把解释器移到数据根即可写 CLI 令牌存储”的假设在本机不成立。
@@ -65,7 +65,7 @@
 
 ## 2026-10-27 首次 Windows 真实安装（进行中，未改动飞书数据）
 
-目标宿主为 [DeepSeek Harness 44.7.0](../adr/0006-deepseek-harness-as-a-host.md)（第三款运行宿主）；飞书 CLI 复用用户已配置的 `@larksuite/cli` 1.0.98（[ADR 0007](../adr/0007-reuse-configured-lark-cli.md)），实际可执行文件在 npx 缓存中。代码目录 `E:\Desktop\frontier`（`dev`），数据根 `E:\Desktop\frontier-archive`。
+目标宿主为 [DeepSeek Harness 44.7.0](../adr/0006-deepseek-harness-as-a-host.md)（2026-10-27 当时版本；第三款运行宿主）；飞书 CLI 复用用户已配置的 `@larksuite/cli` 1.0.98（[ADR 0007](../adr/0007-reuse-configured-lark-cli.md)），实际可执行文件在 npx 缓存中。代码目录 `E:\Desktop\frontier`（`dev`），数据根 `E:\Desktop\frontier-archive`。
 
 已取得的真实只读证据：
 

@@ -98,9 +98,10 @@ python -m hostrun.cli smoke record --home <home> --step applied --target <被采
 python -m hostrun.cli smoke verify --home <home> --target-key cards --target-id <card_id> --field <字段>=<值>（可重复）
 ```
 
-- `smoke start --owner` 必填，且必须与当前登录的飞书用户一致：`smoke start` 用记录的 CLI 读取已认证 user 身份核对；缺失 CLI、未登录或身份未就绪返回 `recipient_unverified`，与登录用户不一致返回 `recipient_mismatch`（报告不回显 open_id）。核实后的收件人写入测试记录与配置，后续只用该收件人。
+- `smoke start --owner` 必填，且必须与当前登录的飞书用户一致：`smoke start` 用记录的 CLI 读取已认证 user 身份核对；缺失 CLI、未登录或身份未就绪返回 `recipient_unverified`，与登录用户不一致返回 `recipient_mismatch`（报告不回显 open_id）。离线模式无法证明收件人身份，会直接拒绝且不生成测试记录。核实后的收件人写入测试记录与 `install/recipient.json`（用户标识原文只留在数据根，不进入安装配置或报告），后续只用该收件人。
 - 只取本次临时卡片的检索式；临时卡片同时写入本地与 Base，ID/标签带测试标记。
 - `retrieved` 必须指向真实存在的计划/候选文件，候选数由该文件得出（可选 `--candidates` 必须与之一致）；`written` 至少一个选中论文 ID（`--paper`）；`rendered` 必须在推送库中已有对应记录（先 `archive.cli add-push`），记录存在、push_id 一致且属于本次选中论文（否则 `push_record_missing` / `push_record_mismatch`），并按 `writer/render.py` 契约校验七段段落和 `原文图`/`生成图` 图注；这些证据与 `sent` 的副作用 ID 一并写入测试记录，供精确清理。
+- `sent` 记录前会核对 `publisher/messages.jsonl`：`--message` 必须是本次推送的 `push_file` 且 `target` 为已核实收件人；没有记录返回 `message_recipient_unverified`，推送/收件人不符返回 `message_mismatch`，均不推进步骤。
 - `rated`/`decided` 只认用户本人在飞书卡片提交的答案：统一问题队列中该题必须已由已核实收件人回答且分/采纳值与 `--verdict`/`--decision` 一致，否则拒绝（`rating_not_submitted`/`rating_not_by_user`/`rating_mismatch`，采纳同理）；agent 不得代填或自证。`feedback submit` 仍用于其他路径，但不是临时闭环的验收动作。
 - `applied` 用 `--target` 与 `--applied-field` 登记被采纳的目标与字段（省略时按临时卡片、只要求至少一个字段）；`verify` 必须覆盖每个已登记目标字段才完整，覆盖不足返回 `verification_incomplete`，字段不一致判失败。
 - 使用标准检索、写作、publisher、统一队列与反馈链路；只推一篇，评分先行，采纳后才写入。
@@ -118,6 +119,7 @@ python -m hostrun.cli cleanup run  --home <home> --yes --abort
 
 - 只按本次测试的卡片 ID、推送 ID、问题 ID、选中论文 ID、文件 token、消息 ID 删除；不用目录/名称匹配或清空整库。
 - 删除 Base 记录、上传文件、临时卡片、推送 JSON、问题与反馈、可撤回消息；正式数据与用户原件不动。
+- 撤回消息与云盘读回只使用记录或显式给出的**绝对且存在**的 `lark-cli`；没有可用绝对路径时该项记 `failed`，不回退 PATH 的 `lark-cli`。
 - 删除后**读回确认**；不可删除或不可撤回的产物如实报告为清理未完成，正式初始化闸门保持关闭。
 - 保留安装环境、配置、空设施与最小验收状态（不含论文内容）。
 
@@ -154,7 +156,7 @@ python -m hostrun.cli schedules resume  --home <home> --yes
 - 每个任务保存 `frontier-run`、仓库、数据根、解释器与 CLI 的绝对路径；唤醒时先读 skill 再执行。
 - 小时检查只处理反馈/恢复/维护，**从不**创建检索请求；未答问题不阻塞维护。
 - 正式知识未就绪不启用每日推送；允许确认后暂不启用。
-- 任务创建成功只写 `schedules`；真实到点触发才写 `scheduled_run`。手动运行、旧成功标记、云任务都不能替代。两类任务都至少真实触发一次后，`scheduled_run` 才为 `ok`。
+- 任务创建成功只写 `schedules`；真实到点触发才写 `scheduled_run`。运行时间必须与计划时区记录的实际 UTC 偏移一致，并在计划时间后 5 分钟内启动；手动运行、异时区时间、旧成功标记、云任务都不能替代。两类任务都至少真实触发一次后，`scheduled_run` 才为 `ok`。
 - `schedules confirm` 为两个任务各生成一个 proof 并写入实际命令；`run --scheduled` 不带匹配 proof 时只当普通运行，不写入触发证据。确认后请使用 `schedules confirm` 返回的任务命令，不要手写不带 proof 的命令。
 - 暂停会停用配置并要求在宿主里停用实际任务；换机先停旧端，再 `executor handover`。
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hostrun import smoke
+from hostrun import install, intents, smoke
 from hostrun.base import HostRunError
 from library.drive import FixtureDrive
 from library.offline import JsonBase
@@ -78,6 +78,22 @@ def _write_push(home, push_id="push_1", papers=("paper_1",), **extra) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _seed_message(home, message="m_1", *, push="p_1", target=OWNER, kind="push_file"):
+    """The publisher's routing row: a real send happened before ``sent``."""
+    from publisher.store import PublisherStore
+
+    store = PublisherStore(home)
+    store.init()
+    store.record_message(message, kind, push, target=target)
+
+
+def _record_sent(home, *, push="p_1", message="m_1", question="q_1", target=OWNER):
+    _seed_message(home, message, push=push, target=target)
+    return smoke.record(
+        home, "sent", push=push, message=message, question=question
+    )
 
 
 def _seed_answer(home, item="q_1", *, verdict="great", decision="agree_all", owner=OWNER):
@@ -235,7 +251,7 @@ def test_steps_are_ordered_and_success_needs_a_real_read_back(tmp_path):
     _record_rendered(home, tmp_path)
     with pytest.raises(HostRunError):
         smoke.record(home, "sent", push="push_1")
-    smoke.record(home, "sent", push="push_1", message="om_1", question="q_1")
+    _record_sent(home, push="push_1", message="om_1", question="q_1")
     _seed_answer(home)
     smoke.record(home, "rated", item="q_1", verdict="great")
     smoke.record(home, "decided", item="q_1", decision="agree_all")
@@ -271,7 +287,7 @@ def test_verification_mismatch_fails_and_never_opens_formal_init(tmp_path):
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.record(home, "written", papers=["paper_1"])
     _record_rendered(home, tmp_path)
-    smoke.record(home, "sent", push="p", message="m", question="q")
+    _record_sent(home, push="p", message="m", question="q")
     _seed_answer(home, "q", verdict="ok", decision="adopt")
     smoke.record(home, "rated", item="q", verdict="ok")
     smoke.record(home, "decided", item="q", decision="adopt")
@@ -302,7 +318,7 @@ def test_verification_refuses_to_touch_formal_knowledge(tmp_path):
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.record(home, "written", papers=["paper_1"])
     _record_rendered(home, tmp_path)
-    smoke.record(home, "sent", push="p", message="m", question="q")
+    _record_sent(home, push="p", message="m", question="q")
     _seed_answer(home, "q", verdict="ok", decision="adopt")
     smoke.record(home, "rated", item="q", verdict="ok")
     smoke.record(home, "decided", item="q", decision="adopt")
@@ -486,7 +502,7 @@ def _run_to_applied(home, base, *, applied_fields=None, targets=None):
     smoke.record(home, "retrieved", plan=str(_plan_file(home.parent)))
     smoke.record(home, "written", papers=["paper_1"])
     _record_rendered(home, home.parent)
-    smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
+    _record_sent(home, push="p_1", message="m_1", question="q_1")
     _seed_answer(home)
     smoke.record(home, "rated", item="q_1", verdict="great")
     smoke.record(home, "decided", item="q_1", decision="agree_all")
@@ -558,7 +574,7 @@ def test_decided_cannot_be_recorded_before_the_user_rates(tmp_path):
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.record(home, "written", papers=["paper_1"])
     _record_rendered(home, tmp_path)
-    smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
+    _record_sent(home, push="p_1", message="m_1", question="q_1")
 
     with pytest.raises(HostRunError):
         smoke.record(home, "decided", item="q_1", decision="agree_all")
@@ -759,7 +775,7 @@ def test_cli_record_applied_captures_targets_and_fields(tmp_path):
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.record(home, "written", papers=["paper_1"])
     _record_rendered(home, tmp_path)
-    smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
+    _record_sent(home, push="p_1", message="m_1", question="q_1")
     _seed_answer(home)
     smoke.record(home, "rated", item="q_1", verdict="great")
     smoke.record(home, "decided", item="q_1", decision="agree_all")
@@ -814,8 +830,25 @@ def test_start_requires_a_verified_owner_and_persists_the_recipient(tmp_path):
     assert result["ok"] is True
     assert result["owner"] == OWNER
     assert result["owner_verified"] is True
-    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
-    assert config["permissions"]["owner"] == OWNER
+    config_path = home / "install" / "config.json"
+    config = (
+        json.loads(config_path.read_text(encoding="utf-8"))
+        if config_path.exists()
+        else {}
+    )
+    assert "owner" not in (config.get("permissions") or {})
+    recipient = json.loads(
+        (home / "install" / "recipient.json").read_text(encoding="utf-8")
+    )
+    assert recipient["owner"] == OWNER
+    assert recipient["source"] == "smoke.start"
+    assert recipient["verified_at"]
+    # The install report must not leak the recipient's user identifier.
+    report = json.dumps(install.report(home), ensure_ascii=False)
+    assert OWNER not in report
+    assert "ou_" not in report
+    # Intents still resolve the verified recipient from the data root.
+    assert intents._owner(home) == OWNER
 
 
 def test_start_verifies_with_the_recorded_cli_and_never_guesses(tmp_path):
@@ -880,8 +913,44 @@ def _to_sent(home, base, tmp_path):
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.record(home, "written", papers=["paper_1"])
     _record_rendered(home, tmp_path)
-    smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
+    _record_sent(home, push="p_1", message="m_1", question="q_1")
     return started
+
+
+def test_sent_requires_a_push_file_recorded_for_the_verified_recipient(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    _start(home, base)
+    smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
+    smoke.record(home, "written", papers=["paper_1"])
+    _record_rendered(home, tmp_path)
+
+    missing = smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
+    assert missing["ok"] is False
+    assert missing["reason"] == "message_recipient_unverified"
+    assert "sent" not in smoke.load(home)["steps"]
+
+    _seed_message(home, "m_1", push="p_1", target="ou_someone_else")
+    wrong_target = smoke.record(
+        home, "sent", push="p_1", message="m_1", question="q_1"
+    )
+    assert wrong_target["reason"] == "message_mismatch"
+    assert "sent" not in smoke.load(home)["steps"]
+
+    _seed_message(home, "m_1", push="p_other", target=OWNER)
+    wrong_push = smoke.record(
+        home, "sent", push="p_1", message="m_1", question="q_1"
+    )
+    assert wrong_push["reason"] == "message_mismatch"
+    assert "sent" not in smoke.load(home)["steps"]
+
+    _seed_message(home, "m_1", push="p_1", target=OWNER)
+    accepted = smoke.record(
+        home, "sent", push="p_1", message="m_1", question="q_1"
+    )
+    assert accepted["ok"] is True
+    assert "sent" in smoke.load(home)["steps"]
 
 
 def test_rated_requires_the_owner_to_have_answered(tmp_path):
@@ -995,3 +1064,40 @@ def test_rendered_accepts_the_registered_push_for_this_test(tmp_path):
     )
 
     assert result["ok"] is True
+
+
+# ------------------------------------------- offline CLI start (spec #51 Q)
+def test_offline_cli_start_refuses_and_never_spawns_the_real_cli(
+    tmp_path, monkeypatch, capsys
+):
+    from hostrun import cli, lark
+
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+
+    def forbidden(_cli):
+        raise AssertionError("offline smoke start must not spawn the real lark-cli")
+
+    monkeypatch.setattr(lark, "user_open_id", forbidden)
+
+    code = cli.main(
+        [
+            "--home",
+            str(home),
+            "--offline",
+            "smoke",
+            "start",
+            "--keyword",
+            "虚拟细胞",
+            "--owner",
+            OWNER,
+            "--yes",
+        ]
+    )
+
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reason"] == "recipient_unverified"
+    assert payload["offline_note"]
+    assert not (home / "install" / "smoke.json").exists()

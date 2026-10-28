@@ -426,8 +426,12 @@ def test_probe_writes_creates_and_removes_unique_probes(tmp_path):
     assert result["data_root"]["status"] == "ok"
     assert result["lark_store"]["status"] == "ok"
     assert result["lark_store"]["path"] == str(store)
+    # A missing store dir is probed in its nearest existing ancestor; the probe
+    # must not create the credential store as a side effect.
+    assert not store.exists()
+    assert result["lark_store"]["probe_root"] == str(tmp_path)
     assert not list(home.glob(".frontier-write-probe-*"))
-    assert not list(store.glob(".frontier-write-probe-*"))
+    assert not list(tmp_path.glob(".frontier-write-probe-*"))
 
 
 def test_probe_writes_uses_lark_cli_home(tmp_path, monkeypatch):
@@ -445,6 +449,7 @@ def test_probe_writes_reports_the_exact_denied_store_path(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     store = tmp_path / "locked-store"
+    store.mkdir()
 
     def writer(path):
         if path.parent.resolve() == store.resolve():

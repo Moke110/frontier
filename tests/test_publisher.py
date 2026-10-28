@@ -316,6 +316,15 @@ def test_get_message_treats_a_documented_not_found_as_gone(monkeypatch):
     assert result["message_id"] == "om_1"
 
 
+def test_get_message_treats_an_empty_success_as_unverifiable(monkeypatch):
+    from publisher import feishu
+
+    _fake_api(monkeypatch, {"ok": True, "data": {"items": []}})
+
+    with pytest.raises(feishu.FeishuError):
+        feishu.get_message("om_1")
+
+
 def test_get_message_raises_when_the_read_cannot_prove_absence(monkeypatch):
     from publisher import feishu
 
@@ -369,7 +378,14 @@ def test_unknown_send_outcome_blocks_a_blind_retry(kl_home, tmp_path, monkeypatc
         json.loads(line)
         for line in (kl_home / "publisher" / "send-attempts.jsonl").read_text().splitlines()
     ]
-    assert [row["state"] for row in attempts] == ["sending", "unknown"]
+    push_id = _retry_push()["push_id"]
+    assert attempts
+    assert all(row["push_id"] == push_id for row in attempts)
+    # The send is first recorded as in-flight, then resolved as unknown; it must
+    # never be recorded as delivered on an exception.
+    assert sum(1 for row in attempts if row["state"] == "sending") == 1
+    assert attempts[-1]["state"] == "unknown"
+    assert not any(row["state"] == "sent" for row in attempts)
 
     second = send_push(kl_home, _retry_push(), html, "ou_demo")
 

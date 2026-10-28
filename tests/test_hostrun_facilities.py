@@ -193,6 +193,27 @@ def test_duplicate_same_name_bases_do_not_block_creation_or_get_adopted(tmp_path
     assert result["existing_same_name"]["names"] == ["研究库", "研究库"]
 
 
+def test_failed_same_name_lookup_is_reported_but_not_an_action(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    base = _fresh_base(tmp_path)
+
+    class Unreadable(FakeAdmin):
+        def resolve_title(self, title):
+            raise RuntimeError("search unavailable")
+
+    admin = Unreadable(base)
+
+    result = facilities.create(
+        home, names=_names(), confirmed=True, admin=admin, client=base, drive=FixtureDrive()
+    )
+
+    assert result["ok"] is True
+    assert result["existing_same_name"]["count"] is None
+    assert "search unavailable" in result["existing_same_name"]["error"]
+    assert not any("同名" in action for action in result["actions"])
+
+
 def test_plan_warns_about_same_name_bases_without_writing(tmp_path):
     home = tmp_path / "home"
     home.mkdir()

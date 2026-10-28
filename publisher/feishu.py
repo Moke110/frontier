@@ -193,7 +193,13 @@ def get_message(
     data = payload.get("data") or {}
     items = [item for item in (data.get("items") or []) if isinstance(item, dict)]
     if not items:
-        return {"message_id": message_id, "present": False, "payload": payload}
+        # A successful GET with no items is a malformed/empty answer, not proof
+        # that the message is gone.  Only a documented not-found/recalled answer
+        # may report ``present: False``.
+        raise FeishuError(
+            f"{executable} api GET message returned no items; "
+            "message presence is unverifiable"
+        )
     item = items[0]
     state = str(item.get("status") or "").lower()
     if item.get("deleted") or state in {"recalled", "deleted"}:

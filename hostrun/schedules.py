@@ -28,9 +28,19 @@ DEFAULT_FEEDBACK_MINUTE = 5
 TASK_DAILY = "frontier-daily"
 TASK_FEEDBACK = "frontier-feedback"
 RUNS_REL = Path("hostrun") / "runs.jsonl"
-STARTUP_TOLERANCE_MINUTES = 15
+STARTUP_TOLERANCE_MINUTES = 5
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _WILDCARD_CLOCK = re.compile(r"^\*:([0-5]\d)$")
+
+
+def _local_utc_offset_seconds() -> int:
+    """The planned zone's current UTC offset.
+
+    Windows CPython ships no tzdata, so the honest available signal is the
+    machine's actual offset at planning time; the run log must match it.
+    """
+    offset = datetime.now().astimezone().utcoffset()
+    return int(offset.total_seconds()) if offset is not None else 0
 
 
 def _clock(value: str, label: str) -> str:
@@ -149,6 +159,7 @@ def plan(
         "--scheduled",
         "--task",
     ]
+    utc_offset_seconds = _local_utc_offset_seconds()
     tasks = [
         {
             "id": TASK_DAILY,
@@ -156,6 +167,7 @@ def plan(
             "every": "day",
             "at": daily,
             "timezone": zone,
+            "utc_offset_seconds": utc_offset_seconds,
             "cwd": paths["repo"],
             "command": " ".join([*base, TASK_DAILY, "--intent", "daily"]),
             "effect": "请求并开始一篇推送；队列未清空或已有请求时合并，不重复推送",
@@ -167,6 +179,7 @@ def plan(
             "every": "hour",
             "at": f"*:{int(feedback_minute):02d}",
             "timezone": zone,
+            "utc_offset_seconds": utc_offset_seconds,
             "cwd": paths["repo"],
             "command": " ".join([*base, TASK_FEEDBACK, "--intent", "feedback"]),
             "effect": "处理已提交反馈与未完成工作；当天首次执行维护；从不发起新检索",
@@ -456,23 +469,32 @@ def resume(home: Path, *, confirmed_by_user: bool = False) -> dict:
     }
 
 
-def _on_schedule(stamp: object, task_at: object) -> bool:
-    """Whether a run's timestamp falls inside the task's scheduled window.
+def _on_schedule(
+    stamp: object, task_at: object, utc_offset_seconds: object = None
+) -> bool:
+    """Whether a run's timestamp falls inside the task's planned window.
 
     The run log's ``at`` comes from ``common.now()`` and keeps the machine's
-    local offset.  Schedule creation records the timezone name but performs no
-    conversion — Windows CPython ships no tzdata — so the host fires on local
-    wall-clock time.  Compare that wall clock, not UTC, with a small startup
-    tolerance; a manual run at an arbitrary hour must not count as on time.
+    local offset.  Schedule creation records the timezone name and the actual
+    UTC offset at planning time (Windows CPython has no tzdata), so the run's
+    offset must match that planned offset; a run in another zone is not proof
+    the task fired on schedule.  The wall clock is then compared with a
+    5-minute startup tolerance — a manual run at an arbitrary hour must not
+    count as on time.
 
     Daily tasks carry ``HH:MM``; hourly tasks carry ``*:MM``.  A missing,
-    unparseable or offset-less timestamp never counts.
+    unparseable, offset-less or differently-offset timestamp never counts.
     """
+    if utc_offset_seconds is None:
+        return False
     try:
         when = datetime.fromisoformat(str(stamp))
     except (TypeError, ValueError):
         return False
     if when.tzinfo is None:
+        return False
+    offset = when.utcoffset()
+    if offset is None or int(offset.total_seconds()) != int(utc_offset_seconds):
         return False
     text = str(task_at or "")
     wildcard = _WILDCARD_CLOCK.match(text)
@@ -496,7 +518,9 @@ def _scheduled_rows(home: Path, task: dict) -> list[dict]:
         and row.get("intent") == task.get("intent")
         and row.get("ok") is True
         and (not task.get("proof") or row.get("proof") == task.get("proof"))
-        and _on_schedule(row.get("at"), task.get("at"))
+        and _on_schedule(
+            row.get("at"), task.get("at"), task.get("utc_offset_seconds")
+        )
     ]
 
 
@@ -524,7 +548,7 @@ def record_trigger(
         return {
             "ok": False,
             "reason": "no_scheduled_run",
-            "note": "运行日志中没有该任务在计划时间内（允许 15 分钟启动容差）的真实到点记录；手动调用、非到点运行或声明不能作为证据",
+            "note": "运行日志中没有该任务在计划时间内（计划时区偏移一致，允许 5 分钟启动容差）的真实到点记录；手动调用、非到点运行或声明不能作为证据",
             "task_id": task_id,
         }
     row = rows[-1]
