@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import shlex
+from datetime import datetime
 from pathlib import Path
 
 from common import now, read_json, read_jsonl, write_json
@@ -27,7 +28,9 @@ DEFAULT_FEEDBACK_MINUTE = 5
 TASK_DAILY = "frontier-daily"
 TASK_FEEDBACK = "frontier-feedback"
 RUNS_REL = Path("hostrun") / "runs.jsonl"
+STARTUP_TOLERANCE_MINUTES = 15
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+_WILDCARD_CLOCK = re.compile(r"^\*:([0-5]\d)$")
 
 
 def _clock(value: str, label: str) -> str:
@@ -293,30 +296,22 @@ def confirm(
         )
         return {"ok": False, "reason": "needs_user_confirmation", "plan": spec}
 
-    if enabled and host_created and not _knowledge_ready(home):
-        update_config(
-            home,
-            timezone=spec["timezone"],
-            schedules={
-                "enabled": False,
-                "confirmed_at": now(),
-                "timezone": spec["timezone"],
-                "tasks": tasks,
-                "blocked_reason": "knowledge_not_ready",
-            },
-        )
+    if host_created and not _knowledge_ready(home):
+        # The revision requires creation only after knowledge readiness and
+        # enablement confirmation, so a paused request is refused too.  Nothing
+        # is written to the schedule config: no task may be recorded yet.
         record(
             home,
             "schedules",
             "blocked",
-            note="正式知识未就绪；每日推送不得启用。可先只保留暂停状态",
-            evidence={"tasks": [task["id"] for task in tasks]},
+            note="正式知识未就绪；不得创建或记录宿主任务（暂停状态也不行）",
+            evidence={"tasks": [task["id"] for task in tasks], "timezone": spec["timezone"]},
             recheck=True,
         )
         return {
             "ok": False,
             "reason": "knowledge_not_ready",
-            "note": "先完成正式知识初始化，再启用每日推送",
+            "note": "先完成正式知识初始化并确认启用，再创建宿主任务",
             "tasks": tasks,
             "plan": spec,
         }
@@ -461,6 +456,37 @@ def resume(home: Path, *, confirmed_by_user: bool = False) -> dict:
     }
 
 
+def _on_schedule(stamp: object, task_at: object) -> bool:
+    """Whether a run's timestamp falls inside the task's scheduled window.
+
+    The run log's ``at`` comes from ``common.now()`` and keeps the machine's
+    local offset.  Schedule creation records the timezone name but performs no
+    conversion — Windows CPython ships no tzdata — so the host fires on local
+    wall-clock time.  Compare that wall clock, not UTC, with a small startup
+    tolerance; a manual run at an arbitrary hour must not count as on time.
+
+    Daily tasks carry ``HH:MM``; hourly tasks carry ``*:MM``.  A missing,
+    unparseable or offset-less timestamp never counts.
+    """
+    try:
+        when = datetime.fromisoformat(str(stamp))
+    except (TypeError, ValueError):
+        return False
+    if when.tzinfo is None:
+        return False
+    text = str(task_at or "")
+    wildcard = _WILDCARD_CLOCK.match(text)
+    if wildcard:
+        start = int(wildcard.group(1))
+        return start <= when.minute < min(start + STARTUP_TOLERANCE_MINUTES, 60)
+    clock = _CLOCK.match(text)
+    if not clock:
+        return False
+    start = int(clock.group(1)) * 60 + int(clock.group(2))
+    actual = when.hour * 60 + when.minute
+    return start <= actual < min(start + STARTUP_TOLERANCE_MINUTES, 24 * 60)
+
+
 def _scheduled_rows(home: Path, task: dict) -> list[dict]:
     return [
         row
@@ -470,6 +496,7 @@ def _scheduled_rows(home: Path, task: dict) -> list[dict]:
         and row.get("intent") == task.get("intent")
         and row.get("ok") is True
         and (not task.get("proof") or row.get("proof") == task.get("proof"))
+        and _on_schedule(row.get("at"), task.get("at"))
     ]
 
 
@@ -497,7 +524,7 @@ def record_trigger(
         return {
             "ok": False,
             "reason": "no_scheduled_run",
-            "note": "运行日志中没有该任务的真实到点记录；手动调用或声明不能作为证据",
+            "note": "运行日志中没有该任务在计划时间内（允许 15 分钟启动容差）的真实到点记录；手动调用、非到点运行或声明不能作为证据",
             "task_id": task_id,
         }
     row = rows[-1]

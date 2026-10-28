@@ -171,6 +171,166 @@ def test_enabling_requires_initialized_knowledge(tmp_path):
     assert result["ok"] is False
     assert result["reason"] == "knowledge_not_ready"
     assert schedules.status(home)["enabled"] is False
+    assert schedules.status(home)["tasks"] == {}
+
+
+def test_paused_confirmation_still_requires_initialized_knowledge(tmp_path):
+    home = _home(tmp_path)
+
+    result = schedules.confirm(
+        home,
+        confirmed_by_user=True,
+        host_created=True,
+        enabled=False,
+        task_ids={"frontier-daily": "d1", "frontier-feedback": "f1"},
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "knowledge_not_ready"
+    assert "知识" in result["note"]
+    config_path = home / "install" / "config.json"
+    config = (
+        json.loads(config_path.read_text(encoding="utf-8"))
+        if config_path.exists()
+        else {}
+    )
+    assert not (config.get("schedules") or {}).get("tasks")
+    status = schedules.status(home)
+    assert status["tasks"] == {}
+    assert status["created"] is False
+
+
+def _confirmed_home(tmp_path):
+    home = _home(tmp_path)
+    install.record(home, "knowledge", "ok")
+    schedules.confirm(
+        home,
+        confirmed_by_user=True,
+        host_created=True,
+        task_ids={"frontier-daily": "d1", "frontier-feedback": "f1"},
+    )
+    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
+    proofs = {row["id"]: row["proof"] for row in config["schedules"]["tasks"]}
+    return home, proofs
+
+
+def _write_runs(home, task_id, intent, proof, *at_values):
+    path = home / "hostrun" / "runs.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for at in at_values:
+        row = {
+            "intent": intent,
+            "task": task_id,
+            "proof": proof,
+            "scheduled": True,
+            "ok": True,
+        }
+        if at is not None:
+            row["at"] = at
+        rows.append(json.dumps(row))
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return path
+
+
+def test_daily_trigger_accepts_a_run_inside_the_startup_window(tmp_path):
+    home, proofs = _confirmed_home(tmp_path)
+    _write_runs(
+        home,
+        "frontier-daily",
+        "daily",
+        proofs["frontier-daily"],
+        "2026-10-28T08:03:00+08:00",
+    )
+
+    result = schedules.record_trigger(home, "frontier-daily")
+
+    assert result["run"]["at"] == "2026-10-28T08:03:00+08:00"
+    assert result["remaining"] == ["frontier-feedback"]
+
+
+def test_daily_trigger_rejects_a_run_outside_the_startup_window(tmp_path):
+    home, proofs = _confirmed_home(tmp_path)
+    _write_runs(
+        home,
+        "frontier-daily",
+        "daily",
+        proofs["frontier-daily"],
+        "2026-10-28T09:00:00+08:00",
+    )
+
+    result = schedules.record_trigger(home, "frontier-daily")
+
+    assert result["ok"] is False
+    assert result["reason"] == "no_scheduled_run"
+    assert "计划" in result["note"]
+    status = schedules.status(home)
+    assert status["tasks"]["frontier-daily"]["scheduled_runs"] == 0
+
+
+def test_feedback_trigger_accepts_the_configured_minute_window(tmp_path):
+    home, proofs = _confirmed_home(tmp_path)
+    _write_runs(
+        home,
+        "frontier-feedback",
+        "feedback",
+        proofs["frontier-feedback"],
+        "2026-10-28T09:06:00+08:00",
+    )
+
+    result = schedules.record_trigger(home, "frontier-feedback")
+
+    assert result["run"]["at"] == "2026-10-28T09:06:00+08:00"
+    assert result["remaining"] == ["frontier-daily"]
+
+
+def test_feedback_trigger_rejects_a_run_outside_the_minute_window(tmp_path):
+    home, proofs = _confirmed_home(tmp_path)
+    _write_runs(
+        home,
+        "frontier-feedback",
+        "feedback",
+        proofs["frontier-feedback"],
+        "2026-10-28T09:30:00+08:00",
+    )
+
+    result = schedules.record_trigger(home, "frontier-feedback")
+
+    assert result["ok"] is False
+    assert result["reason"] == "no_scheduled_run"
+
+
+@pytest.mark.parametrize("stamp", [None, "not-a-time", "2026-10-28T08:03:00"])
+def test_trigger_rejects_a_run_without_a_parseable_local_timestamp(tmp_path, stamp):
+    home, proofs = _confirmed_home(tmp_path)
+    _write_runs(
+        home,
+        "frontier-daily",
+        "daily",
+        proofs["frontier-daily"],
+        stamp,
+    )
+
+    result = schedules.record_trigger(home, "frontier-daily")
+
+    assert result["ok"] is False
+    assert result["reason"] == "no_scheduled_run"
+
+
+def test_trigger_rejects_an_on_time_run_with_a_wrong_proof(tmp_path):
+    home, proofs = _confirmed_home(tmp_path)
+    _write_runs(
+        home,
+        "frontier-daily",
+        "daily",
+        "copied-or-guessed",
+        "2026-10-28T08:03:00+08:00",
+    )
+
+    result = schedules.record_trigger(home, "frontier-daily")
+
+    assert result["ok"] is False
+    assert result["reason"] == "no_scheduled_run"
 
 
 def test_created_tasks_keep_ids_and_do_not_duplicate(tmp_path):

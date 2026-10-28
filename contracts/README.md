@@ -547,6 +547,6 @@ python -m hostrun.cli status
 - 清理：只按测试 ID 与记录中的卡片/推送/问题/文件/消息/选中论文 ID 删除并逐范围读回确认；有残留或消息不可撤回时保持 `cleanup=blocked`，正式初始化闸门关闭。
 - 正式知识：**新建路径**仅在“测试通过 + 清理读回通过”后开放；`init propose` 需要可读 intake（可读输入、可读全文与用户要求），并快照既有卡片 ID（快照读取失败即拒绝，不写草案）；卡片须用户确认且确认绑定草稿哈希；`init apply` 拒绝更新草案前已存在的卡片 ID（没有覆盖开关），同步后归一化比较字段读回，不一致即 `base_readback_mismatch`。**已有库**由用户显式确认后走 `init adopt-existing` 导入现有卡片，不经过新建测试闸门、不重建也不清空；两条路径完成后都做一次标准检索，测试关键词不复用。
 - `run` 的固定顺序：反馈 → 恢复未完成 → 维护（到期才做）→ 检索闸门。`feedback` 意图**从不**创建检索请求；维护并入当天首次小时检查，未答问题不阻止维护；错过的每日请求合并为一次。
-- 只创建两个宿主任务：`frontier-daily`（用户时区 08:00）与 `frontier-feedback`（每小时，默认第 5 分钟）。任务创建只写 `schedules`；`confirm` 为每个任务生成 proof 并写入命令，运行日志中的 `scheduled=true`、`task=<id>` 且 `proof` 匹配的真实到点记录才能写 `scheduled_run`，两类任务都至少一次后才为 `ok`。
+- 只创建两个宿主任务：`frontier-daily`（用户时区 08:00）与 `frontier-feedback`（每小时，默认第 5 分钟）。正式知识未就绪时 `confirm` 拒绝创建（包括暂停），不写 `schedules` 任务；就绪后 `confirm` 为每个任务生成 proof 并写入命令。运行日志中的 `scheduled=true`、`task=<id>`、`proof` 匹配且运行时间落在计划时间内（±15 分钟启动容差）的记录才能写 `scheduled_run`，手动运行、非到点运行与伪造时间不计；两类任务都至少一次后才为 `ok`。
 - 同一时刻只有一个执行端：另一宿主持有有效租约时返回 `executor_busy`；过期租约可被接管并在 `events.jsonl` 记 `taken_over`；换机必须 `handover`（旧端仍活跃时需 `--force` 并说明）。
 - `feedback rebuild` 从「问题」表重建本地队列，已处理的决定不会被再次应用。
