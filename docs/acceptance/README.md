@@ -1,4 +1,4 @@
-﻿# 验收记录与待补证据
+# 验收记录与待补证据
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下按日期归并证据；规格 [#51](https://github.com/Moke110/frontier/issues/51) 的历史离线实现与本轮文档修订分开记录。历史阻塞须在目标宿主重新探测，不能直接当作当前结果。代码通过离线测试不等于产品通过真实验收。
 
@@ -20,14 +20,14 @@
 |---|---|---|---|
 | workspace（数据根私有解释器） | `hostrun/workspace.py`、`install.py`；`tests/test_hostrun_workspace.py`、`tests/test_hostrun_install.py` | 用 `C:\Python314\python.exe` 执行 `install workspace`：数据根创建、指针写入、代码目录 `git status` 为空；`install toolchain --uv D:\uv\uv.exe` 在数据根创建 Python 3.13.13 环境，解释器路径在代码目录之外 | 代码与离线验收通过；真实依赖下载未在时限内完成，导入探针仅离线覆盖 |
 | lark_cli | `hostrun/lark.py`、`install.py`；绝对路径权威、失效即 `blocked`、`lark discover` 持久化 | 可执行存在且可运行；记录路径 | 代码与离线验收通过；真实 `discover` 持久化未执行 |
-| identity / permissions | 同一就绪规则、user/bot 分列、`needs_refresh` 窗口、细粒度 scope 与旧宽授权、缺项列出、报告脱敏 | user `missing`（DPoP 存储锁）；bot `ready` 但缺 drive/base app scope | 离线通过；真实 Base/Drive 读取 blocked |
+| identity / permissions | 同一就绪规则、user/bot 分列、`needs_refresh` 窗口、细粒度 scope 与旧宽授权、缺项列出、报告脱敏；数据根与 CLI 凭据目录的临时探针写入实测；DPoP 状态词；`--base-token/--folder` 只读预检既有库且不写设施 | user `missing`（DPoP 存储锁）；bot `ready` 但缺 drive/base app scope | 离线通过；真实写入权限与 Base/Drive 读取 blocked |
 | facilities | 12 张契约表 + 字段级读回 + 两个云盘目录 + 稳定 ID + 改名不改 ID + 幂等 | 未创建（未写飞书） | 离线通过；真实创建 untested |
 | test_loop | 测试标识、`retrieved` 从真实 `--plan` 产物取候选数、`written` 选中论文 ID、`rendered` 按 `writer/render.py` 契约校验七段与原文图/生成图图注、评分先于采纳、`verify` 累计逐字段读回 | 未推送、未评分、未采纳 | 离线通过；真实闭环 untested |
 | cleanup | 按测试 ID 与记录 ID 删除、消息撤回、逐范围读回、报道表作用域、失败中止、初始化闸门、幂等 | 未删除任何云端数据 | 离线通过；真实清理 untested |
 | knowledge | intake 闸门、草案确认绑定、归一化字段级读回、拒绝覆盖既有卡片（快照失败即拒绝提案）、标准检索 | 未初始化正式知识 | 离线通过；真实初始化 untested |
 | schedules | 两类宿主任务、绝对解释器/数据根/仓库/技能、触发校验、暂停与恢复、报告区分创建与触发 | 未创建任务、无到点触发 | 离线通过；真实触发 untested |
 
-离线全量：**331 passed, 3 skipped**（在本机用 `python -X utf8 -m pytest -q … tests`；本机 pytest 临时目录需要本地 shim，未进入仓库）。逐票据的离线验收证据见对应 GitHub 票据评论；真实证据缺口见下方“宿主与恢复”和“下一次真实验收”。
+离线全量：**344 passed, 3 skipped**（在本机用 `python -X utf8 -m pytest -q … tests`；本机 pytest 临时目录需要本地 shim，未进入仓库）。逐票据的离线验收证据见对应 GitHub 票据评论；真实证据缺口见下方“宿主与恢复”和“下一次真实验收”。
 
 结论：规格 #51 的代码与离线验收完成；真实端到端验收仍因宿主写策略与飞书身份/scope 阻塞。#52 与 #60 可按离线证据关闭，#53–#59 保持开放并在票据中记录缺口。
 
@@ -89,7 +89,7 @@
 | WorkBuddy 本地宿主 | 历史开发会话验证过项目访问、技能加载、本地命令 | 内置调度实际触发、无人值守权限、真实飞书闭环 | [WorkBuddy 接入与本地定时验收](https://github.com/Moke110/frontier/issues/38) |
 | 云端存量恢复 | 基线核对、分片顺序、配额计算与故障测试；空库会正确报告缺失 | 真实 174 篇核对、云端恢复演练、配额实测与连续三天零差异 | [存量核对与云端恢复验收](https://github.com/Moke110/frontier/issues/39) |
 | 安装说明 | 现行用户入口与运行时技能已统一 | 在目标宿主按最终说明完成新装、恢复并留证 | [统一安装说明并退役旧部署入口](https://github.com/Moke110/frontier/issues/40) |
-| 新安装增量 | 工作区、uv、CLI 预检、设施、临时闭环、清理、正式知识、两类任务均有离线测试；规格 #51 的 #52–#59 代码已合入 `dev`，离线 331 passed / 3 skipped | 真实 CLI/租户/宿主触发；真实 Base/Drive 读、推送/评分/采纳、清理读回、正式初始化与到点触发 | [#41](https://github.com/Moke110/frontier/issues/41) 的子票据 #42–#50；#51 的子票据 #52–#60 |
+| 新安装增量 | 工作区、uv、CLI 预检（含写入权限探针、DPoP 状态与只读既有资源预检）、设施、临时闭环、清理、正式知识、两类任务均有离线测试；规格 #51 的 #52–#59 代码已合入 `dev`，离线 344 passed / 3 skipped | 真实 CLI/租户/宿主触发；真实 Base/Drive 读、推送/评分/采纳、清理读回、正式初始化与到点触发 | [#41](https://github.com/Moke110/frontier/issues/41) 的子票据 #42–#50；#51 的子票据 #52–#60 |
 
 核对时发现 ChatGPT 任务已被标为关闭，但其最后一条验收评论仍写“未实测”，未附新的通过证据；因此本表保留证据缺口，不以 issue 状态推断验收通过。后续执行者须先核对关闭原因与最新证据；本轮不更改 tracker 状态。
 

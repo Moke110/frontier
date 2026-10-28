@@ -15,8 +15,10 @@ scheduler entries.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -55,7 +57,7 @@ STEP_NOTES = {
     "skill": "frontier-run 入口指针及参考文件可读",
     "lark_cli": "飞书 CLI 由显式私有路径解析（仅可执行，未证明已登录）",
     "identity": "飞书 user / bot 身份与登录有效期",
-    "permissions": "Base、Drive、消息、反馈所需权限的真实资源预检",
+    "permissions": "数据根与 CLI 凭据目录写入、Base/Drive 资源读取与消息权限的真实预检",
     "facilities": "Base 本身、各表、原文库与推送库目录的稳定 ID",
     "test_loop": "关键词驱动的临时闭环（推送、评分、采纳、写入）",
     "cleanup": "本次测试副作用的删除与无残留验证",
@@ -145,8 +147,26 @@ def record(
 
 
 # ------------------------------------------------------------------- probes
-def _interpreter_facts(python: str) -> dict:
-    """Version and PyYAML from the *recorded* interpreter, not this process."""
+INTERPRETER_PROBE = (
+    "import sys\n"
+    "def version(name):\n"
+    "    try:\n"
+    "        module = __import__(name)\n"
+    "        return getattr(module, '__version__', 'installed')\n"
+    "    except Exception:\n"
+    "        return ''\n"
+    "print('%d.%d.%d' % sys.version_info[:3])\n"
+    "print(version('yaml'))\n"
+    "print(version('fitz'))\n"
+)
+
+
+def _interpreter_facts(python: str, *, runner=subprocess.run) -> dict:
+    """Version, PyYAML and PyMuPDF from the *recorded* interpreter.
+
+    The probe imports both dependencies the runtime needs (the same pair the
+    toolchain verifies): a YAML-only interpreter is not a usable installation.
+    """
     try:
         if Path(python).resolve() == Path(sys.executable).resolve():
             version = tuple(sys.version_info[:3])
@@ -156,24 +176,39 @@ def _interpreter_facts(python: str) -> dict:
                 has_yaml = True
             except ModuleNotFoundError:
                 has_yaml = False
-            return {"ok": True, "version": version, "yaml": has_yaml, "error": ""}
-        proc = subprocess.run(
-            [
-                python,
-                "-c",
-                "import sys, yaml; print('%d.%d.%d' % sys.version_info[:3]); print(yaml.__version__)",
-            ],
+            try:
+                import fitz  # noqa: F401
+
+                has_fitz = True
+            except ModuleNotFoundError:
+                has_fitz = False
+            return {
+                "ok": True,
+                "version": version,
+                "yaml": has_yaml,
+                "fitz": has_fitz,
+                "error": "",
+            }
+        proc = runner(
+            [python, "-c", INTERPRETER_PROBE],
             capture_output=True,
             text=True,
             timeout=120,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"ok": False, "version": (0, 0, 0), "yaml": False, "error": str(exc)}
+        return {
+            "ok": False,
+            "version": (0, 0, 0),
+            "yaml": False,
+            "fitz": False,
+            "error": str(exc),
+        }
     if proc.returncode != 0:
         return {
             "ok": False,
             "version": (0, 0, 0),
             "yaml": False,
+            "fitz": False,
             "error": (proc.stderr or proc.stdout or "interpreter failed")[-400:],
         }
     lines = (proc.stdout or "").strip().splitlines()
@@ -181,7 +216,13 @@ def _interpreter_facts(python: str) -> dict:
         version = tuple(int(part) for part in lines[0].split("."))
     except (IndexError, ValueError):
         version = (0, 0, 0)
-    return {"ok": bool(lines), "version": version, "yaml": len(lines) > 1, "error": ""}
+    return {
+        "ok": bool(lines),
+        "version": version,
+        "yaml": len(lines) > 1 and bool(lines[1].strip()),
+        "fitz": len(lines) > 2 and bool(lines[2].strip()),
+        "error": "",
+    }
 
 
 def probe_dependencies(
@@ -191,6 +232,7 @@ def probe_dependencies(
     platform: str | None = None,
     home: str | Path | None = None,
     repair: str = "",
+    runner=None,
 ) -> dict:
     """The *recorded* interpreter, PyYAML and a usable repository checkout.
 
@@ -212,6 +254,7 @@ def probe_dependencies(
     notes: list[str] = []
     version = (0, 0, 0)
     has_yaml = False
+    has_fitz = False
     facts = {"ok": False, "error": ""}
     outside_repo = False
     in_data_root = False
@@ -228,9 +271,10 @@ def probe_dependencies(
     elif not outside_repo:
         notes.append(f"解释器位于代码目录内，无法写数据根：{python}")
     else:
-        facts = _interpreter_facts(str(python))
+        facts = _interpreter_facts(str(python), runner=runner or subprocess.run)
         version = facts["version"]
         has_yaml = facts["yaml"]
+        has_fitz = facts["fitz"]
         expected = (Path(home) / workspace_mod.ENV_DIRNAME) if home else None
         in_data_root = bool(expected) and python_path.is_relative_to(expected)
         if not facts["ok"]:
@@ -239,6 +283,8 @@ def probe_dependencies(
             notes.append(f"python {'.'.join(map(str, version))} < 3.11")
         elif not has_yaml:
             notes.append("PyYAML missing in this interpreter")
+        elif not has_fitz:
+            notes.append("PyMuPDF (fitz) missing in this interpreter")
     if missing:
         notes.append("repo missing: " + ", ".join(missing))
     ok = (
@@ -249,6 +295,7 @@ def probe_dependencies(
         and outside_repo
         and version >= MIN_PYTHON
         and has_yaml
+        and has_fitz
         and not missing
     )
     if not ok:
@@ -262,6 +309,7 @@ def probe_dependencies(
             "platform": platform or sys.platform,
             "repo": str(repo),
             "yaml": has_yaml,
+            "fitz": has_fitz,
             "recorded": recorded,
             "outside_repo": outside_repo,
             "in_data_root": in_data_root,
@@ -308,6 +356,69 @@ def probe_lark_cli(home: Path, spec: str | None, *, names: list[str] | None = No
     }
 
 
+# ------------------------------------------------------ write-permission probe
+LARK_STORE_ENV = "LARK_CLI_HOME"
+
+
+def lark_store_dir(store_dir: str | Path | None = None) -> Path:
+    """The Lark CLI credential/config store location, without reading it.
+
+    ``LARK_CLI_HOME`` wins when the CLI is configured to use a non-default
+    store; otherwise the CLI's documented home is ``~/.lark-cli``.
+    """
+    if store_dir:
+        return Path(store_dir).expanduser()
+    configured = os.environ.get(LARK_STORE_ENV)
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".lark-cli"
+
+
+def _probe_file_writer(path: Path) -> None:
+    path.write_text("frontier write probe\n", encoding="utf-8")
+
+
+def _probe_one_write(target: Path, *, writer=None) -> dict:
+    """Create and delete one uniquely named file; carry the exact failure."""
+    target = Path(target).expanduser()
+    probe = target / f".frontier-write-probe-{uuid.uuid4().hex[:8]}"
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        (writer or _probe_file_writer)(probe)
+        probe.unlink()
+    except OSError as exc:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {
+            "status": "blocked",
+            "path": str(target),
+            "probe": str(probe),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    return {"status": "ok", "path": str(target), "probe": str(probe)}
+
+
+def probe_writes(home: str | Path, *, store_dir=None, writer=None) -> dict:
+    """Actual write test for the data root and the CLI credential store.
+
+    Interpreter placement says nothing about host write permission, so both
+    locations are proved with a real create/delete cycle.  Credentials are
+    never read or copied; only a temporary probe file is written and removed.
+    """
+    checks = {
+        "data_root": _probe_one_write(Path(home), writer=writer),
+        "lark_store": _probe_one_write(lark_store_dir(store_dir), writer=writer),
+    }
+    status = (
+        "ok"
+        if all(check["status"] == "ok" for check in checks.values())
+        else "blocked"
+    )
+    return {"status": status, **checks}
+
+
 def parse_auth_status(payload: dict) -> dict:
     """Booleans only: the raw payload can carry tokens.
 
@@ -324,6 +435,8 @@ def parse_auth_status(payload: dict) -> dict:
         "user_status": facts["user"]["status"],
         "bot_status": facts["bot"]["status"],
         "user_open_id_present": facts["user_open_id_present"],
+        "dpop_key_status": facts["dpop_key_status"],
+        "dpop_mode": facts["dpop_mode"],
         "refresh_pending": [
             name
             for name in ("user", "bot")
@@ -452,6 +565,10 @@ def check(
     runner=None,
     platform: str | None = None,
     workspace_root: str | Path | None = None,
+    base_token: str | None = None,
+    folders: list[str] | None = None,
+    store_dir: str | Path | None = None,
+    writer=None,
 ) -> dict:
     """Run every probe that can run offline, record it, return the summary."""
     home = Path(home)
@@ -540,37 +657,57 @@ def check(
     # Authorization and real resource reads are a separate fact from login:
     # a successful identity probe never stands in for them.
     facilities = read_json(home / "install" / "facilities.json") or {}
-    folders = facilities.get("folders") or {}
+    recorded_folders = facilities.get("folders") or {}
+    write_checks = probe_writes(home, store_dir=store_dir, writer=writer)
     authz = lark_mod.authorization(
         results["identity"].get("scopes") or [],
         required=REQUIRED_PERMISSION_SCOPES,
     )
+    explicit_folders = list(folders or [])
+    if not explicit_folders:
+        explicit_folders = [
+            folder
+            for folder in (recorded_folders.get("source"), recorded_folders.get("push"))
+            if folder
+        ]
     resources = lark_mod.resource_preflight(
         home,
         lark_path or None,
-        base_token=(facilities.get("base") or {}).get("token"),
-        source_folder=folders.get("source"),
-        push_folder=folders.get("push"),
+        base_token=base_token or (facilities.get("base") or {}).get("token"),
+        folders=explicit_folders,
         runner=runner,
     )
-    if authz["status"] == "blocked" or resources["status"] == "blocked":
+    write_problems = [
+        f"{label} {check['path']}（{check['error']}）"
+        for label, check in (
+            ("数据根", write_checks["data_root"]),
+            ("飞书 CLI 凭据目录", write_checks["lark_store"]),
+        )
+        if check["status"] != "ok"
+    ]
+    if write_problems or authz["status"] == "blocked" or resources["status"] == "blocked":
         permissions_status = "blocked"
     elif authz["status"] == "ok" and resources["status"] == "ok":
         permissions_status = "ok"
     else:
         permissions_status = "untested"
+    note_parts = []
+    if write_problems:
+        note_parts.append("写入权限不足：" + "；".join(write_problems))
     if not lark_path:
-        permissions_note = "飞书 CLI 不可用，登录、授权范围与资源读取均未验证"
+        note_parts.append("飞书 CLI 不可用，登录、授权范围与资源读取均未验证")
     elif permissions_status == "ok":
-        permissions_note = "授权范围与资源读取均已验证"
+        note_parts.append("授权范围与资源读取均已验证")
     else:
-        permissions_note = authz.get("note") or resources.get("note", "")
+        note_parts.append(authz.get("note") or resources.get("note", ""))
+    permissions_note = "；".join(part for part in note_parts if part)
     results["permissions"] = {
         "status": permissions_status,
         "note": permissions_note,
         "evidence": {
             "granted": authz.get("granted"),
             "missing": authz.get("missing"),
+            "writes": write_checks,
             "base": resources.get("base"),
             "drive": resources.get("drive"),
             "messages": resources.get("messages"),

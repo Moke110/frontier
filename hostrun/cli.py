@@ -62,6 +62,10 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--host-schedules", action="store_true")
     c.add_argument("--permissions", help="comma separated granted scopes")
     c.add_argument("--workspace-root", help="installation workspace recorded by install workspace")
+    c.add_argument("--base-token", dest="base_token",
+                   help="read-only probe of an existing Base without attaching it")
+    c.add_argument("--folder", dest="folders", action="append", default=[],
+                   metavar="TOKEN", help="read-only probe of an existing Drive folder; repeat for each")
     isub.add_parser("status")
     r = isub.add_parser("report")
     r.add_argument("--out")
@@ -212,6 +216,10 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--cli", dest="cli_path")
     ls.add_argument("--required", default="base,drive,messages",
                     help="comma separated capabilities (base,drive,messages) or scope names")
+    ls.add_argument("--base-token", dest="base_token",
+                    help="read-only probe of an existing Base without attaching it")
+    ls.add_argument("--folder", dest="folders", action="append", default=[],
+                    metavar="TOKEN", help="read-only probe of an existing Drive folder; repeat for each")
 
     # ----------------------------------------------------------------------- kb
     p = sub.add_parser("kb", help="knowledge base create / attach / verify")
@@ -556,6 +564,8 @@ def _install(args, root: Path) -> tuple[int, dict]:
             python=args.python_path,
             timezone_name=args.timezone_name,
             workspace_root=args.workspace_root,
+            base_token=args.base_token,
+            folders=args.folders,
         )
         return (0 if result["ok"] else 1), result
     if args.action == "status":
@@ -973,6 +983,8 @@ def _lark(args, root: Path) -> tuple[int, dict]:
         home=data_root,
         required=required,
         spec=spec,
+        base_token=args.base_token,
+        folders=args.folders,
     )
     ensure_dir(data_root / "install")
     install.record(

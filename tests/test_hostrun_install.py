@@ -155,6 +155,57 @@ def test_probe_dependencies_accepts_an_existing_outside_interpreter(tmp_path):
     assert result["evidence"]["python_version"].count(".") == 2
 
 
+def _fake_python(tmp_path, name="python.exe"):
+    binary = tmp_path / "tools" / name
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("", encoding="utf-8")
+    return binary
+
+
+def _import_probe_runner(lines):
+    class Proc:
+        returncode = 0
+        stderr = ""
+        stdout = "\n".join(lines) + "\n"
+
+    return lambda argv, **kwargs: Proc()
+
+
+def test_probe_dependencies_blocks_an_interpreter_without_pymupdf(tmp_path):
+    # yaml imports, fitz does not: PyMuPDF is a required dependency, not an
+    # optional extra (workspace.check_runtime asserts both).
+    repo = tmp_path / "repo"
+    _seed_repo_files(repo)
+    python = _fake_python(tmp_path)
+
+    result = install.probe_dependencies(
+        repo,
+        python=str(python),
+        runner=_import_probe_runner(["3.13.1", "6.0.1"]),
+    )
+
+    assert result["status"] == "blocked"
+    assert "PyMuPDF" in result["note"]
+    assert result["evidence"]["yaml"] is True
+    assert result["evidence"]["fitz"] is False
+
+
+def test_probe_dependencies_accepts_yaml_and_fitz(tmp_path):
+    repo = tmp_path / "repo"
+    _seed_repo_files(repo)
+    python = _fake_python(tmp_path)
+
+    result = install.probe_dependencies(
+        repo,
+        python=str(python),
+        runner=_import_probe_runner(["3.13.1", "6.0.1", "1.24.0"]),
+    )
+
+    assert result["status"] == "ok"
+    assert result["evidence"]["yaml"] is True
+    assert result["evidence"]["fitz"] is True
+
+
 def test_probe_identity_reads_booleans_only():
     payload = {
         "identities": {
@@ -209,7 +260,9 @@ def test_check_works_with_chinese_and_space_paths(tmp_path, monkeypatch):
     repo = layout / "代码 checkout"
     _seed_repo_files(repo)
 
-    result = install.check(home, repo=repo, host=_host())
+    result = install.check(
+        home, repo=repo, host=_host(), store_dir=tmp_path / "lark-cli-home"
+    )
 
     assert result["steps"]["host"] == "ok"
     assert result["steps"]["dependencies"] == "ok"
@@ -248,7 +301,12 @@ def test_check_never_falls_back_to_the_running_interpreter(tmp_path, monkeypatch
 
     update_config(home, paths={"python": ""})
 
-    result = install.check(home, host=_host(), workspace_root=root)
+    result = install.check(
+        home,
+        host=_host(),
+        workspace_root=root,
+        store_dir=tmp_path / "lark-cli-home",
+    )
 
     assert result["steps"]["dependencies"] == "blocked"
     note = install.load_state(home)["steps"]["dependencies"]["note"]
@@ -277,6 +335,7 @@ def test_check_merges_host_and_lark_permissions_once(tmp_path, monkeypatch):
         host=_host(),
         python=__import__("sys").executable,
         runner=runner,
+        store_dir=tmp_path / "lark-cli-home",
     )
 
     config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
@@ -323,6 +382,156 @@ def test_stale_evidence_flags_old_steps(tmp_path):
     install.save_state(tmp_path, state)
 
     assert "host" in install.stale_evidence(tmp_path, days=7)
+
+
+def test_cli_install_check_accepts_explicit_read_only_tokens(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_check(home, **kwargs):
+        captured["home"] = Path(home)
+        captured.update(kwargs)
+        return {"ok": True, "steps": {}, "next": None}
+
+    monkeypatch.setattr(install, "check", fake_check)
+
+    code = cli.main(
+        [
+            "--home",
+            str(tmp_path / "home"),
+            "install",
+            "check",
+            "--base-token",
+            "bas_probe",
+            "--folder",
+            "fld_one",
+            "--folder",
+            "fld_two",
+        ]
+    )
+
+    assert code == 0
+    assert captured["base_token"] == "bas_probe"
+    assert captured["folders"] == ["fld_one", "fld_two"]
+
+
+# ------------------------------------------------ write-permission preflight
+def test_probe_writes_creates_and_removes_unique_probes(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    store = tmp_path / "lark-cli-home"
+
+    result = install.probe_writes(home, store_dir=store)
+
+    assert result["status"] == "ok"
+    assert result["data_root"]["status"] == "ok"
+    assert result["lark_store"]["status"] == "ok"
+    assert result["lark_store"]["path"] == str(store)
+    assert not list(home.glob(".frontier-write-probe-*"))
+    assert not list(store.glob(".frontier-write-probe-*"))
+
+
+def test_probe_writes_uses_lark_cli_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    store = tmp_path / "custom-store"
+    monkeypatch.setenv("LARK_CLI_HOME", str(store))
+
+    result = install.probe_writes(home)
+
+    assert result["lark_store"]["path"] == str(store)
+
+
+def test_probe_writes_reports_the_exact_denied_store_path(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    store = tmp_path / "locked-store"
+
+    def writer(path):
+        if path.parent.resolve() == store.resolve():
+            raise PermissionError(13, "access denied", str(path))
+        path.write_text("probe", encoding="utf-8")
+
+    result = install.probe_writes(home, store_dir=store, writer=writer)
+
+    assert result["status"] == "blocked"
+    assert result["data_root"]["status"] == "ok"
+    assert result["lark_store"]["status"] == "blocked"
+    assert result["lark_store"]["path"] == str(store)
+    assert "denied" in result["lark_store"]["error"]
+
+
+def test_check_blocks_permissions_when_a_write_probe_is_denied(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    store = tmp_path / "lark-cli-home"
+
+    def writer(path):
+        raise PermissionError(13, "access denied", str(path))
+
+    result = install.check(
+        home,
+        repo=Path(__file__).resolve().parents[1],
+        host=_host(),
+        store_dir=store,
+        writer=writer,
+    )
+
+    assert result["steps"]["permissions"] == "blocked"
+    entry = install.load_state(home)["steps"]["permissions"]
+    assert "写入权限" in entry["note"]
+    assert str(home) in entry["note"]
+    assert str(store) in entry["note"]
+    assert entry["evidence"]["writes"]["data_root"]["status"] == "blocked"
+    assert entry["evidence"]["writes"]["lark_store"]["status"] == "blocked"
+
+
+def test_check_reads_explicit_tokens_without_attaching_the_library(tmp_path):
+    home = tmp_path / "home"
+    (home / "install").mkdir(parents=True)
+    facilities = home / "install" / "facilities.json"
+    original = json.dumps(
+        {"base": {"token": "bas_recorded"}, "folders": {"source": "fld_old", "push": "fld_old_push"}},
+        ensure_ascii=False,
+    )
+    facilities.write_text(original, encoding="utf-8")
+    binary = home / "bin" / "lark-cli"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append([str(item) for item in argv])
+        if "auth" in argv:
+            return _Proc(stdout=json.dumps(_auth_payload()))
+        if "+table-list" in argv:
+            return _Proc(stdout=json.dumps({"ok": True, "data": {"tables": []}}))
+        if "files" in argv and "list" in argv:
+            return _Proc(stdout=json.dumps({"ok": True, "data": {"files": []}}))
+        return _Proc(stdout="{}")
+
+    result = install.check(
+        home,
+        repo=Path(__file__).resolve().parents[1],
+        host=_host(),
+        store_dir=tmp_path / "lark-cli-home",
+        base_token="bas_probe",
+        folders=["fld_probe_one", "fld_probe_two"],
+        runner=runner,
+    )
+
+    assert result["steps"]["permissions"] == "ok"
+    entry = install.load_state(home)["steps"]["permissions"]
+    assert entry["evidence"]["base"]["status"] == "ok"
+    assert entry["evidence"]["drive"]["status"] == "ok"
+    joined = [" ".join(call) for call in calls]
+    assert any("bas_probe" in call for call in joined)
+    assert any("fld_probe_one" in call for call in joined)
+    assert any("fld_probe_two" in call for call in joined)
+    assert not any("bas_recorded" in call for call in joined)
+    # Read-only: the recorded facilities and the absent library config are untouched.
+    assert facilities.read_text(encoding="utf-8") == original
+    assert not (home / "knowledge" / "base.json").exists()
+
 
 
 # -------------------------------------------------- install toolchain step
@@ -493,7 +702,11 @@ def test_check_records_the_permissions_step_from_the_real_preflight(tmp_path):
         return _Proc(stdout="{}")
 
     result = install.check(
-        home, repo=Path(__file__).resolve().parents[1], host=_host(), runner=runner
+        home,
+        repo=Path(__file__).resolve().parents[1],
+        host=_host(),
+        runner=runner,
+        store_dir=tmp_path / "lark-cli-home",
     )
 
     assert result["steps"]["permissions"] == "untested"
@@ -503,6 +716,8 @@ def test_check_records_the_permissions_step_from_the_real_preflight(tmp_path):
     assert entry["evidence"]["missing"] == []
     assert entry["evidence"]["base"]["status"] == "untested"
     assert entry["evidence"]["drive"]["status"] == "untested"
+    assert entry["evidence"]["writes"]["data_root"]["status"] == "ok"
+    assert entry["evidence"]["writes"]["lark_store"]["status"] == "ok"
     assert any("--verify" in call for call in calls)
     report = install.report(home)
     assert "permissions" in [row["step"] for row in report["untested"]]
@@ -540,7 +755,11 @@ def test_check_reads_facilities_folders_for_the_resource_preflight(tmp_path):
         return _Proc(stdout="{}")
 
     result = install.check(
-        home, repo=Path(__file__).resolve().parents[1], host=_host(), runner=runner
+        home,
+        repo=Path(__file__).resolve().parents[1],
+        host=_host(),
+        runner=runner,
+        store_dir=tmp_path / "lark-cli-home",
     )
 
     assert result["steps"]["permissions"] == "ok"
@@ -560,7 +779,10 @@ def test_check_without_a_cli_records_permissions_blocked(tmp_path, monkeypatch):
     home.mkdir()
 
     result = install.check(
-        home, repo=Path(__file__).resolve().parents[1], host=_host()
+        home,
+        repo=Path(__file__).resolve().parents[1],
+        host=_host(),
+        store_dir=tmp_path / "lark-cli-home",
     )
 
     assert result["steps"]["lark_cli"] == "blocked"

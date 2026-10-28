@@ -51,11 +51,15 @@ python -m hostrun.cli lark discover --root <workspace>
 python -m hostrun.cli lark install --root <workspace>     # 缺失时私有安装 @larksuite/cli
 python -m hostrun.cli lark login --root <workspace>       # 只输出用户要执行的登录命令
 python -m hostrun.cli lark status --root <workspace>      # 可执行 / 身份 / 授权范围 / 资源读取
+# 对既有库做只读预检，不接入也不修改：
+python -m hostrun.cli lark status --root <workspace> --base-token <base-token> --folder <drive-folder-token>
+python -m hostrun.cli --home <home> install check --base-token <base-token> --folder <drive-folder-token>
 ```
 
 - 可执行、已登录、授权范围、真实资源读取是四件事，分别报告。
 - 登录、管理员授权必须由用户完成；agent 不伪造、不静默扩大权限。
-- 设施创建前可对有权限的既有资源做只读 Base/Drive 预检，不代表接入或允许修改该库；没有可用资源时标 `untested`。设施就绪后还须读回新设施；要求预先成功读取的票据不能以 `untested` 通过。
+- `install check` 在 `permissions` 步骤**实测**数据根与 CLI 凭据目录（`LARK_CLI_HOME`，未设置时 `~/.lark-cli`）的写入：各创建一个随机临时探针文件再删除，任一失败即 `blocked`，note 给出具体路径与错误。身份证据另报 `dpop_key_status`/`dpop_mode` 状态词，不含密钥或用户标识原文。
+- `--base-token` 与可重复的 `--folder` 让预检读取既有 Base/Drive 资源，只发读请求：不写 `install/facilities.json`，不创建或接入 `knowledge/base.json`。设施创建前可对有权限的既有资源做只读 Base/Drive 预检，不代表接入或允许修改该库；没有可用资源时标 `untested`。设施就绪后还须读回新设施；要求预先成功读取的票据不能以 `untested` 通过。
 - 状态命令与报告都不含 token；凭据只保存在 `lark-cli` 自己的机制里。
 
 ### 3.3 设施（Base、表、云盘目录）
