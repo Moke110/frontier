@@ -234,6 +234,144 @@ def test_resource_preflight_never_claims_permission_from_a_failure(tmp_path):
     assert result["status"] == "blocked"
 
 
+def test_identity_reports_dpop_key_status_without_secrets():
+    payload = _auth_payload(dpopKeyStatus="missing", dpopMode="required")
+    payload["identities"]["user"]["accessToken"] = "secret-access"
+
+    result = lark.identity("lark-cli", runner=lambda argv, **kwargs: Proc(stdout=json.dumps(payload)))
+
+    assert result["status"] == "ok"
+    assert result["evidence"]["dpop_key_status"] == "missing"
+    assert result["evidence"]["dpop_mode"] == "required"
+    assert "ou_x" not in json.dumps(result)
+    assert "secret-access" not in json.dumps(result)
+
+
+def test_user_open_id_returns_the_authenticated_user():
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append([str(item) for item in argv])
+        return Proc(stdout=json.dumps(_auth_payload()))
+
+    result = lark.user_open_id("lark-cli", runner=runner)
+
+    assert result == {"ok": True, "open_id": "ou_x"}
+    assert calls[0][:3] == ["lark-cli", "auth", "status"]
+    assert "--verify" in calls[0]
+
+
+def test_user_open_id_is_absent_when_not_reported():
+    payload = _auth_payload()
+    del payload["identities"]["user"]["userOpenId"]
+
+    result = lark.user_open_id(
+        "lark-cli", runner=lambda argv, **kwargs: Proc(stdout=json.dumps(payload))
+    )
+
+    assert result == {"ok": False, "open_id": ""}
+
+
+def test_status_accepts_explicit_tokens_without_writing_the_library(tmp_path):
+    home = tmp_path / "home"
+    (home / "install").mkdir(parents=True)
+    (home / "install" / "facilities.json").write_text(
+        json.dumps(
+            {
+                "base": {"token": "bas_recorded"},
+                "folders": {"source": "fld_old", "push": "fld_old_push"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (home / "knowledge").mkdir()
+    (home / "knowledge" / "base.json").write_text(
+        json.dumps({"base_token": "bas_recorded"}), encoding="utf-8"
+    )
+    root = tmp_path / "ws"
+    binary = root / ".frontier" / "bin" / ("lark-cli.cmd" if os.name == "nt" else "lark-cli")
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+    before = {
+        path.relative_to(home): path.read_bytes()
+        for path in home.rglob("*")
+        if path.is_file()
+    }
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append([str(item) for item in argv])
+        if "auth" in argv:
+            return Proc(stdout=json.dumps(_auth_payload()))
+        if "+table-list" in argv:
+            return Proc(stdout=json.dumps({"ok": True, "data": {"tables": []}}))
+        if "files" in argv and "list" in argv:
+            return Proc(stdout=json.dumps({"ok": True, "data": {"files": []}}))
+        return Proc(stdout="{}")
+
+    result = lark.status(
+        root,
+        home=home,
+        required=[],
+        runner=runner,
+        base_token="bas_probe",
+        folders=["fld_probe_one", "fld_probe_two"],
+    )
+
+    assert result["resources"]["status"] == "ok"
+    joined = [" ".join(call) for call in calls]
+    assert any("bas_probe" in call for call in joined)
+    assert any("fld_probe_one" in call for call in joined)
+    assert any("fld_probe_two" in call for call in joined)
+    assert not any("bas_recorded" in call for call in joined)
+    after = {
+        path.relative_to(home): path.read_bytes()
+        for path in home.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
+def test_cli_status_accepts_explicit_tokens(tmp_path, monkeypatch):
+    root, home = _workspace(tmp_path)
+    captured = {}
+
+    def fake_status(root_arg, **kwargs):
+        captured["root"] = Path(root_arg)
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "cli": {"status": "ok", "path": "lark-cli"},
+            "identity": {"status": "ok", "note": "", "evidence": {}},
+            "authorization": {"status": "ok", "note": "", "granted": [], "missing": []},
+            "resources": {"status": "ok", "note": ""},
+            "checked_at": "2026-10-29T00:00:00+08:00",
+        }
+
+    monkeypatch.setattr(lark, "status", fake_status)
+
+    code = cli.main(
+        [
+            "--home",
+            str(home),
+            "lark",
+            "status",
+            "--root",
+            str(root),
+            "--base-token",
+            "bas_probe",
+            "--folder",
+            "fld_one",
+            "--folder",
+            "fld_two",
+        ]
+    )
+
+    assert code == 0
+    assert captured["base_token"] == "bas_probe"
+    assert captured["folders"] == ["fld_one", "fld_two"]
+
+
 def test_status_never_echoes_credentials(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", "")
     binary = tmp_path / ".frontier" / "bin" / ("lark-cli.cmd" if os.name == "nt" else "lark-cli")
