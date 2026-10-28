@@ -16,7 +16,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("validate", help="check every knowledge card has its four fields")
+    p = sub.add_parser("validate", help="check every knowledge card has its four fields")
+    p.add_argument(
+        "--include-temporary",
+        action="store_true",
+        help="also validate the temporary acceptance cards owned by `hostrun smoke`",
+    )
     sub.add_parser("show")
 
     p = sub.add_parser("plan", help="emit retrieval queries")
@@ -38,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     root = home(args.home)
     try:
         if args.cmd == "validate":
-            emit(validate(root))
+            emit(validate(root, include_temporary=args.include_temporary))
         elif args.cmd == "show":
             emit(show(root))
         elif args.cmd == "plan":
