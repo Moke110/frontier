@@ -13,12 +13,16 @@ from library.offline import JsonBase
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _fresh_base(tmp_path) -> JsonBase:
-    base = JsonBase(tmp_path / "home" / "library" / "offline-base.json")
+def _empty_base(path: Path) -> JsonBase:
+    base = JsonBase(path)
     base.meta = []
     base.fields = {}
     base.tables = {}
     return base
+
+
+def _fresh_base(tmp_path) -> JsonBase:
+    return _empty_base(tmp_path / "home" / "library" / "offline-base.json")
 
 
 class FakeAdmin:
@@ -104,6 +108,7 @@ def test_repeat_create_reuses_ids_and_never_creates_a_second_base(tmp_path):
     assert first["ok"] and second["ok"]
     assert admin.created == 1
     assert second["reused"] is True
+    assert second["base"]["token"] == first["base"]["token"]
     assert len(base.list_tables()) == table_count
 
 
@@ -133,48 +138,105 @@ def test_dry_run_writes_nothing(tmp_path):
     assert not (home / "install" / "facilities.json").exists()
 
 
-def test_ambiguous_same_name_blocks_instead_of_switching(tmp_path):
+def test_same_name_tenant_library_is_left_untouched_and_a_new_base_is_created(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    tenant = _empty_base(tmp_path / "tenant" / "existing-base.json")
+    tenant_cards = tenant.create_table("知识卡片", kb.KNOWLEDGE_SCHEMA["cards"])
+    tenant.create(tenant_cards, [{"卡片 ID": "card_keep", "label": "既有知识"}])
+    tenant_tables_before = tenant.list_tables()
+    tenant_rows_before = tenant.list(tenant_cards)
+
+    new_base = _fresh_base(tmp_path)
+    admin = FakeAdmin(new_base, matches=[{"base_token": "bastenant", "name": "研究库"}])
+
+    result = facilities.create(
+        home,
+        names=_names(),
+        confirmed=True,
+        admin=admin,
+        client=new_base,
+        drive=FixtureDrive(),
+    )
+
+    assert result["ok"] is True
+    assert admin.created == 1
+    assert admin.created_names == ["研究库"]
+    assert result["base"]["token"] != "bastenant"
+    assert result["existing_same_name"]["count"] == 1
+    assert tenant.list_tables() == tenant_tables_before
+    assert tenant.list(tenant_cards) == tenant_rows_before
+    assert len(new_base.list_tables()) == len(facilities.KEYS)
+
+
+def test_duplicate_same_name_bases_do_not_block_creation_or_get_adopted(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     base = _fresh_base(tmp_path)
     admin = FakeAdmin(
         base,
         matches=[
-            {"base_token": "bas_one", "name": "研究库"},
-            {"base_token": "bas_two", "name": "研究库"},
+            {"base_token": "basone", "name": "研究库"},
+            {"base_token": "bastwo", "name": "研究库"},
         ],
     )
 
-    result = facilities.create(home, names=_names(), confirmed=True, admin=admin, client=base)
+    result = facilities.create(
+        home, names=_names(), confirmed=True, admin=admin, client=base, drive=FixtureDrive()
+    )
 
-    assert result["ok"] is False
-    assert result["reason"] == "ambiguous_base"
-    assert admin.created == 0
+    assert result["ok"] is True
+    assert admin.created == 1
+    assert result["base"]["token"] == "basoffline"
+    assert result["base"]["token"] not in ("basone", "bastwo")
+    assert result["existing_same_name"]["count"] == 2
+    assert result["existing_same_name"]["names"] == ["研究库", "研究库"]
 
 
-def test_same_name_without_frontier_table_is_not_reused(tmp_path, monkeypatch):
+def test_plan_warns_about_same_name_bases_without_writing(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     base = _fresh_base(tmp_path)
-    base.create_table("别人的表", [{"name": "x", "type": "text"}])
-    admin = FakeAdmin(base, matches=[{"base_token": "bas_other", "name": "研究库"}])
-
-    class Probe(JsonBase):
-        pass
-
-    import library.base
-
-    monkeypatch.setattr(
-        library.base,
-        "LarkBaseClient",
-        lambda config, **kwargs: JsonBase(tmp_path / "home" / "library" / "offline-base.json"),
+    admin = FakeAdmin(
+        base,
+        matches=[
+            {"base_token": "basone", "name": "研究库"},
+            {"base_token": "bastwo", "name": "研究库"},
+        ],
     )
 
-    result = facilities.create(home, names=_names(), confirmed=True, admin=admin, client=base)
+    result = facilities.plan(home, _names(), admin=admin)
 
-    assert result["ok"] is False
-    assert result["reason"] == "unrelated_base"
-    assert admin.created == 0
+    assert result["ok"] is True
+    assert result["existing_same_name"]["count"] == 2
+    assert result["existing_same_name"]["names"] == ["研究库", "研究库"]
+    assert "facilities attach" in result["existing_same_name"]["note"]
+    assert not (home / "install").exists()
+    assert not (home / "knowledge").exists()
+
+
+def test_attach_connects_an_existing_base_explicitly(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    tenant = _empty_base(tmp_path / "tenant" / "existing-base.json")
+    tenant.create_table("知识卡片", kb.KNOWLEDGE_SCHEMA["cards"])
+
+    result = facilities.attach(
+        home,
+        "https://example.feishu.cn/base/bastenant",
+        names=_names(),
+        confirmed=True,
+        client=tenant,
+        drive=FixtureDrive(),
+        create_missing=True,
+    )
+
+    assert result["attached"] is True
+    assert result["ok"] is True
+    assert result["base"]["token"] == "bastenant"
+    config = json.loads((home / "knowledge" / "base.json").read_text(encoding="utf-8"))
+    assert config["base_token"] == "bastenant"
+    assert len(result["tables"]) == len(facilities.KEYS)
 
 
 def test_rename_keeps_the_stable_table_id_usable(tmp_path):
