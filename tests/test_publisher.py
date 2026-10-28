@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from publisher.cards import build_approval_card, build_confirmation_card, build_rating_card
 from publisher.service import handle_event, send_push, send_rating
 
@@ -247,3 +249,82 @@ def test_put_push_is_skipped_without_library_config(kl_home, tmp_path):
         "ok": True,
         "skipped": "legacy_pdf",
     }
+
+
+# ------------------------------------------------- message read-back (recall)
+class _Proc:
+    def __init__(self, stdout, returncode=0):
+        self.stdout = stdout
+        self.returncode = returncode
+
+
+def _fake_api(monkeypatch, payload, *, returncode=0):
+    from publisher import feishu
+
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return _Proc(json.dumps(payload, ensure_ascii=False), returncode)
+
+    monkeypatch.setattr(feishu.subprocess, "run", run)
+    return calls
+
+
+def test_get_message_reads_a_present_message_by_id(monkeypatch):
+    from publisher import feishu
+
+    calls = _fake_api(
+        monkeypatch, {"ok": True, "data": {"items": [{"message_id": "om_1"}]}}
+    )
+
+    result = feishu.get_message("om_1", executable="C:/bin/lark-cli")
+
+    assert result["present"] is True
+    assert result["message_id"] == "om_1"
+    assert calls[0][:4] == [
+        "C:/bin/lark-cli",
+        "api",
+        "GET",
+        "/open-apis/im/v1/messages/om_1",
+    ]
+
+
+def test_get_message_treats_a_recalled_message_as_gone(monkeypatch):
+    from publisher import feishu
+
+    _fake_api(
+        monkeypatch,
+        {"ok": True, "data": {"items": [{"message_id": "om_1", "deleted": True}]}},
+    )
+
+    assert feishu.get_message("om_1")["present"] is False
+
+
+def test_get_message_treats_a_documented_not_found_as_gone(monkeypatch):
+    from publisher import feishu
+
+    _fake_api(
+        monkeypatch,
+        {"ok": False, "error": {"code": 230006, "msg": "message not found"}},
+        returncode=1,
+    )
+
+    result = feishu.get_message("om_1")
+
+    assert result["present"] is False
+    assert result["message_id"] == "om_1"
+
+
+def test_get_message_raises_when_the_read_cannot_prove_absence(monkeypatch):
+    from publisher import feishu
+
+    _fake_api(
+        monkeypatch,
+        {"ok": False, "error": {"code": 99991663, "msg": "permission denied"}},
+        returncode=1,
+    )
+
+    with pytest.raises(feishu.FeishuError):
+        feishu.get_message("om_1")
+
