@@ -318,7 +318,9 @@ def plan(home: Path, *, days: int = 7, out: Path | None = None) -> dict:
         raise HostRunError("没有进行中的临时测试")
     from frontier.model import plan as build_plan
 
-    full = build_plan(home, days=days)
+    # Formal loading hides ``card_smoke_*``; the temporary plan is the one
+    # place that may read its own acceptance card, then keeps only its queries.
+    full = build_plan(home, days=days, include_temporary=True)
     card_id = (state.get("card") or {}).get("id")
     queries = [row for row in full.get("queries") or [] if row.get("card_id") == card_id]
     result = {**full, "queries": queries, "smoke": state.get("test_id")}
@@ -342,7 +344,7 @@ def brief(home: Path) -> dict:
         f"--evidence '{{...}}'"
     )
     steps = [
-        "python -m frontier.cli validate",
+        "python -m frontier.cli validate --include-temporary（临时卡片也校验）",
         f'python -m hostrun.cli --home "{home}" smoke plan --out "{home / PLAN_REL}"',
         f'python -m retriever.cli fetch --plan "{home / PLAN_REL}" --out '
         f'"<临时目录>/{test_id}-candidates.jsonl" --source live',
