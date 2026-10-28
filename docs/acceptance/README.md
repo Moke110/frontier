@@ -1,6 +1,38 @@
-# 验收记录与待补证据
+﻿# 验收记录与待补证据
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下按日期归并证据；规格 [#51](https://github.com/Moke110/frontier/issues/51) 的历史离线实现与本轮文档修订分开记录。历史阻塞须在目标宿主重新探测，不能直接当作当前结果。代码通过离线测试不等于产品通过真实验收。
+
+## 2026-10-29 DeepSeek Harness 重新预检（真实只读；未写云端）
+
+本轮在 DeepSeek Harness 0.2.1-rc.3（`D:\dsh\DeepSeek Harness.exe` 的产品版本；会话工作区 `E:\Desktop\frontier`，策略 workspace-write）重新执行规格 #51 要求的权限预检。**未创建 Base、未发送消息、未创建宿主任务、未删除任何云端数据。**
+
+| 项目 | 实测结果 |
+|---|---|
+| 数据根写入 | 创建 `E:\Desktop\frontier-archive` 失败（`E:\Desktop` 不可写）；在 `E:\Desktop` 内写探测文件被拒绝（Access denied）。会话工作区 `E:\Desktop\frontier` 与会话临时目录可写。 |
+| CLI 凭据存储写入 | 写 `C:\Users\Chang\.lark-cli` 被拒绝（Access denied）。`lark-cli auth status --json --verify` 告警 `local DPoP setup failed ... failed to acquire key storage lock`；`dpopKeyStatus: missing`。 |
+| CLI 可执行 | `lark-cli 1.0.98`（npx 缓存中的绝对路径）可运行。 |
+| 身份 | bot `ready` 且 `verified: true`；user `missing`（DPoP 密钥不可用；令牌 `needs_refresh`，刷新窗口至 2026-11-03）。 |
+| 授权 / 真实资源读取 | user：`drive files list --as user` → 退出码 5，`file_io: failed to acquire token storage lock`；bot：→ 退出码 3，`app_scope_not_applied`，缺 `drive:drive`、`drive:drive:readonly`、`space:document:retrieve`。真实 Base 与 Drive 读取均未成功。 |
+| 研究输入 | `E:\Desktop\PDFs` 的 162 个 PDF 全部可提取（3046 页、13,573,742 字符；提取失败 0）。这只是可读性证据，未执行正式初始化。 |
+
+结论：#53 的真实预检仍然阻塞，阻塞项为（1）宿主对数据根与 CLI 凭据存储的写入权限；（2）飞书 user 身份（DPoP 存储锁）；（3）应用未申请 Drive scope。三者都是宿主/账号层前置条件，属于需要用户完成的登录、授权与宿主权限，不能通过移动解释器、重建数据根或改用全局完全访问绕过。因此 #53–#59 继续保持开放；本轮不宣称任何真实闭环通过。
+
+**会话边界。** 安装设计要求宿主会话的工作区是“安装工作区”，即同时包含代码目录与数据根两个子目录的宿主项目文件夹（README 的“工作区”）。本次会话工作区是代码目录 `E:\Desktop\frontier` 本身，数据根 `E:\Desktop\frontier-archive` 因而位于会话工作区之外，这是本轮数据根写权限阻塞的直接原因之一；需要在以安装工作区（例如 `E:\Desktop`）为工作区的宿主会话中重新预检。CLI 凭据存储位于用户目录（`C:\Users\Chang\.lark-cli`），即使工作区正确也仍需宿主允许该路径写入；前置条件未具备时按要求记录 blocked，不迁移凭据。
+
+## 2026-10-29 规格 #51 修订标准补全（离线完成；真实验收未执行）
+
+2026-10-28 首次实现后，规格 #51 与 #53–#59 的验收标准于当晚更新，新增了写权限预检、既有库只读预检、独立新 Base、临时卡片隔离、收件人核验与提交/发送证据、清理消息读回、到点触发与知识就绪闸门等要求。本轮按更新后的标准补齐代码与离线测试：
+
+| 票据 | 补全内容 | 离线测试 |
+|---|---|---|
+| #53 | 数据根与 CLI 凭据存储写权限探针（写后即删，拒绝即 `blocked`）；DPoP 状态进入报告；`lark status` / `install check` 支持显式 Base/目录 token 的只读预检且不接入既有库；依赖导入探针含 PyMuPDF | `test_hostrun_install.py`、`test_hostrun_lark.py` |
+| #54 | `facilities create` 不再按同名自动收养既有库，而是创建独立新 Base；同名既有库只在 plan 中提示、不改动；重跑仍按记录 ID 幂等 | `test_hostrun_facilities.py` |
+| #55 | 正式检索加载知识卡片时排除 `card_smoke_*` 临时卡片，临时检索式不进入日常输入 | `test_frontier.py`、`test_hostrun_smoke.py` |
+| #56 | 收件人必须是已认证 user 的 open_id；评分/采纳须有用户本人提交的已提交答案且与记录一致；发送前登记尝试，结果不明时拒绝盲目重发并可对账；`rendered` 须关联本次测试的推送库记录 | `test_hostrun_smoke.py`、`test_publisher.py` |
+| #57 | 撤回消息后读回确认；清理报告按 Base、消息、云盘文件、本地文件与队列分范围给出删除计数 | `test_hostrun_cleanup.py` |
+| #59 | 触发证据须落在任务计划窗口内（每日 08:00 / 每小时第 5 分钟，15 分钟启动容忍）；`host_created` 一律要求知识就绪，暂停路径同样拒绝 | `test_hostrun_schedules.py` |
+
+离线全量：**378 passed, 3 skipped**（本机 `python -X utf8 -m pytest -q … tests`，pytest 临时目录使用本地 shim，未进入仓库）。本轮未执行真实 Base/Drive 读取、真实推送与用户评分/采纳、清理读回、正式知识初始化或到点触发；#53–#59 的缺口与阻塞见各自票据评论，票据保持开放。
 
 ## 2026-10-28 文档与规格修订（未执行真实验收）
 
@@ -27,7 +59,7 @@
 | knowledge | intake 闸门、草案确认绑定、归一化字段级读回、拒绝覆盖既有卡片（快照失败即拒绝提案）、标准检索 | 未初始化正式知识 | 离线通过；真实初始化 untested |
 | schedules | 两类宿主任务、绝对解释器/数据根/仓库/技能、触发校验、暂停与恢复、报告区分创建与触发 | 未创建任务、无到点触发 | 离线通过；真实触发 untested |
 
-离线全量：**344 passed, 3 skipped**（在本机用 `python -X utf8 -m pytest -q … tests`；本机 pytest 临时目录需要本地 shim，未进入仓库）。逐票据的离线验收证据见对应 GitHub 票据评论；真实证据缺口见下方“宿主与恢复”和“下一次真实验收”。
+离线全量：**331 passed, 3 skipped**（在本机用 `python -X utf8 -m pytest -q … tests`；本机 pytest 临时目录需要本地 shim，未进入仓库）。逐票据的离线验收证据见对应 GitHub 票据评论；真实证据缺口见下方“宿主与恢复”和“下一次真实验收”。
 
 结论：规格 #51 的代码与离线验收完成；真实端到端验收仍因宿主写策略与飞书身份/scope 阻塞。#52 与 #60 可按离线证据关闭，#53–#59 保持开放并在票据中记录缺口。
 
@@ -64,7 +96,7 @@
 |---|---|---|
 | 工作区获取/复用、私有 uv、uv 解释器、`frontier-run` 指针 | `hostrun/workspace.py` | `tests/test_hostrun_workspace.py`（16） |
 | CLI 发现/私有安装、登录状态、授权范围、Base/Drive 读取预检 | `hostrun/lark.py`、`library/admin.py` | `tests/test_hostrun_lark.py`（12） |
-| Base 本身/表/目录创建、确认命名、稳定 ID、同名 Base 提示而不复用、已有库显式接入 | `hostrun/facilities.py` | `tests/test_hostrun_facilities.py`（15） |
+| Base 本身/表/目录创建、确认命名、稳定 ID、同名去重、已有库接入 | `hostrun/facilities.py` | `tests/test_hostrun_facilities.py`（11） |
 | 关键词临时卡片、步骤状态机、读回验证 | `hostrun/smoke.py` | `tests/test_hostrun_smoke.py`（9） |
 | 按测试 ID 清理、删除读回、不可撤回/残留报告、幂等重跑、私有 CLI 撤回 | `hostrun/cleanup.py` | `tests/test_hostrun_cleanup.py`（8） |
 | 文献/要求摄取、卡片校验、用户确认、写入飞书、标准检索、已有库导入 | `hostrun/initialize.py` | `tests/test_hostrun_initialize.py`（11） |
@@ -89,7 +121,7 @@
 | WorkBuddy 本地宿主 | 历史开发会话验证过项目访问、技能加载、本地命令 | 内置调度实际触发、无人值守权限、真实飞书闭环 | [WorkBuddy 接入与本地定时验收](https://github.com/Moke110/frontier/issues/38) |
 | 云端存量恢复 | 基线核对、分片顺序、配额计算与故障测试；空库会正确报告缺失 | 真实 174 篇核对、云端恢复演练、配额实测与连续三天零差异 | [存量核对与云端恢复验收](https://github.com/Moke110/frontier/issues/39) |
 | 安装说明 | 现行用户入口与运行时技能已统一 | 在目标宿主按最终说明完成新装、恢复并留证 | [统一安装说明并退役旧部署入口](https://github.com/Moke110/frontier/issues/40) |
-| 新安装增量 | 工作区、uv、CLI 预检（含写入权限探针、DPoP 状态与只读既有资源预检）、设施、临时闭环、清理、正式知识、两类任务均有离线测试；规格 #51 的 #52–#59 代码已合入 `dev`，离线 344 passed / 3 skipped | 真实 CLI/租户/宿主触发；真实 Base/Drive 读、推送/评分/采纳、清理读回、正式初始化与到点触发 | [#41](https://github.com/Moke110/frontier/issues/41) 的子票据 #42–#50；#51 的子票据 #52–#60 |
+| 新安装增量 | 工作区、uv、CLI 预检（含写入权限探针、DPoP 状态与只读既有资源预检）、设施、临时闭环、清理、正式知识、两类任务均有离线测试；规格 #51 的 #52–#59 代码已合入 `dev`，离线 378 passed / 3 skipped | 真实 CLI/租户/宿主触发；真实 Base/Drive 读、推送/评分/采纳、清理读回、正式初始化与到点触发 | [#41](https://github.com/Moke110/frontier/issues/41) 的子票据 #42–#50；#51 的子票据 #52–#60 |
 
 核对时发现 ChatGPT 任务已被标为关闭，但其最后一条验收评论仍写“未实测”，未附新的通过证据；因此本表保留证据缺口，不以 issue 状态推断验收通过。后续执行者须先核对关闭原因与最新证据；本轮不更改 tracker 状态。
 
@@ -99,7 +131,7 @@
 
 ## 下一次真实验收
 
-0. 在实际目标宿主重新实测数据根与飞书 CLI 的令牌/DPoP 存储写入权限。2026-10-28 的历史 workspace-write 限制针对整棵进程树，不代表当前策略；数据根私有解释器不能解除该限制。必要权限未具备时记录 `blocked`，不能开始真实闭环。
+0. 在实际目标宿主重新实测数据根与飞书 CLI 的令牌/DPoP 存储写入权限；2026-10-29 的实测见本轮预检，两者仍被拒绝。宿主的会话工作区必须是安装工作区（同时包含代码目录与数据根两个子目录）；以代码目录为工作区的会话无法创建数据根。数据根私有解释器不能解除该限制。必要权限未具备时记录 `blocked`，不能开始真实闭环。
 1. 由宿主按 [用户安装流程](../../README.md) 准备私有依赖并引导用户完成飞书授权，连接实际 Base。仅报告身份状态，不输出凭据。
 2. 分别在目标宿主验证版本、工作目录、技能、权限，以及两类任务各至少一次真实到点触发；保存任务配置、时间、运行输出和反馈续接记录。一款宿主的结果不能替代另一款。
 3. 使用 `fixtures/pdf-manifest.jsonl` 复核历史 174 篇原文，只补实际缺口；检查分片、原文关联、测试推送引用和配额差异（小于 1%）。不得将上传失败改成无原件来通过验收。
