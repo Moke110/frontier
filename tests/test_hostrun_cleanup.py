@@ -30,6 +30,11 @@ def _rendered_file(directory):
     return path
 
 
+def _gone(message_id):
+    """A checker that confirms the recalled message can no longer be read."""
+    return False
+
+
 def _fresh_base(tmp_path) -> JsonBase:
     base = JsonBase(tmp_path / "home" / "library" / "offline-base.json")
     base.meta = []
@@ -151,6 +156,7 @@ def test_cleanup_removes_exact_artifacts_and_keeps_formal_data(tmp_path):
         client=base,
         drive=drive,
         messenger=lambda message_id: messages.append(message_id),
+        message_checker=_gone,
     )
 
     assert result["ok"] is True
@@ -190,8 +196,22 @@ def test_cleanup_removes_exact_artifacts_and_keeps_formal_data(tmp_path):
 
 def test_cleanup_is_idempotent(tmp_path):
     ctx = _ready(tmp_path)
-    first = cleanup.run(ctx["home"], confirmed=True, client=ctx["base"], drive=ctx["drive"], messenger=lambda x: None)
-    second = cleanup.run(ctx["home"], confirmed=True, client=ctx["base"], drive=ctx["drive"], messenger=lambda x: None)
+    first = cleanup.run(
+        ctx["home"],
+        confirmed=True,
+        client=ctx["base"],
+        drive=ctx["drive"],
+        messenger=lambda x: None,
+        message_checker=_gone,
+    )
+    second = cleanup.run(
+        ctx["home"],
+        confirmed=True,
+        client=ctx["base"],
+        drive=ctx["drive"],
+        messenger=lambda x: None,
+        message_checker=_gone,
+    )
 
     assert first["ok"] is True
     assert second["already_cleaned"] is True
@@ -201,12 +221,18 @@ def test_cleanup_is_idempotent(tmp_path):
 def test_message_recall_uses_the_recorded_cli_path(tmp_path, monkeypatch):
     ctx = _ready(tmp_path)
     calls = []
+    checks = []
 
     def recall(message_id, *, executable):
         calls.append((message_id, executable))
         return {"ok": True}
 
+    def read_back(message_id, *, executable):
+        checks.append((message_id, executable))
+        return {"message_id": message_id, "present": False}
+
     monkeypatch.setattr("publisher.feishu.delete_message", recall)
+    monkeypatch.setattr("publisher.feishu.get_message", read_back)
 
     result = cleanup.run(
         ctx["home"],
@@ -216,8 +242,10 @@ def test_message_recall_uses_the_recorded_cli_path(tmp_path, monkeypatch):
         lark_cli=str(tmp_path / "private-bin" / "lark-cli"),
     )
 
+    executable = str(tmp_path / "private-bin" / "lark-cli")
     assert result["ok"] is True
-    assert calls == [(ctx["message"], str(tmp_path / "private-bin" / "lark-cli"))]
+    assert calls == [(ctx["message"], executable)]
+    assert checks == [(ctx["message"], executable)]
 
 
 def test_unretractable_message_keeps_the_gate_closed(tmp_path):
@@ -227,7 +255,14 @@ def test_unretractable_message_keeps_the_gate_closed(tmp_path):
     def refuse(message_id):
         raise RuntimeError("message too old")
 
-    result = cleanup.run(home, confirmed=True, client=ctx["base"], drive=ctx["drive"], messenger=refuse)
+    result = cleanup.run(
+        home,
+        confirmed=True,
+        client=ctx["base"],
+        drive=ctx["drive"],
+        messenger=refuse,
+        message_checker=_gone,
+    )
 
     assert result["ok"] is False
     assert result["status"] == "blocked"
@@ -242,7 +277,14 @@ def test_unretractable_message_keeps_the_gate_closed(tmp_path):
     def recall(message_id):
         called.append(message_id)
 
-    again = cleanup.run(home, confirmed=True, client=ctx["base"], drive=ctx["drive"], messenger=recall)
+    again = cleanup.run(
+        home,
+        confirmed=True,
+        client=ctx["base"],
+        drive=ctx["drive"],
+        messenger=recall,
+        message_checker=_gone,
+    )
     assert again["ok"] is True
     assert called == [ctx["message"]]
 
@@ -257,12 +299,25 @@ def test_failed_test_cannot_be_reported_as_cleaned_success(tmp_path):
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.fail(home, "send_timeout")
 
-    refused = cleanup.run(home, confirmed=True, client=base, drive=drive, messenger=lambda x: None)
+    refused = cleanup.run(
+        home,
+        confirmed=True,
+        client=base,
+        drive=drive,
+        messenger=lambda x: None,
+        message_checker=_gone,
+    )
     assert refused["ok"] is False
     assert refused["reason"] == "test_not_successful"
 
     aborted = cleanup.run(
-        home, confirmed=True, allow_failed=True, client=base, drive=drive, messenger=lambda x: None
+        home,
+        confirmed=True,
+        allow_failed=True,
+        client=base,
+        drive=drive,
+        messenger=lambda x: None,
+        message_checker=_gone,
     )
     assert aborted["ok"] is False
     state = smoke.load(home)
@@ -287,7 +342,14 @@ def test_deletion_request_without_effect_is_reported_as_residue(tmp_path):
     noop.fields = base.fields
     noop.tables = base.tables
 
-    result = cleanup.run(home, confirmed=True, client=noop, drive=ctx["drive"], messenger=lambda x: None)
+    result = cleanup.run(
+        home,
+        confirmed=True,
+        client=noop,
+        drive=ctx["drive"],
+        messenger=lambda x: None,
+        message_checker=_gone,
+    )
 
     assert result["ok"] is False
     assert result["cleanup"]["residue"]
@@ -311,7 +373,12 @@ def test_unreadable_table_blocks_cleanup_instead_of_claiming_success(tmp_path):
     broken.tables = base.tables
 
     result = cleanup.run(
-        home, confirmed=True, client=broken, drive=ctx["drive"], messenger=lambda x: None
+        home,
+        confirmed=True,
+        client=broken,
+        drive=ctx["drive"],
+        messenger=lambda x: None,
+        message_checker=_gone,
     )
 
     assert result["ok"] is False
@@ -338,7 +405,12 @@ def test_cleanup_removes_the_selected_test_paper_and_reports_the_count(tmp_path)
     assert planned["records"]["papers"] == 1
 
     result = cleanup.run(
-        home, confirmed=True, client=base, drive=ctx["drive"], messenger=lambda x: None
+        home,
+        confirmed=True,
+        client=base,
+        drive=ctx["drive"],
+        messenger=lambda x: None,
+        message_checker=_gone,
     )
 
     assert result["ok"] is True
@@ -366,7 +438,12 @@ def test_remaining_test_paper_row_blocks_cleanup(tmp_path):
     stubborn.tables = base.tables
 
     result = cleanup.run(
-        home, confirmed=True, client=stubborn, drive=ctx["drive"], messenger=lambda x: None
+        home,
+        confirmed=True,
+        client=stubborn,
+        drive=ctx["drive"],
+        messenger=lambda x: None,
+        message_checker=_gone,
     )
 
     assert result["ok"] is False
@@ -393,9 +470,110 @@ def test_undeletable_test_paper_row_blocks_cleanup(tmp_path):
     refusing.tables = base.tables
 
     result = cleanup.run(
-        home, confirmed=True, client=refusing, drive=ctx["drive"], messenger=lambda x: None
+        home,
+        confirmed=True,
+        client=refusing,
+        drive=ctx["drive"],
+        messenger=lambda x: None,
+        message_checker=_gone,
     )
 
     assert result["ok"] is False
     assert any("papers" in line for line in result["cleanup"]["failed"])
     assert smoke.load(home).get("cleaned_at") is None
+
+
+# --------------------------------------------- message recall read-back scope
+def test_recalled_message_still_readable_blocks_cleanup(tmp_path):
+    ctx = _ready(tmp_path)
+    home = ctx["home"]
+    checked = []
+
+    def still_there(message_id):
+        checked.append(message_id)
+        return True
+
+    result = cleanup.run(
+        home,
+        confirmed=True,
+        client=ctx["base"],
+        drive=ctx["drive"],
+        messenger=lambda message_id: None,
+        message_checker=still_there,
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert checked == [ctx["message"]]
+    assert any(ctx["message"] in line for line in result["cleanup"]["residue"])
+    assert smoke.load(home).get("cleaned_at") is None
+    with pytest.raises(HostRunError):
+        cleanup.require_cleaned(home)
+
+
+def test_unverifiable_message_readback_blocks_cleanup(tmp_path):
+    ctx = _ready(tmp_path)
+    home = ctx["home"]
+
+    def broken(message_id):
+        raise RuntimeError("message read failed")
+
+    result = cleanup.run(
+        home,
+        confirmed=True,
+        client=ctx["base"],
+        drive=ctx["drive"],
+        messenger=lambda message_id: None,
+        message_checker=broken,
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert any(ctx["message"] in line for line in result["cleanup"]["failed"])
+    assert smoke.load(home).get("cleaned_at") is None
+    with pytest.raises(HostRunError):
+        cleanup.require_cleaned(home)
+
+
+def test_cleanup_reports_per_scope_delete_counts(tmp_path):
+    ctx = _ready(tmp_path)
+    home = ctx["home"]
+
+    result = cleanup.run(
+        home,
+        confirmed=True,
+        client=ctx["base"],
+        drive=ctx["drive"],
+        messenger=lambda message_id: None,
+        message_checker=_gone,
+    )
+
+    assert result["ok"] is True
+    counts = result["cleanup"]["counts"]
+    assert counts["base_records"] == 7
+    assert counts["messages"] == 1
+    assert counts["drive_files"] == 1
+    assert counts["local_files"] == 3
+    assert counts["queue_items"] == 1
+    # per-table detail survives next to the per-scope totals
+    assert result["cleanup"]["removed"]["papers"]["record_ids"]
+
+    state = smoke.load(home)
+    assert state["cleanup"]["counts"] == counts
+    state_file = json.loads((home / "install" / "state.json").read_text(encoding="utf-8"))
+    evidence = state_file["steps"]["cleanup"]["evidence"]
+    assert evidence["counts"] == counts
+
+    # rerun after success deletes nothing and keeps the recorded counts
+    again = cleanup.run(
+        home,
+        confirmed=True,
+        client=ctx["base"],
+        drive=ctx["drive"],
+        messenger=lambda message_id: None,
+        message_checker=_gone,
+    )
+    assert again["already_cleaned"] is True
+    assert again["ok"] is True
+    assert smoke.load(home)["cleanup"]["counts"] == counts
+

@@ -9,6 +9,18 @@ from typing import Any
 
 BIN = "lark-cli"
 
+# A read-back proves a message is gone only through a documented not-found or
+# recalled answer.  Anything else is unverifiable and must not be reported as
+# clean.
+_GONE_CODES = {"230006"}
+_GONE_MARKERS = (
+    "message not found",
+    "message_not_found",
+    "message has been recalled",
+    "已撤回",
+    "消息不存在",
+)
+
 
 class FeishuError(RuntimeError):
     pass
@@ -130,6 +142,63 @@ def delete_message(
             f"{json.dumps(payload.get('error') or payload, ensure_ascii=False)[:400]}"
         )
     return {"ok": True, "message_id": message_id, "payload": payload}
+
+
+def _gone_error(payload: dict) -> bool:
+    error = payload.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    if str(code) in _GONE_CODES:
+        return True
+    text = json.dumps(error or payload, ensure_ascii=False).lower()
+    return any(marker in text for marker in _GONE_MARKERS)
+
+
+def get_message(
+    message_id: str, identity: str = "bot", executable: str = BIN
+) -> dict:
+    """Read one message back through the recorded CLI path.
+
+    A recall request is not evidence the message is gone.  ``present`` is
+    ``False`` only for a documented not-found/recalled answer; any other failure
+    raises :class:`FeishuError`, so the caller reports an unverifiable read
+    instead of claiming the scope is clean.
+    """
+    proc = subprocess.run(
+        [
+            executable,
+            "api",
+            "GET",
+            f"/open-apis/im/v1/messages/{message_id}",
+            "--as",
+            identity,
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    text = (proc.stdout or "").strip()
+    try:
+        payload = json.loads(text or "{}")
+    except json.JSONDecodeError:
+        raise FeishuError(
+            f"{executable} api GET message returned non-JSON: {text[:300]}"
+        ) from None
+    if proc.returncode != 0 or payload.get("ok") is False:
+        if _gone_error(payload):
+            return {"message_id": message_id, "present": False, "payload": payload}
+        detail = json.dumps(payload.get("error") or payload, ensure_ascii=False)
+        raise FeishuError(f"{executable} api GET message failed: {detail[:400]}")
+    data = payload.get("data") or {}
+    items = [item for item in (data.get("items") or []) if isinstance(item, dict)]
+    if not items:
+        return {"message_id": message_id, "present": False, "payload": payload}
+    item = items[0]
+    state = str(item.get("status") or "").lower()
+    if item.get("deleted") or state in {"recalled", "deleted"}:
+        return {"message_id": message_id, "present": False, "payload": payload}
+    return {"message_id": message_id, "present": True, "payload": payload}
 
 
 def consume_events(
