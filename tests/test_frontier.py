@@ -1,6 +1,21 @@
 import json
 
+import pytest
+
 from frontier import model
+
+
+def _write_temporary_card(home, card_id="card_smoke_20261029_deadbe"):
+    card = {
+        "id": card_id,
+        "label": "[临时验收] single-cell perturbation prediction benchmark",
+        "ontology": ["single-cell perturbation prediction benchmark"],
+        "annotation": "⛔ 仅用于安装验收；⚠️ 清理时必须删除。",
+    }
+    path = home / "archive" / "cards" / f"{card_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(card, ensure_ascii=False), encoding="utf-8")
+    return card
 
 
 def test_plan_reads_cards_not_frontier_yaml(kl_home):
@@ -20,6 +35,42 @@ def test_plan_reads_cards_not_frontier_yaml(kl_home):
     # The retirement is real: retrieval no longer needs frontier.yaml.
     (kl_home / "frontier.yaml").unlink(missing_ok=True)
     assert model.plan(kl_home, day="2026-10-20", days=7)["queries"]
+
+
+def test_plan_uses_only_formal_cards(kl_home):
+    temporary = _write_temporary_card(kl_home)
+
+    cards = model.load_cards(kl_home)
+    card_ids = {card["id"] for card in cards}
+    assert "card_hmbs" in card_ids
+    assert temporary["id"] not in card_ids
+
+    result = model.plan(kl_home, day="2026-10-20", days=7)
+    assert result["queries"]
+    assert {query["card_id"] for query in result["queries"]} <= card_ids
+    assert all(query["card_id"] != temporary["id"] for query in result["queries"])
+    assert all(temporary["ontology"][0] not in query["query"] for query in result["queries"])
+
+
+def test_load_cards_rejects_an_archive_of_only_temporary_cards(tmp_path):
+    home = tmp_path / "home"
+    _write_temporary_card(home)
+
+    with pytest.raises(model.FrontierError, match="no knowledge cards"):
+        model.load_cards(home)
+
+
+def test_validate_can_opt_in_to_temporary_cards(tmp_path):
+    home = tmp_path / "home"
+    card = _write_temporary_card(home)
+
+    result = model.validate(home, include_temporary=True)
+    assert result["ok"] is True
+    assert [row["card_id"] for row in result["cards"]] == [card["id"]]
+
+    # The formal command still treats the archive as empty.
+    with pytest.raises(model.FrontierError, match="no knowledge cards"):
+        model.validate(home)
 
 
 def test_validate_detects_broken_card(kl_home):

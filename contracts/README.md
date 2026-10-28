@@ -43,6 +43,8 @@ $KL_HOME/
 │   └── state.json                # 同类提醒 24h 冷却
 └── publisher/
     ├── messages.jsonl            # message_id → push/queue item，用于回调路由
+    ├── send-attempts.jsonl       # 每次真实发送的尝试（sending/sent/unknown/not_sent）；
+    │                             #   unknown 时拒绝盲目重发，用 publisher.cli resolve-send 对账
     ├── pending/<proposal_id>.json# 旧审批链路的待审批副本（v2 不再新增）
     ├── decisions.jsonl           # 用户同意/拒绝（旧审批链路）
     ├── decision_rows.jsonl       # 提议级决定暂存（采纳/拒绝 + 评语），library decisions sync 写入「决定」表
@@ -427,6 +429,8 @@ python -m archive.cli migrate-v3 [--dry-run] [--rollback <backup>]
 { "item_id": "q_…", "push_id": "…", "proposal_ids": ["…"], "decision": "agree_all | reject_all", "operator_id": "ou_…", "created_at": "…" }
 ```
 
+`send-attempts.jsonl`：真实发送先写 `sending`，成功后写 `sent`（带 `message_id`），异常/超时写 `unknown`；未决尝试存在时同一推送拒绝再次发送（`send_status_unknown`），必须先 `publisher.cli resolve-send --push <id> --message <message_id>`（已送达）或 `--not-sent`（确认未发出）对账。清理的 `sent` 证据要求 `messages.jsonl` 中该消息是本次推送的 `push_file` 且 `target` 为已核实收件人。
+
 ## 10.5 Bitable 镜像（Phase 3a）
 
 ```bash
@@ -528,9 +532,11 @@ python -m hostrun.cli status
     │   ├── state.json            # 分步状态：host/workspace/dependencies/skill/lark_cli/identity/
     │   │                         #   permissions/facilities/test_loop/cleanup/knowledge/schedules/scheduled_run
     │   ├── facilities.json       # Base/表/目录的稳定 ID 与已确认展示名
-    │   ├── smoke.json            # 测试 ID、步骤、副作用归属（artifacts.candidates/plan/
-    │   │                         #   paper_ids/push_html）、verify 的 steps.verified.checks；
-    │   │                         #   清理后只留最小验收状态
+    │   ├── recipient.json        # smoke start 核实后的收件人（schema_version/owner/verified_at/source）；
+    │   │                         #   用户标识原文只在这里与测试记录中，不进入安装报告
+    │   ├── smoke.json            # 测试 ID、owner 与 owner_verified、步骤、副作用归属
+    │   │                         #   （artifacts.candidates/plan/paper_ids/push_html）、
+    │   │                         #   verify 的 steps.verified.checks；清理后只留最小验收状态
     │   └── initial/              # 文献元数据、候选卡片、确认哈希、写入报告、标准检索计划
     ├── executor/                 # lease.json + events.jsonl（时间租约，不是 pid）
     ├── hostrun/runs.jsonl        # 意图、动作、是否安静；scheduled/task 仅由宿主任务写入
@@ -542,11 +548,11 @@ python -m hostrun.cli status
 - `install report` 的 `working` / `blocked` / `untested` / `pending` 分项是验收依据；缺能力标 `blocked`，没测过标 `untested`，不得写成通过。
 - 工作区与私有环境：已有副本有未提交改动、origin 不符或不是 git 仓库时阻塞，不拉取、不覆盖；重跑复用已验证组件。依赖步骤只认**记录的解释器**：未记录、不是绝对路径、文件不存在或位于代码目录内时标 `blocked`，并给出可照做的 `install toolchain ... --clear` 修复命令（含先切换到代码目录）；不回退到当前运行进程的解释器。`--clear` 才重建数据根环境，重复运行复用现有环境。
 - 飞书 CLI 与权限：可执行、登录、授权范围、真实资源读取分别验证；记到文件系统的绝对路径失效时 `blocked`，不静默回退到 PATH。`permissions=ok` 要求授权范围与**真实 Base + Drive 读取**均成功；`messages` 作为独立的 `untested` 子证据保留，不因登录成功或消息未测而伪造；配置中 `permissions.scope` 保存飞书 scope，宿主能力另记 `host_scope`，两者不互相覆盖。
-- 设施：按用户确认的展示名创建；使用稳定 ID，改名不影响读写。同名 Base 多个时阻塞；已有库只检查/补缺，不清空。部分失败如实报告并可从已创建项续接。
-- 临时闭环：临时卡片 ID 与推送/消息/文件/问题/论文 ID 全部归属测试。`retrieved` 必须指向真实的 `--plan` 计划/候选文件并由文件得出候选数（可选 `--candidates` 必须一致）；`written` 至少一个 `--paper`；`rendered` 必须带 `--push` 与 `--html`，并按 `writer/render.py` 契约校验七段与 `原文图`/`生成图` 图注；`sent` 带推送、消息、问题 ID；`applied` 用 `--target`（被采纳目标 ID）与 `--applied-field`（每个被采纳字段）登记写入意图，省略时按临时卡片、只要求至少一个读回检查。`verify` 的逐字段读回累计在 `steps.verified.checks`，且必须覆盖每个已登记目标与字段才完整；覆盖不足返回 `verification_incomplete` 并保持 `test_loop` 未通过，字段不一致照常失败。成功必须包含完整读回核对，失败不开放正式初始化。
-- 清理：只按测试 ID 与记录中的卡片/推送/问题/文件/消息/选中论文 ID 删除并逐范围读回确认；有残留或消息不可撤回时保持 `cleanup=blocked`，正式初始化闸门关闭。
+- 设施：按用户确认的展示名创建；使用稳定 ID，改名不影响读写。`facilities create` 总是新建独立 Base，不按名称复用同名库；`facilities plan` / `create` 把同名 Base 作为 `existing_same_name`（`count`/`names`/`note`）提示报告，查找失败时只留该字段并保持 `count: null`，不冒充已执行的动作；接入已有库必须显式 `facilities attach`（只检查/补缺，不清空）。部分失败如实报告并可从已创建项续接。
+- 临时闭环：临时卡片 ID 与推送/消息/文件/问题/论文 ID 全部归属测试。`frontier.cli validate --include-temporary` 用于在清理前校验临时卡片；普通 `validate`/`plan` 仍排除 `card_smoke_*`。`retrieved` 必须指向真实的 `--plan` 计划/候选文件并由文件得出候选数（可选 `--candidates` 必须一致）；`written` 至少一个 `--paper`；`rendered` 必须带 `--push` 与 `--html`，并按 `writer/render.py` 契约校验七段与 `原文图`/`生成图` 图注；`sent` 带推送、消息、问题 ID，且该消息必须在 `publisher/messages.jsonl` 中登记为本次推送的 `push_file`、`target` 等于测试记录中已核实的收件人（缺失为 `message_recipient_unverified`，不匹配为 `message_mismatch`，均不推进步骤）；`applied` 用 `--target`（被采纳目标 ID）与 `--applied-field`（每个被采纳字段）登记写入意图，省略时按临时卡片、只要求至少一个读回检查。`verify` 的逐字段读回累计在 `steps.verified.checks`，且必须覆盖每个已登记目标与字段才完整；覆盖不足返回 `verification_incomplete` 并保持 `test_loop` 未通过，字段不一致照常失败。成功必须包含完整读回核对，失败不开放正式初始化。
+- 清理：只按测试 ID 与记录中的卡片/推送/问题/文件/消息/选中论文 ID 删除并逐范围读回确认；消息撤回后必须按记录的消息 ID 重新读取，仍可读或读取结果无法判定都算残留/失败，保持 `cleanup=blocked`，正式初始化闸门关闭。撤回/读回与云盘删除/核对只使用记录或显式给出的**绝对且存在的** `lark-cli`；没有可用绝对路径时该项记 `failed`，绝不回退到 PATH 的 `lark-cli`。结果在 `removed`（逐表明细）之外给出 `counts`：Base 记录、消息、云盘文件、本地文件、队列条目，并写入 `install` 的清理证据。
 - 正式知识：**新建路径**仅在“测试通过 + 清理读回通过”后开放；`init propose` 需要可读 intake（可读输入、可读全文与用户要求），并快照既有卡片 ID（快照读取失败即拒绝，不写草案）；卡片须用户确认且确认绑定草稿哈希；`init apply` 拒绝更新草案前已存在的卡片 ID（没有覆盖开关），同步后归一化比较字段读回，不一致即 `base_readback_mismatch`。**已有库**由用户显式确认后走 `init adopt-existing` 导入现有卡片，不经过新建测试闸门、不重建也不清空；两条路径完成后都做一次标准检索，测试关键词不复用。
 - `run` 的固定顺序：反馈 → 恢复未完成 → 维护（到期才做）→ 检索闸门。`feedback` 意图**从不**创建检索请求；维护并入当天首次小时检查，未答问题不阻止维护；错过的每日请求合并为一次。
-- 只创建两个宿主任务：`frontier-daily`（用户时区 08:00）与 `frontier-feedback`（每小时，默认第 5 分钟）。任务创建只写 `schedules`；`confirm` 为每个任务生成 proof 并写入命令，运行日志中的 `scheduled=true`、`task=<id>` 且 `proof` 匹配的真实到点记录才能写 `scheduled_run`，两类任务都至少一次后才为 `ok`。
+- 只创建两个宿主任务：`frontier-daily`（用户时区 08:00）与 `frontier-feedback`（每小时，默认第 5 分钟）。正式知识未就绪时 `confirm` 拒绝创建（包括暂停），不写 `schedules` 任务；就绪后 `confirm` 为每个任务生成 proof 并写入命令。运行日志中的 `scheduled=true`、`task=<id>`、`proof` 匹配、运行时间的 UTC 偏移与计划时区记录的 `utc_offset_seconds` 一致，且落在计划时间内（±5 分钟启动容差）的记录才能写 `scheduled_run`，手动运行、非到点运行、异时区时间与伪造时间不计；两类任务都至少一次后才为 `ok`。
 - 同一时刻只有一个执行端：另一宿主持有有效租约时返回 `executor_busy`；过期租约可被接管并在 `events.jsonl` 记 `taken_over`；换机必须 `handover`（旧端仍活跃时需 `--force` 并说明）。
 - `feedback rebuild` 从「问题」表重建本地队列，已处理的决定不会被再次应用。

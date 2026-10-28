@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from publisher.cards import build_approval_card, build_confirmation_card, build_rating_card
 from publisher.service import handle_event, send_push, send_rating
 
@@ -247,3 +249,206 @@ def test_put_push_is_skipped_without_library_config(kl_home, tmp_path):
         "ok": True,
         "skipped": "legacy_pdf",
     }
+
+
+# ------------------------------------------------- message read-back (recall)
+class _Proc:
+    def __init__(self, stdout, returncode=0):
+        self.stdout = stdout
+        self.returncode = returncode
+
+
+def _fake_api(monkeypatch, payload, *, returncode=0):
+    from publisher import feishu
+
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return _Proc(json.dumps(payload, ensure_ascii=False), returncode)
+
+    monkeypatch.setattr(feishu.subprocess, "run", run)
+    return calls
+
+
+def test_get_message_reads_a_present_message_by_id(monkeypatch):
+    from publisher import feishu
+
+    calls = _fake_api(
+        monkeypatch, {"ok": True, "data": {"items": [{"message_id": "om_1"}]}}
+    )
+
+    result = feishu.get_message("om_1", executable="C:/bin/lark-cli")
+
+    assert result["present"] is True
+    assert result["message_id"] == "om_1"
+    assert calls[0][:4] == [
+        "C:/bin/lark-cli",
+        "api",
+        "GET",
+        "/open-apis/im/v1/messages/om_1",
+    ]
+
+
+def test_get_message_treats_a_recalled_message_as_gone(monkeypatch):
+    from publisher import feishu
+
+    _fake_api(
+        monkeypatch,
+        {"ok": True, "data": {"items": [{"message_id": "om_1", "deleted": True}]}},
+    )
+
+    assert feishu.get_message("om_1")["present"] is False
+
+
+def test_get_message_treats_a_documented_not_found_as_gone(monkeypatch):
+    from publisher import feishu
+
+    _fake_api(
+        monkeypatch,
+        {"ok": False, "error": {"code": 230006, "msg": "message not found"}},
+        returncode=1,
+    )
+
+    result = feishu.get_message("om_1")
+
+    assert result["present"] is False
+    assert result["message_id"] == "om_1"
+
+
+def test_get_message_treats_an_empty_success_as_unverifiable(monkeypatch):
+    from publisher import feishu
+
+    _fake_api(monkeypatch, {"ok": True, "data": {"items": []}})
+
+    with pytest.raises(feishu.FeishuError):
+        feishu.get_message("om_1")
+
+
+def test_get_message_raises_when_the_read_cannot_prove_absence(monkeypatch):
+    from publisher import feishu
+
+    _fake_api(
+        monkeypatch,
+        {"ok": False, "error": {"code": 99991663, "msg": "permission denied"}},
+        returncode=1,
+    )
+
+    with pytest.raises(feishu.FeishuError):
+        feishu.get_message("om_1")
+
+
+# ------------------------------------- unknown send outcome (spec #56)
+def _patch_send(monkeypatch, *, fail=False):
+    from publisher import service
+
+    calls = []
+
+    def send_file(target, path, identity):
+        calls.append((target, path))
+        if fail:
+            raise TimeoutError("read timed out after upload")
+        return {"message_id": f"om_file_{len(calls)}"}
+
+    monkeypatch.setattr(service.feishu, "send_file", send_file)
+    monkeypatch.setattr(
+        service.feishu, "send_card", lambda *args, **kwargs: {"message_id": "om_card"}
+    )
+    return calls
+
+
+def _retry_push():
+    return {
+        **PUSH_PDF,
+        "push_id": "2026-10-20_hmbs_retry",
+        "paper_ids": ["paper_retry"],
+    }
+
+
+def test_unknown_send_outcome_blocks_a_blind_retry(kl_home, tmp_path, monkeypatch):
+    html = tmp_path / "push.html"
+    html.write_text("<!doctype html><p>hello</p>", encoding="utf-8")
+    calls = _patch_send(monkeypatch, fail=True)
+
+    first = send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    assert first["ok"] is False
+    assert first["reason"] == "send_failed"
+    attempts = [
+        json.loads(line)
+        for line in (kl_home / "publisher" / "send-attempts.jsonl").read_text().splitlines()
+    ]
+    push_id = _retry_push()["push_id"]
+    assert attempts
+    assert all(row["push_id"] == push_id for row in attempts)
+    # The send is first recorded as in-flight, then resolved as unknown; it must
+    # never be recorded as delivered on an exception.
+    assert sum(1 for row in attempts if row["state"] == "sending") == 1
+    assert attempts[-1]["state"] == "unknown"
+    assert not any(row["state"] == "sent" for row in attempts)
+
+    second = send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    assert second["ok"] is False
+    assert second["reason"] == "send_status_unknown"
+    assert len(calls) == 1
+
+
+def test_resolve_send_not_sent_allows_a_successful_retry(kl_home, tmp_path, monkeypatch):
+    from publisher.service import resolve_send
+
+    html = tmp_path / "push.html"
+    html.write_text("<!doctype html><p>hello</p>", encoding="utf-8")
+    calls = _patch_send(monkeypatch, fail=True)
+    send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    resolved = resolve_send(kl_home, _retry_push()["push_id"], not_sent=True)
+
+    assert resolved["ok"] is True
+    assert resolved["state"] == "not_sent"
+    retry_calls = _patch_send(monkeypatch, fail=False)
+    retried = send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    assert retried["ok"] is True
+    assert len(calls) == 1
+    assert len(retry_calls) == 1
+
+
+def test_resolve_send_message_makes_the_duplicate_check_already_sent(
+    kl_home, tmp_path, monkeypatch
+):
+    from publisher.service import resolve_send
+
+    html = tmp_path / "push.html"
+    html.write_text("<!doctype html><p>hello</p>", encoding="utf-8")
+    calls = _patch_send(monkeypatch, fail=True)
+    send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    resolved = resolve_send(
+        kl_home, _retry_push()["push_id"], message_id="om_seen_in_feishu"
+    )
+    assert resolved["ok"] is True
+    assert resolved["state"] == "sent"
+
+    again = send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    assert again["ok"] is False
+    assert again["reason"] == "already_sent"
+    assert len(calls) == 1
+
+
+def test_cli_resolve_send_not_sent_clears_the_attempt(kl_home, tmp_path, monkeypatch):
+    from publisher.cli import main
+
+    html = tmp_path / "push.html"
+    html.write_text("<!doctype html><p>hello</p>", encoding="utf-8")
+    _patch_send(monkeypatch, fail=True)
+    push_id = _retry_push()["push_id"]
+    send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    code = main(
+        ["--home", str(kl_home), "resolve-send", "--push", push_id, "--not-sent"]
+    )
+
+    assert code == 0
+    assert main(["--home", str(kl_home), "resolve-send", "--push", push_id, "--not-sent"]) == 1

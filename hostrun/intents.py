@@ -66,6 +66,16 @@ def _runlog(home: Path, row: dict) -> None:
 
 
 def _owner(home: Path) -> str:
+    """The verified recipient, kept out of the install report/config.
+
+    ``install/recipient.json`` is the current source (written by ``smoke start``).
+    The config fallback is read-only for pre-existing installs; it is never
+    copied into a report.
+    """
+    recipient = read_json(Path(home) / "install" / "recipient.json") or {}
+    owner = str(recipient.get("owner") or "")
+    if owner:
+        return owner
     config = load_config(home)
     return str((config.get("permissions") or {}).get("owner") or "")
 

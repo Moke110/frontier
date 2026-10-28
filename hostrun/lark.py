@@ -272,6 +272,26 @@ def install_cli(
 
 
 # --------------------------------------------------------------------- identity
+def _dpop_field(payload: dict, identities: dict, *keys: str) -> str:
+    """A non-secret DPoP status word from whichever level reports it."""
+    sources = (
+        payload,
+        identities,
+        identities.get("user") or {},
+        identities.get("bot") or {},
+    )
+    for key in keys:
+        for source in sources:
+            value = source.get(key)
+            if value in (None, ""):
+                continue
+            if isinstance(value, (dict, list, tuple)):
+                # Never flatten a structured payload into the report.
+                continue
+            return str(value)
+    return ""
+
+
 def parse_auth(payload: dict) -> dict:
     """Booleans and status words only — the payload may carry tokens."""
     identities = (payload or {}).get("identities") or {}
@@ -307,6 +327,10 @@ def parse_auth(payload: dict) -> dict:
         "user": user_facts,
         "bot": bot_facts,
         "user_open_id_present": bool(user.get("userOpenId") or user.get("openId")),
+        "dpop_key_status": _dpop_field(
+            payload or {}, identities, "dpopKeyStatus", "dpop_key_status"
+        ),
+        "dpop_mode": _dpop_field(payload or {}, identities, "dpopMode", "dpop_mode"),
         "tenant_matches": (identities.get("tenant") or {}).get("matched"),
         "scopes": _extract_scopes(payload),
     }
@@ -369,10 +393,32 @@ def identity(cli: str | None, *, runner=subprocess.run, timeout: int = 30) -> di
             "expired": any(facts[name]["expired"] for name in ("user", "bot")),
             "refresh_pending": stale,
             "tenant_matches": facts["tenant_matches"],
+            "dpop_key_status": facts["dpop_key_status"],
+            "dpop_mode": facts["dpop_mode"],
             "scope_count": len(facts["scopes"]),
         },
         "scopes": facts["scopes"],
     }
+
+
+def user_open_id(cli: str | None, *, runner=subprocess.run, timeout: int = 30) -> dict:
+    """The authenticated *user's* open id, for recipient verification.
+
+    Returned to the calling host agent only; reports and identity evidence keep
+    booleans, never the raw id.  Absence is not an error: the caller decides
+    whether a recipient can be resolved.
+    """
+    if not cli:
+        return {"ok": False, "open_id": ""}
+    result = run_json(
+        [cli, "auth", "status", "--json", "--verify"], runner=runner, timeout=timeout
+    )
+    if not result.get("ok"):
+        return {"ok": False, "open_id": ""}
+    identities = (result.get("payload") or {}).get("identities") or {}
+    user = identities.get("user") or {}
+    open_id = str(user.get("openId") or user.get("userOpenId") or "")
+    return {"ok": bool(open_id), "open_id": open_id}
 
 
 def _scope_covered(required: str, granted: str | set[str]) -> bool:
@@ -460,11 +506,15 @@ def resource_preflight(
     cli: str | None,
     *,
     base_token: str | None = None,
-    source_folder: str | None = None,
-    push_folder: str | None = None,
+    folders: list[str] | None = None,
     runner=subprocess.run,
 ) -> dict:
-    """Read-only proof for Base and Drive; messages stay for the real loop."""
+    """Read-only proof for Base and Drive; messages stay for the real loop.
+
+    Explicit tokens let an existing library be checked without attaching it:
+    this function only issues read calls and never records or rewrites a
+    facility.
+    """
     home = Path(home)
     if not cli:
         return {
@@ -480,6 +530,8 @@ def resource_preflight(
         except HostRunError:
             base_token = None
     checks = {}
+    # ``untested`` means there are no resource tokens to probe yet, not that
+    # permissions passed: #53 stays blocked until a real Base/Drive read succeeds.
     if not base_token:
         checks["base"] = {"status": "untested", "note": "设施尚未创建或接入"}
     else:
@@ -492,12 +544,12 @@ def resource_preflight(
             "status": "ok" if result["ok"] else "blocked",
             "note": "可读取 Base 表结构" if result["ok"] else "Base 读取失败：" + result["error"],
         }
-    folders = [folder for folder in (source_folder, push_folder) if folder]
-    if not folders:
+    folder_list = list(folders or [])
+    if not folder_list:
         checks["drive"] = {"status": "untested", "note": "云盘目录尚未创建或接入"}
     else:
         failures = []
-        for folder in folders:
+        for folder in folder_list:
             result = _call(
                 cli,
                 [
@@ -548,6 +600,8 @@ def status(
     required: list[str] | None = None,
     runner=subprocess.run,
     spec: str | None = None,
+    base_token: str | None = None,
+    folders: list[str] | None = None,
 ) -> dict:
     root = Path(root).expanduser().resolve()
     found = discover_cli(root, spec=spec, home=home)
@@ -570,17 +624,29 @@ def status(
         identity_result.get("scopes") or [], required=required
     )
     home_path = Path(home).expanduser().resolve() if home else None
+    resource_base = base_token
+    resource_folders = list(folders or [])
     if home_path:
         from hostrun import facilities as facilities_mod
 
         record = facilities_mod.load_facilities(home_path)
-        folders = record.get("folders") or {}
+        recorded_folders = record.get("folders") or {}
+        if not resource_base:
+            resource_base = (record.get("base") or {}).get("token")
+        if not resource_folders:
+            resource_folders = [
+                folder
+                for folder in (recorded_folders.get("source"), recorded_folders.get("push"))
+                if folder
+            ]
+    if home_path or resource_base or resource_folders:
+        # Explicit tokens probe an existing library read-only; nothing is
+        # attached or written back.
         resources = resource_preflight(
-            home_path,
+            home_path or Path(root),
             found["path"],
-            base_token=(record.get("base") or {}).get("token"),
-            source_folder=folders.get("source"),
-            push_folder=folders.get("push"),
+            base_token=resource_base,
+            folders=resource_folders,
             runner=runner,
         )
     else:

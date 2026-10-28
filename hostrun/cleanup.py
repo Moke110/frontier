@@ -9,9 +9,11 @@ display-name match or "clear the table":
 - local files only under the recorded test card / push / plan paths;
 - the environment, configuration, empty facilities and the minimal acceptance
   record stay in place, so cleanup never forces a reinstall;
-- every deletion is read back.  A permission failure or an unretractable
-  message is reported as incomplete and keeps the formal-initialization gate
-  closed.  Rerunning retries only what is still present, without extra effect.
+- every deletion is read back, including the recalled message itself.  A
+  permission failure, a message that is still readable after recall, or an
+  unverifiable message read is reported as incomplete and keeps the
+  formal-initialization gate closed.  Rerunning retries only what is still
+  present, without extra effect.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from pathlib import Path
 
 from common import now, read_json, write_json
 from hostrun import install as install_mod
+from hostrun import lark as lark_mod
 from hostrun import smoke
 from hostrun.base import HostRunError, base_client
 from library.drive import LarkDrive
@@ -156,6 +159,31 @@ def _still_present(client, table_id: str, record_ids: list[str]) -> list[str]:
     return [record_id for record_id in record_ids if record_id in present]
 
 
+def _usable_cli(home: Path, explicit: str | None) -> str | None:
+    """Only a recorded/explicit *absolute existing* lark-cli may touch messages.
+
+    A bare ``lark-cli`` would be a silent PATH guess, and cleanup must never
+    recall/read through a different binary than the installation recorded
+    (ADR 0007, contracts/README.md §12).  ``None`` means "no usable CLI";
+    callers report a failed scope instead of falling back.
+    """
+    from hostrun.base import load_config
+
+    spec = str(explicit or "").strip()
+    if not spec:
+        spec = str((load_config(Path(home)).get("paths") or {}).get("lark_cli") or "").strip()
+    path = lark_mod.explicit_cli_path(spec)
+    if path is None or not path.is_absolute():
+        return None
+    resolved = lark_mod.resolve_cli(str(path))
+    if not resolved.get("found"):
+        return None
+    found = Path(str(resolved["path"]))
+    if not found.is_absolute() or not found.is_file():
+        return None
+    return str(found)
+
+
 def _drive_folders(home: Path, drive) -> list[str]:
     from hostrun import facilities
 
@@ -181,6 +209,7 @@ def _strip(state: dict, cleanup: dict) -> dict:
             "status": cleanup.get("status"),
             "verified": cleanup.get("verified"),
             "removed_counts": counts,
+            "counts": cleanup.get("counts"),
             "unretractable": cleanup.get("unretractable") or [],
             "failed": cleanup.get("failed") or [],
         },
@@ -214,7 +243,9 @@ def run(
     client=None,
     drive=None,
     messenger=None,
+    message_checker=None,
     lark_cli: str | None = None,
+    cli_resolver=None,
 ) -> dict:
     """Delete every recorded artifact, then verify nothing is left behind."""
     home = Path(home).expanduser().resolve()
@@ -251,6 +282,11 @@ def run(
     removed: dict[str, dict] = {}
     failed: list[str] = []
     unretractable: list[str] = []
+    residue: list[str] = []
+    removed_messages = 0
+    removed_files = 0
+    removed_local = 0
+    removed_queue = 0
 
     for key, value in found["records"].items():
         try:
@@ -259,31 +295,53 @@ def run(
         except Exception as exc:  # noqa: BLE001 - keep going, report the residue
             failed.append(f"Base {key}: {exc}")
 
+    message_needs_cli = messenger is None or message_checker is None
+    file_needs_cli = drive is None and bool(found["file_ids"])
+    executable = ""
+    if message_needs_cli or file_needs_cli:
+        resolve = cli_resolver or _usable_cli
+        executable = resolve(home, lark_cli) or ""
+    if found["message_ids"] and message_needs_cli and not executable:
+        failed.append("消息：未记录可用的 lark-cli 绝对路径，无法撤回或读回")
+    if message_checker is None:
+        from publisher import feishu
+
+        def message_checker(message_id: str) -> bool:
+            return bool(
+                feishu.get_message(message_id, executable=executable).get("present")
+            )
+
     for message_id in found["message_ids"]:
+        if message_needs_cli and not executable:
+            continue
         try:
             if messenger is None:
-                from hostrun.base import load_config
                 from publisher import feishu
 
-                executable = lark_cli or (load_config(home).get("paths") or {}).get(
-                    "lark_cli"
-                ) or "lark-cli"
                 feishu.delete_message(message_id, executable=executable)
             else:
                 messenger(message_id)
         except Exception as exc:  # noqa: BLE001 - recall can fail by age/authority
             unretractable.append({"message_id": message_id, "error": str(exc)})
-
-    if drive is None:
+            continue
+        # A recall request is not evidence: read the message back.
         try:
-            from hostrun.base import lark_bin
+            still_present = bool(message_checker(message_id))
+        except Exception as exc:  # noqa: BLE001 - unverifiable is not clean
+            failed.append(f"消息 {message_id}: 撤回结果无法核对（{exc}）")
+            continue
+        if still_present:
+            residue.append(f"消息 {message_id} 撤回后仍存在")
+        else:
+            removed_messages += 1
 
-            drive = LarkDrive(bin=lark_bin(home))
-        except Exception:  # noqa: BLE001
-            drive = None
+    if file_needs_cli:
+        if executable:
+            drive = LarkDrive(bin=executable)
+        else:
+            failed.append("云盘：未记录可用的 lark-cli 绝对路径，无法删除或读回")
     for file_id in found["file_ids"]:
         if drive is None:
-            failed.append(f"Drive {file_id}: 无云盘客户端，无法删除或验证")
             continue
         present = None
         for folder in _drive_folders(home, drive):
@@ -301,26 +359,35 @@ def run(
             if "unknown token" in str(exc).lower() or "not found" in str(exc).lower():
                 continue
             failed.append(f"Drive {file_id}: {exc}")
+        else:
+            removed_files += 1
 
     for path in [found["local"]["card"], found["local"]["plan"], *found["local"]["pushes"]]:
         if not path:
             continue
+        target = Path(path)
+        existed = target.exists()
         try:
-            Path(path).unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
         except OSError as exc:
             failed.append(f"本地文件 {path}: {exc}")
+        else:
+            if existed and not target.exists():
+                removed_local += 1
 
     try:
         queue = QueueStore(home)
         queue.init()
-        queue.discard_push(found["push_ids"], reason="smoke_cleanup")
+        discarded = queue.discard_push(found["push_ids"], reason="smoke_cleanup")
+        removed_queue = len(discarded.get("removed") or [])
     except Exception as exc:  # noqa: BLE001
         failed.append(f"本地队列: {exc}")
 
     # ---- verification: deletion requests are not evidence of deletion
-    residue = []
+    base_removed = 0
     for key, value in removed.items():
         left = _still_present(client, value["table_id"], value["record_ids"])
+        base_removed += len(value["record_ids"]) - len(left)
         if left:
             residue.append(f"Base {key} 仍有 {len(left)} 行")
     for path in [found["local"]["card"], found["local"]["plan"], *found["local"]["pushes"]]:
@@ -345,12 +412,20 @@ def run(
                 residue.append(f"云盘仍有 {len(still)} 个测试文件")
 
     verified = not failed and not residue and not unretractable and not found["notes"]
+    counts = {
+        "base_records": base_removed,
+        "messages": removed_messages,
+        "drive_files": removed_files,
+        "local_files": removed_local,
+        "queue_items": removed_queue,
+    }
     cleanup = {
         "started_at": now(),
         "status": "ok" if verified else "blocked",
         "test_ok": found["test_ok"],
         "verified": verified,
         "removed": removed,
+        "counts": counts,
         "failed": failed,
         "residue": residue,
         "unretractable": unretractable,
@@ -372,6 +447,7 @@ def run(
             evidence={
                 "test_id": found["test_id"],
                 "removed": {key: len(value["record_ids"]) for key, value in removed.items()},
+                "counts": counts,
                 "unretractable": 0,
             },
             recheck=True,
@@ -382,7 +458,7 @@ def run(
             "cleanup",
             "blocked",
             note="失败测试的产物已清理；测试未成功，正式初始化仍关闭",
-            evidence={"test_id": found["test_id"], "test_ok": False},
+            evidence={"test_id": found["test_id"], "test_ok": False, "counts": counts},
             recheck=True,
         )
     else:
@@ -400,6 +476,7 @@ def run(
                 "test_id": found["test_id"],
                 "failed": failed,
                 "residue": residue,
+                "counts": counts,
                 "unretractable": [row["message_id"] for row in unretractable],
             },
             recheck=True,

@@ -11,7 +11,14 @@ from common import emit, home, read_json
 from publisher import alerts as alert_service
 from publisher.cards import build_rating_card
 from publisher.feishu import FeishuError
-from publisher.service import deliver_next, listen, replay, send_push, send_rating
+from publisher.service import (
+    deliver_next,
+    listen,
+    replay,
+    resolve_send,
+    send_push,
+    send_rating,
+)
 from publisher.store import PublisherStore
 
 
@@ -60,7 +67,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max", type=int, default=5)
     p.add_argument("--as", dest="identity", default="bot", choices=["bot", "user"])
 
-    sub.add_parser("pending")
+    p = sub.add_parser(
+        "resolve-send",
+        help="reconcile a send whose outcome was unknown (check Feishu first)",
+    )
+    p.add_argument("--push", required=True)
+    action = p.add_mutually_exclusive_group(required=True)
+    action.add_argument("--message", help="message_id seen in Feishu: resolves as sent")
+    action.add_argument(
+        "--not-sent",
+        dest="not_sent",
+        action="store_true",
+        help="confirmed not sent: clears the attempt so a retry is allowed",
+    )
+
+    p = sub.add_parser("pending")
     return parser
 
 
@@ -136,6 +157,15 @@ def main(argv: list[str] | None = None) -> int:
                     dry_run=args.dry_run,
                     identity=args.identity,
                     max_alerts=args.max,
+                )
+            )
+        elif args.cmd == "resolve-send":
+            return _emit_result(
+                resolve_send(
+                    root,
+                    args.push,
+                    message_id=args.message,
+                    not_sent=args.not_sent,
                 )
             )
         elif args.cmd == "pending":

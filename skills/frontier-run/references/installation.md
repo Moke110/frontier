@@ -51,11 +51,15 @@ python -m hostrun.cli lark discover --root <workspace>
 python -m hostrun.cli lark install --root <workspace>     # 缺失时私有安装 @larksuite/cli
 python -m hostrun.cli lark login --root <workspace>       # 只输出用户要执行的登录命令
 python -m hostrun.cli lark status --root <workspace>      # 可执行 / 身份 / 授权范围 / 资源读取
+# 对既有库做只读预检，不接入也不修改：
+python -m hostrun.cli lark status --root <workspace> --base-token <base-token> --folder <drive-folder-token>
+python -m hostrun.cli --home <home> install check --base-token <base-token> --folder <drive-folder-token>
 ```
 
 - 可执行、已登录、授权范围、真实资源读取是四件事，分别报告。
 - 登录、管理员授权必须由用户完成；agent 不伪造、不静默扩大权限。
-- 设施创建前可对有权限的既有资源做只读 Base/Drive 预检，不代表接入或允许修改该库；没有可用资源时标 `untested`。设施就绪后还须读回新设施；要求预先成功读取的票据不能以 `untested` 通过。
+- `install check` 在 `permissions` 步骤**实测**数据根与 CLI 凭据目录（`LARK_CLI_HOME`，未设置时 `~/.lark-cli`）的写入：各创建一个随机临时探针文件再删除，任一失败即 `blocked`，note 给出具体路径与错误。身份证据另报 `dpop_key_status`/`dpop_mode` 状态词，不含密钥或用户标识原文。
+- `--base-token` 与可重复的 `--folder` 让预检读取既有 Base/Drive 资源，只发读请求：不写 `install/facilities.json`，不创建或接入 `knowledge/base.json`。设施创建前可对有权限的既有资源做只读 Base/Drive 预检，不代表接入或允许修改该库；没有可用资源时标 `untested`。设施就绪后还须读回新设施；要求预先成功读取的票据不能以 `untested` 通过。
 - 状态命令与报告都不含 token；凭据只保存在 `lark-cli` 自己的机制里。
 
 ### 3.3 设施（Base、表、云盘目录）
@@ -70,33 +74,39 @@ python -m hostrun.cli facilities status --home <home>
 
 - 先集中确认数据根与默认展示名称（Base、各表、原文库/推送库目录可改），确认后才写入。
 - 新建路径由 agent 创建 Base 本身、表、字段与两个云盘目录，不需要用户先手工准备空 Base。
-- 记录稳定 ID；改展示名不改 ID。同名 Base 有多个时阻塞，不猜测、不切换。
+- 记录稳定 ID；改展示名不改 ID。`create` 总是新建独立 Base，绝不按名称复用已有库；创建前若已有同名 Base 只给出提示（可用 `facilities plan` 查看），接入已有库必须显式 `facilities attach`。
 - 现行契约包含 12 张表：知识卡片、命题、证据、报道、变更日志、原文、推送日志、决定、配置、问题、反馈、更正。按契约逐字段读回；旧票据标题中的“九表”不能作为漏建后三表的依据。
-- 重跑复用已记录设施；本地确认丢失时按名称查找，只有唯一匹配且包含 frontier 首表才复用。已有库只检查与补缺，不清空、不重建。
+- 重跑复用已记录设施；本地记录丢失时不会按名称猜测复用，需重新 create 新库或用 attach 显式接入。已有库只检查与补缺，不清空、不重建。
 - 部分创建/权限拒绝/网络中断会报告已完成动作与缺项；修复后重跑继续。
 
 ### 3.4 关键词临时闭环（不改正式知识）
 
 ```bash
-python -m hostrun.cli smoke start --home <home> --keyword "<用户给的关键词>" --owner <open_id> --yes
+python -m hostrun.cli smoke start --home <home> --keyword "<用户给的关键词>" --owner <本人 open_id> --yes
 python -m hostrun.cli smoke plan  --home <home>
 python -m hostrun.cli smoke brief --home <home>          # 给宿主 agent 的下一步命令
 python -m hostrun.cli smoke record --home <home> --step retrieved --plan <已存在的计划/候选文件>
 python -m hostrun.cli smoke record --home <home> --step written --paper <选中 paper_id>（可重复）
+python -m writer.cli render --push <push> --out <html>
+python -m archive.cli add-push --file <push json>        # 先登记进推送库
 python -m hostrun.cli smoke record --home <home> --step rendered --push <push_id> --html <渲染文件>
 # ... sent（必须带 --push --message --question；上传文件用 --file，可重复）
+# 用户在飞书卡片本人评分/采纳后（不得代填），先 feedback sync 再记录：
 python -m hostrun.cli smoke record --home <home> --step rated --item <id> --verdict great
 python -m hostrun.cli smoke record --home <home> --step decided --item <id> --decision agree_all
 python -m hostrun.cli smoke record --home <home> --step applied --target <被采纳目标 id> --applied-field <字段>（每字段重复一次）
 python -m hostrun.cli smoke verify --home <home> --target-key cards --target-id <card_id> --field <字段>=<值>（可重复）
 ```
 
+- `smoke start --owner` 必填，且必须与当前登录的飞书用户一致：`smoke start` 用记录的 CLI 读取已认证 user 身份核对；缺失 CLI、未登录或身份未就绪返回 `recipient_unverified`，与登录用户不一致返回 `recipient_mismatch`（报告不回显 open_id）。离线模式无法证明收件人身份，会直接拒绝且不生成测试记录。核实后的收件人写入测试记录与 `install/recipient.json`（用户标识原文只留在数据根，不进入安装配置或报告），后续只用该收件人。
 - 只取本次临时卡片的检索式；临时卡片同时写入本地与 Base，ID/标签带测试标记。
-- `retrieved` 必须指向真实存在的计划/候选文件，候选数由该文件得出（可选 `--candidates` 必须与之一致）；`written` 至少一个选中论文 ID（`--paper`）；`rendered` 必须带推送 ID 与渲染文件，并按 `writer/render.py` 契约校验七段段落和 `原文图`/`生成图` 图注；这些证据与 `sent` 的副作用 ID 一并写入测试记录，供精确清理。
+- `retrieved` 必须指向真实存在的计划/候选文件，候选数由该文件得出（可选 `--candidates` 必须与之一致）；`written` 至少一个选中论文 ID（`--paper`）；`rendered` 必须在推送库中已有对应记录（先 `archive.cli add-push`），记录存在、push_id 一致且属于本次选中论文（否则 `push_record_missing` / `push_record_mismatch`），并按 `writer/render.py` 契约校验七段段落和 `原文图`/`生成图` 图注；这些证据与 `sent` 的副作用 ID 一并写入测试记录，供精确清理。
+- `sent` 记录前会核对 `publisher/messages.jsonl`：`--message` 必须是本次推送的 `push_file` 且 `target` 为已核实收件人；没有记录返回 `message_recipient_unverified`，推送/收件人不符返回 `message_mismatch`，均不推进步骤。
+- `rated`/`decided` 只认用户本人在飞书卡片提交的答案：统一问题队列中该题必须已由已核实收件人回答且分/采纳值与 `--verdict`/`--decision` 一致，否则拒绝（`rating_not_submitted`/`rating_not_by_user`/`rating_mismatch`，采纳同理）；agent 不得代填或自证。`feedback submit` 仍用于其他路径，但不是临时闭环的验收动作。
 - `applied` 用 `--target` 与 `--applied-field` 登记被采纳的目标与字段（省略时按临时卡片、只要求至少一个字段）；`verify` 必须覆盖每个已登记目标字段才完整，覆盖不足返回 `verification_incomplete`，字段不一致判失败。
 - 使用标准检索、写作、publisher、统一队列与反馈链路；只推一篇，评分先行，采纳后才写入。
 - 用户在飞书检查展示并提交反馈；agent 处理并读回验证。只有全部步骤 + 读回一致才算通过。
-- 任何失败先核对；发送超时不能确认则暂停，不重发。失败不开启正式初始化或日常推送。
+- 任何失败先核对；发送超时不能确认则暂停，不重发。`publisher` 在真正发送前写入持久发送尝试记录：异常或超时留下未决尝试，之后同一推送的发送会以 `send_status_unknown` 拒绝。必须先核对飞书，再用 `publisher.cli resolve-send --push <id> --message <message_id>`（已送达）或 `--not-sent`（确认未发出，才允许重试）。失败不开启正式初始化或日常推送。
 
 ### 3.5 清理测试产物
 
@@ -109,6 +119,7 @@ python -m hostrun.cli cleanup run  --home <home> --yes --abort
 
 - 只按本次测试的卡片 ID、推送 ID、问题 ID、选中论文 ID、文件 token、消息 ID 删除；不用目录/名称匹配或清空整库。
 - 删除 Base 记录、上传文件、临时卡片、推送 JSON、问题与反馈、可撤回消息；正式数据与用户原件不动。
+- 撤回消息与云盘读回只使用记录或显式给出的**绝对且存在**的 `lark-cli`；没有可用绝对路径时该项记 `failed`，不回退 PATH 的 `lark-cli`。
 - 删除后**读回确认**；不可删除或不可撤回的产物如实报告为清理未完成，正式初始化闸门保持关闭。
 - 保留安装环境、配置、空设施与最小验收状态（不含论文内容）。
 
@@ -145,7 +156,7 @@ python -m hostrun.cli schedules resume  --home <home> --yes
 - 每个任务保存 `frontier-run`、仓库、数据根、解释器与 CLI 的绝对路径；唤醒时先读 skill 再执行。
 - 小时检查只处理反馈/恢复/维护，**从不**创建检索请求；未答问题不阻塞维护。
 - 正式知识未就绪不启用每日推送；允许确认后暂不启用。
-- 任务创建成功只写 `schedules`；真实到点触发才写 `scheduled_run`。手动运行、旧成功标记、云任务都不能替代。两类任务都至少真实触发一次后，`scheduled_run` 才为 `ok`。
+- 任务创建成功只写 `schedules`；真实到点触发才写 `scheduled_run`。运行时间必须与计划时区记录的实际 UTC 偏移一致，并在计划时间后 5 分钟内启动；手动运行、异时区时间、旧成功标记、云任务都不能替代。两类任务都至少真实触发一次后，`scheduled_run` 才为 `ok`。
 - `schedules confirm` 为两个任务各生成一个 proof 并写入实际命令；`run --scheduled` 不带匹配 proof 时只当普通运行，不写入触发证据。确认后请使用 `schedules confirm` 返回的任务命令，不要手写不带 proof 的命令。
 - 暂停会停用配置并要求在宿主里停用实际任务；换机先停旧端，再 `executor handover`。
 

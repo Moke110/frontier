@@ -2,6 +2,38 @@
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下按日期归并证据；规格 [#51](https://github.com/Moke110/frontier/issues/51) 的历史离线实现与本轮文档修订分开记录。历史阻塞须在目标宿主重新探测，不能直接当作当前结果。代码通过离线测试不等于产品通过真实验收。
 
+## 2026-10-29 DeepSeek Harness 重新预检（真实只读；未写云端）
+
+本轮在 DeepSeek Harness 0.2.1-rc.3（`D:\dsh\DeepSeek Harness.exe` 的产品版本；会话工作区 `E:\Desktop\frontier`，策略 workspace-write）重新执行规格 #51 要求的权限预检。**未创建 Base、未发送消息、未创建宿主任务、未删除任何云端数据。**
+
+| 项目 | 实测结果 |
+|---|---|
+| 数据根写入 | 创建 `E:\Desktop\frontier-archive` 失败（`E:\Desktop` 不可写）；在 `E:\Desktop` 内写探测文件被拒绝（Access denied）。会话工作区 `E:\Desktop\frontier` 与会话临时目录可写。 |
+| CLI 凭据存储写入 | 写 `%USERPROFILE%\.lark-cli` 被拒绝（Access denied）。`lark-cli auth status --json --verify` 告警 `local DPoP setup failed ... failed to acquire key storage lock`；`dpopKeyStatus: missing`。 |
+| CLI 可执行 | `lark-cli 1.0.98`（npx 缓存中的绝对路径）可运行。 |
+| 身份 | bot `ready` 且 `verified: true`；user `missing`（DPoP 密钥不可用；令牌 `needs_refresh`，刷新窗口至 2026-11-03）。 |
+| 授权 / 真实资源读取 | user：`drive files list --as user` → 退出码 5，`file_io: failed to acquire token storage lock`；bot：→ 退出码 3，`app_scope_not_applied`，缺 `drive:drive`、`drive:drive:readonly`、`space:document:retrieve`。真实 Base 与 Drive 读取均未成功。 |
+| 研究输入 | `E:\Desktop\PDFs` 的 162 个 PDF 全部可提取（3046 页、13,573,742 字符；提取失败 0）。这只是可读性证据，未执行正式初始化。 |
+
+结论：#53 的真实预检仍然阻塞，阻塞项为（1）宿主对数据根与 CLI 凭据存储的写入权限；（2）飞书 user 身份（DPoP 存储锁）；（3）应用未申请 Drive scope。三者都是宿主/账号层前置条件，属于需要用户完成的登录、授权与宿主权限，不能通过移动解释器、重建数据根或改用全局完全访问绕过。因此 #53–#59 继续保持开放；本轮不宣称任何真实闭环通过。
+
+**会话边界。** 安装设计要求宿主会话的工作区是“安装工作区”，即同时包含代码目录与数据根两个子目录的宿主项目文件夹（README 的“工作区”）。本次会话工作区是代码目录 `E:\Desktop\frontier` 本身，数据根 `E:\Desktop\frontier-archive` 因而位于会话工作区之外，这是本轮数据根写权限阻塞的直接原因之一；需要在以安装工作区（例如 `E:\Desktop`）为工作区的宿主会话中重新预检。CLI 凭据存储位于用户目录（`%USERPROFILE%\.lark-cli`），即使工作区正确也仍需宿主允许该路径写入；前置条件未具备时按要求记录 blocked，不迁移凭据。
+
+## 2026-10-29 规格 #51 修订标准补全（离线完成；真实验收未执行）
+
+2026-10-28 首次实现后，规格 #51 与 #53–#59 的验收标准于当晚更新，新增了写权限预检、既有库只读预检、独立新 Base、临时卡片隔离、收件人核验与提交/发送证据、清理消息读回、到点触发与知识就绪闸门等要求。本轮按更新后的标准补齐代码与离线测试：
+
+| 票据 | 补全内容 | 离线测试 |
+|---|---|---|
+| #53 | 数据根与 CLI 凭据存储写权限探针（写后即删，拒绝即 `blocked`）；DPoP 状态进入报告；`lark status` / `install check` 支持显式 Base/目录 token 的只读预检且不接入既有库；依赖导入探针含 PyMuPDF | `test_hostrun_install.py`、`test_hostrun_lark.py` |
+| #54 | `facilities create` 不再按同名自动收养既有库，而是创建独立新 Base；同名既有库只在 plan 中提示、不改动；重跑仍按记录 ID 幂等 | `test_hostrun_facilities.py` |
+| #55 | 正式检索加载知识卡片时排除 `card_smoke_*` 临时卡片，临时检索式不进入日常输入 | `test_frontier.py`、`test_hostrun_smoke.py` |
+| #56 | 收件人必须是已认证 user 的 open_id；评分/采纳须有用户本人提交的已提交答案且与记录一致；发送前登记尝试，结果不明时拒绝盲目重发并可对账；`rendered` 须关联本次测试的推送库记录 | `test_hostrun_smoke.py`、`test_publisher.py` |
+| #57 | 撤回消息后读回确认；清理报告按 Base、消息、云盘文件、本地文件与队列分范围给出删除计数 | `test_hostrun_cleanup.py` |
+| #59 | 触发证据须落在任务计划窗口内（每日 08:00 / 每小时第 5 分钟，15 分钟启动容忍）；`host_created` 一律要求知识就绪，暂停路径同样拒绝 | `test_hostrun_schedules.py` |
+
+离线全量：**386 passed, 3 skipped**（本机 `python -X utf8 -m pytest -q … tests`，pytest 临时目录使用本地 shim，未进入仓库）。本轮未执行真实 Base/Drive 读取、真实推送与用户评分/采纳、清理读回、正式知识初始化或到点触发；#53–#59 的缺口与阻塞见各自票据评论，票据保持开放。
+
 ## 2026-10-28 文档与规格修订（未执行真实验收）
 
 本轮仅统一安装说明并修订规格 #51，未新增真实飞书读写、用户评分与采纳、清理读回、正式初始化或宿主定时触发证据。#53–#59 保持开放；本轮研究输入与调度选择仅记录在 GitHub 规格，不在此维护任务副本。
@@ -10,7 +42,7 @@
 
 ## 2026-10-28 规格 #51 实现（离线完成；真实验收阻塞）
 
-用户当日决定：本轮只实现代码与离线测试，真实验收记为阻塞，不写入真实飞书数据。宿主机为 DeepSeek Harness 44.7.0（[ADR 0006](../adr/0006-deepseek-harness-as-a-host.md)），其 workspace-write 策略实测把整个进程树限制在会话工作区与会话临时目录：
+用户当日决定：本轮只实现代码与离线测试，真实验收记为阻塞，不写入真实飞书数据。宿主机当时记录为 DeepSeek Harness 44.7.0（2026-10-27 的历史版本号；2026-10-29 重新预检时产品版本为 0.2.1-rc.3，见上节；[ADR 0006](../adr/0006-deepseek-harness-as-a-host.md)），其 workspace-write 策略实测把整个进程树限制在会话工作区与会话临时目录：
 
 - 允许写 `E:\Desktop\frontier` 与会话临时目录；拒绝写 `E:\Desktop\frontier-archive`、`%USERPROFILE%\.lark-cli`、`C:\Python314`、`D:\nodejs`。
 - 用仓库 `.venv` 解释器、`C:\Python314\python.exe` 与 `node.exe` 分别验证，结果一致：限制与解释器位置、工作目录无关。因此规格“把解释器移到数据根即可写 CLI 令牌存储”的假设在本机不成立。
@@ -20,7 +52,7 @@
 |---|---|---|---|
 | workspace（数据根私有解释器） | `hostrun/workspace.py`、`install.py`；`tests/test_hostrun_workspace.py`、`tests/test_hostrun_install.py` | 用 `C:\Python314\python.exe` 执行 `install workspace`：数据根创建、指针写入、代码目录 `git status` 为空；`install toolchain --uv D:\uv\uv.exe` 在数据根创建 Python 3.13.13 环境，解释器路径在代码目录之外 | 代码与离线验收通过；真实依赖下载未在时限内完成，导入探针仅离线覆盖 |
 | lark_cli | `hostrun/lark.py`、`install.py`；绝对路径权威、失效即 `blocked`、`lark discover` 持久化 | 可执行存在且可运行；记录路径 | 代码与离线验收通过；真实 `discover` 持久化未执行 |
-| identity / permissions | 同一就绪规则、user/bot 分列、`needs_refresh` 窗口、细粒度 scope 与旧宽授权、缺项列出、报告脱敏 | user `missing`（DPoP 存储锁）；bot `ready` 但缺 drive/base app scope | 离线通过；真实 Base/Drive 读取 blocked |
+| identity / permissions | 同一就绪规则、user/bot 分列、`needs_refresh` 窗口、细粒度 scope 与旧宽授权、缺项列出、报告脱敏；数据根与 CLI 凭据目录的临时探针写入实测；DPoP 状态词；`--base-token/--folder` 只读预检既有库且不写设施 | user `missing`（DPoP 存储锁）；bot `ready` 但缺 drive/base app scope | 离线通过；真实写入权限与 Base/Drive 读取 blocked |
 | facilities | 12 张契约表 + 字段级读回 + 两个云盘目录 + 稳定 ID + 改名不改 ID + 幂等 | 未创建（未写飞书） | 离线通过；真实创建 untested |
 | test_loop | 测试标识、`retrieved` 从真实 `--plan` 产物取候选数、`written` 选中论文 ID、`rendered` 按 `writer/render.py` 契约校验七段与原文图/生成图图注、评分先于采纳、`verify` 累计逐字段读回 | 未推送、未评分、未采纳 | 离线通过；真实闭环 untested |
 | cleanup | 按测试 ID 与记录 ID 删除、消息撤回、逐范围读回、报道表作用域、失败中止、初始化闸门、幂等 | 未删除任何云端数据 | 离线通过；真实清理 untested |
@@ -33,7 +65,7 @@
 
 ## 2026-10-27 首次 Windows 真实安装（进行中，未改动飞书数据）
 
-目标宿主为 [DeepSeek Harness 44.7.0](../adr/0006-deepseek-harness-as-a-host.md)（第三款运行宿主）；飞书 CLI 复用用户已配置的 `@larksuite/cli` 1.0.98（[ADR 0007](../adr/0007-reuse-configured-lark-cli.md)），实际可执行文件在 npx 缓存中。代码目录 `E:\Desktop\frontier`（`dev`），数据根 `E:\Desktop\frontier-archive`。
+目标宿主为 [DeepSeek Harness 44.7.0](../adr/0006-deepseek-harness-as-a-host.md)（2026-10-27 当时版本；第三款运行宿主）；飞书 CLI 复用用户已配置的 `@larksuite/cli` 1.0.98（[ADR 0007](../adr/0007-reuse-configured-lark-cli.md)），实际可执行文件在 npx 缓存中。代码目录 `E:\Desktop\frontier`（`dev`），数据根 `E:\Desktop\frontier-archive`。
 
 已取得的真实只读证据：
 
@@ -89,7 +121,7 @@
 | WorkBuddy 本地宿主 | 历史开发会话验证过项目访问、技能加载、本地命令 | 内置调度实际触发、无人值守权限、真实飞书闭环 | [WorkBuddy 接入与本地定时验收](https://github.com/Moke110/frontier/issues/38) |
 | 云端存量恢复 | 基线核对、分片顺序、配额计算与故障测试；空库会正确报告缺失 | 真实 174 篇核对、云端恢复演练、配额实测与连续三天零差异 | [存量核对与云端恢复验收](https://github.com/Moke110/frontier/issues/39) |
 | 安装说明 | 现行用户入口与运行时技能已统一 | 在目标宿主按最终说明完成新装、恢复并留证 | [统一安装说明并退役旧部署入口](https://github.com/Moke110/frontier/issues/40) |
-| 新安装增量 | 工作区、uv、CLI 预检、设施、临时闭环、清理、正式知识、两类任务均有离线测试；规格 #51 的 #52–#59 代码已合入 `dev`，离线 331 passed / 3 skipped | 真实 CLI/租户/宿主触发；真实 Base/Drive 读、推送/评分/采纳、清理读回、正式初始化与到点触发 | [#41](https://github.com/Moke110/frontier/issues/41) 的子票据 #42–#50；#51 的子票据 #52–#60 |
+| 新安装增量 | 工作区、uv、CLI 预检（含写入权限探针、DPoP 状态与只读既有资源预检）、设施、临时闭环、清理、正式知识、两类任务均有离线测试；规格 #51 的 #52–#59 代码已合入 `dev`，离线 386 passed / 3 skipped | 真实 CLI/租户/宿主触发；真实 Base/Drive 读、推送/评分/采纳、清理读回、正式初始化与到点触发 | [#41](https://github.com/Moke110/frontier/issues/41) 的子票据 #42–#50；#51 的子票据 #52–#60 |
 
 核对时发现 ChatGPT 任务已被标为关闭，但其最后一条验收评论仍写“未实测”，未附新的通过证据；因此本表保留证据缺口，不以 issue 状态推断验收通过。后续执行者须先核对关闭原因与最新证据；本轮不更改 tracker 状态。
 
@@ -99,7 +131,7 @@
 
 ## 下一次真实验收
 
-0. 在实际目标宿主重新实测数据根与飞书 CLI 的令牌/DPoP 存储写入权限。2026-10-28 的历史 workspace-write 限制针对整棵进程树，不代表当前策略；数据根私有解释器不能解除该限制。必要权限未具备时记录 `blocked`，不能开始真实闭环。
+0. 在实际目标宿主重新实测数据根与飞书 CLI 的令牌/DPoP 存储写入权限；2026-10-29 的实测见本轮预检，两者仍被拒绝。宿主的会话工作区必须是安装工作区（同时包含代码目录与数据根两个子目录）；以代码目录为工作区的会话无法创建数据根。数据根私有解释器不能解除该限制。必要权限未具备时记录 `blocked`，不能开始真实闭环。
 1. 由宿主按 [用户安装流程](../../README.md) 准备私有依赖并引导用户完成飞书授权，连接实际 Base。仅报告身份状态，不输出凭据。
 2. 分别在目标宿主验证版本、工作目录、技能、权限，以及两类任务各至少一次真实到点触发；保存任务配置、时间、运行输出和反馈续接记录。一款宿主的结果不能替代另一款。
 3. 使用 `fixtures/pdf-manifest.jsonl` 复核历史 174 篇原文，只补实际缺口；检查分片、原文关联、测试推送引用和配额差异（小于 1%）。不得将上传失败改成无原件来通过验收。

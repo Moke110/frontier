@@ -41,6 +41,23 @@ def _host_declaration(args) -> dict | None:
     }
 
 
+def _add_resource_token_args(parser: argparse.ArgumentParser) -> None:
+    """Shared read-only Base/Drive probe flags for ``lark status`` and ``install check``."""
+    parser.add_argument(
+        "--base-token",
+        dest="base_token",
+        help="read-only probe of an existing Base without attaching it",
+    )
+    parser.add_argument(
+        "--folder",
+        dest="folders",
+        action="append",
+        default=[],
+        metavar="TOKEN",
+        help="read-only probe of an existing Drive folder; repeat for each",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hostrun", description=__doc__)
     parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
@@ -62,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--host-schedules", action="store_true")
     c.add_argument("--permissions", help="comma separated granted scopes")
     c.add_argument("--workspace-root", help="installation workspace recorded by install workspace")
+    _add_resource_token_args(c)
     isub.add_parser("status")
     r = isub.add_parser("report")
     r.add_argument("--out")
@@ -120,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     ssub = p.add_subparsers(dest="action", required=True)
     st = ssub.add_parser("start", help="create the temporary card and test record")
     st.add_argument("--keyword", required=True)
-    st.add_argument("--owner", default="")
+    st.add_argument("--owner", required=True, help="用户本人 open_id（与登录身份核实）")
     st.add_argument("--repo")
     st.add_argument("--yes", action="store_true", help="the user confirmed this test")
     sp = ssub.add_parser("plan", help="write a plan limited to the temporary card")
@@ -212,6 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--cli", dest="cli_path")
     ls.add_argument("--required", default="base,drive,messages",
                     help="comma separated capabilities (base,drive,messages) or scope names")
+    _add_resource_token_args(ls)
 
     # ----------------------------------------------------------------------- kb
     p = sub.add_parser("kb", help="knowledge base create / attach / verify")
@@ -556,6 +575,8 @@ def _install(args, root: Path) -> tuple[int, dict]:
             python=args.python_path,
             timezone_name=args.timezone_name,
             workspace_root=args.workspace_root,
+            base_token=args.base_token,
+            folders=args.folders,
         )
         return (0 if result["ok"] else 1), result
     if args.action == "status":
@@ -692,7 +713,14 @@ def _facilities(args, root: Path, offline: bool) -> tuple[int, dict]:
     home = Path(root).expanduser().resolve()
     overrides = _name_overrides(args) if args.action in ("plan", "create", "attach") else {}
     if args.action == "plan":
-        return 0, facilities.plan(home, overrides)
+        if offline:
+            client, _drive = _offline_assets(home)
+            admin = _OfflineAdmin(home, client)
+        else:
+            from library.admin import LarkAdminClient
+
+            admin = LarkAdminClient(bin=_cli_bin(home))
+        return 0, facilities.plan(home, overrides, admin=admin)
 
     client = None
     drive = None
@@ -767,6 +795,18 @@ def _smoke(args, root: Path, offline: bool) -> tuple[int, dict]:
 
     client = base_client(root, offline=True) if offline else None
     if args.action == "start":
+        verifier = lark.user_open_id
+        offline_note = ""
+        if offline:
+            # Offline fixtures cannot prove who the recipient is, and a real
+            # lark-cli spawn would break the offline promise.
+            def verifier(_cli):
+                return {"ok": False}
+
+            offline_note = (
+                "离线模式无法证明收件人身份：offline 夹具不含真实登录身份，"
+                "请连接真实 lark-cli 并完成本人登录后重试；本次未生成测试记录"
+            )
         result = smoke.start(
             root,
             args.keyword,
@@ -774,7 +814,10 @@ def _smoke(args, root: Path, offline: bool) -> tuple[int, dict]:
             repo=args.repo,
             client=client,
             confirmed=args.yes,
+            verifier=verifier,
         )
+        if offline_note:
+            result.setdefault("offline_note", offline_note)
         return (0 if result.get("ok") else 1), result
     if args.action == "plan":
         result = smoke.plan(root, days=args.days, out=Path(args.out) if args.out else None)
@@ -803,7 +846,7 @@ def _smoke(args, root: Path, offline: bool) -> tuple[int, dict]:
             targets=args.targets,
             applied_fields=args.applied_fields,
         )
-        return 0, result
+        return (0 if result.get("ok", True) else 1), result
     if args.action == "verify":
         fields = args.fields or []
         expecteds = args.expected or []
@@ -973,6 +1016,8 @@ def _lark(args, root: Path) -> tuple[int, dict]:
         home=data_root,
         required=required,
         spec=spec,
+        base_token=args.base_token,
+        folders=args.folders,
     )
     ensure_dir(data_root / "install")
     install.record(

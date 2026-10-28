@@ -22,17 +22,40 @@ class FrontierError(RuntimeError):
     pass
 
 
-def load_cards(home: Path) -> list[dict]:
+# Acceptance cards written by ``hostrun/smoke.py`` (``card_smoke_*``) live in
+# the same archive as formal cards, but they are marked temporary test content,
+# never knowledge. Only the temporary test's own plan may read them, so formal
+# loading skips them; otherwise a running acceptance test would inject its
+# keyword into the daily retrieval and push plan.
+TEMPORARY_CARD_PREFIX = "card_smoke_"
+
+
+def temporary_card_id(test_id: str) -> str:
+    """The one place a temporary acceptance card id is built (``card_smoke_*``)."""
+    suffix = str(test_id or "")
+    if suffix.startswith("smoke_"):
+        suffix = suffix[len("smoke_") :]
+    return f"{TEMPORARY_CARD_PREFIX}{suffix}"
+
+
+def is_temporary_card(card: dict | None) -> bool:
+    """Whether a card row belongs to the temporary acceptance loop, not knowledge."""
+    return str((card or {}).get("id") or "").startswith(TEMPORARY_CARD_PREFIX)
+
+
+def load_cards(home: Path, *, include_temporary: bool = False) -> list[dict]:
     card_dir = Path(home) / "archive" / "cards"
     rows = [read_json(p) for p in sorted(card_dir.glob("*.json"))] if card_dir.exists() else []
     rows = [r for r in rows if r]
+    if not include_temporary:
+        rows = [r for r in rows if not is_temporary_card(r)]
     if not rows:
         raise FrontierError(f"no knowledge cards under {card_dir}")
     return rows
 
 
-def load(home: Path) -> tuple[list[dict], dict]:
-    cards = load_cards(home)
+def load(home: Path, *, include_temporary: bool = False) -> tuple[list[dict], dict]:
+    cards = load_cards(home, include_temporary=include_temporary)
     state = read_yaml(Path(home) / "state" / "checkpoints.yaml") or {
         "schema_version": 1,
         "checkpoints": {},
@@ -67,8 +90,9 @@ def plan(
     days: int = 7,
     limit: int = 20,
     sources: tuple[str, ...] = SOURCES,
+    include_temporary: bool = False,
 ) -> dict:
-    cards, state = load(home)
+    cards, state = load(home, include_temporary=include_temporary)
     end = date.fromisoformat(day) if day else date.today()
     start = end - timedelta(days=max(days - 1, 0))
     # Higher-weight cards query first: the retriever dedupes by paper, so the
@@ -118,8 +142,8 @@ def plan(
     }
 
 
-def validate(home: Path) -> dict:
-    cards = load_cards(home)
+def validate(home: Path, *, include_temporary: bool = False) -> dict:
+    cards = load_cards(home, include_temporary=include_temporary)
     problems, rows = [], []
     for card in cards:
         missing = [f for f in CARD_FIELDS if card.get(f) in (None, "", [])]

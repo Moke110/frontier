@@ -245,6 +245,8 @@ def test_standard_retrieval_refuses_leftover_smoke_card(tmp_path):
     initialize.propose(home, [_card()], client=base)
     initialize.confirm(home, confirmed_by_user=True)
     initialize.apply_draft(home, client=base)
+    plan_path = home / initialize.PLAN_REL
+    plan_path.unlink()
     smoke_card = home / "archive" / "cards" / "card_smoke_leftover.json"
     smoke_card.write_text(
         json.dumps(
@@ -260,6 +262,9 @@ def test_standard_retrieval_refuses_leftover_smoke_card(tmp_path):
 
     with pytest.raises(HostRunError):
         initialize.standard_retrieval(home)
+
+    # The standard path never writes a formal plan containing the test card.
+    assert not plan_path.exists()
 
 
 def test_status_next_action_mentions_cleanup_when_gate_is_closed(tmp_path):
