@@ -378,12 +378,36 @@ def _probe_file_writer(path: Path) -> None:
     path.write_text("frontier write probe\n", encoding="utf-8")
 
 
+def _nearest_existing_dir(target: Path) -> Path | None:
+    current = Path(target).expanduser()
+    while True:
+        if current.is_dir():
+            return current
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
 def _probe_one_write(target: Path, *, writer=None) -> dict:
-    """Create and delete one uniquely named file; carry the exact failure."""
+    """Create and delete one uniquely named file; carry the exact failure.
+
+    The probe never creates the target directory: creating ``~/.lark-cli`` just
+    to test writability would itself be the side effect we promise not to have.
+    An existing target is probed in place; a missing one is probed in its
+    nearest existing ancestor, which is what would receive the directory.
+    """
     target = Path(target).expanduser()
-    probe = target / f".frontier-write-probe-{uuid.uuid4().hex[:8]}"
+    root = _nearest_existing_dir(target)
+    if root is None:
+        return {
+            "status": "blocked",
+            "path": str(target),
+            "probe": "",
+            "error": "Path has no existing ancestor directory to probe",
+        }
+    probe = root / f".frontier-write-probe-{uuid.uuid4().hex[:8]}"
     try:
-        target.mkdir(parents=True, exist_ok=True)
         (writer or _probe_file_writer)(probe)
         probe.unlink()
     except OSError as exc:
@@ -395,9 +419,15 @@ def _probe_one_write(target: Path, *, writer=None) -> dict:
             "status": "blocked",
             "path": str(target),
             "probe": str(probe),
+            "probe_root": str(root),
             "error": f"{type(exc).__name__}: {exc}",
         }
-    return {"status": "ok", "path": str(target), "probe": str(probe)}
+    return {
+        "status": "ok",
+        "path": str(target),
+        "probe": str(probe),
+        "probe_root": str(root),
+    }
 
 
 def probe_writes(home: str | Path, *, store_dir=None, writer=None) -> dict:
@@ -406,6 +436,8 @@ def probe_writes(home: str | Path, *, store_dir=None, writer=None) -> dict:
     Interpreter placement says nothing about host write permission, so both
     locations are proved with a real create/delete cycle.  Credentials are
     never read or copied; only a temporary probe file is written and removed.
+    A missing store directory is probed through its nearest existing ancestor,
+    so the check never creates ``~/.lark-cli`` as a side effect.
     """
     checks = {
         "data_root": _probe_one_write(Path(home), writer=writer),
@@ -690,6 +722,8 @@ def check(
     elif authz["status"] == "ok" and resources["status"] == "ok":
         permissions_status = "ok"
     else:
+        # ``untested`` = no resource tokens to probe yet, not a pass: #53 stays
+        # blocked until a real Base/Drive read succeeds.
         permissions_status = "untested"
     note_parts = []
     if write_problems:
@@ -787,6 +821,20 @@ def summary(home: Path) -> dict:
     }
 
 
+def _public_permissions(permissions: dict) -> dict:
+    """Permissions for the install report: never the recipient's open id.
+
+    The verified recipient lives in ``install/recipient.json``.  Older configs
+    may still carry ``owner``; it is dropped here so a report can never leak a
+    user-identifier original (#53).
+    """
+    return {
+        key: value
+        for key, value in (permissions or {}).items()
+        if key not in {"owner", "owner_verified_at"}
+    }
+
+
 def report(home: Path) -> dict:
     """Install report: working / blocked / untested, paths, timezone, schedules."""
     home = Path(home)
@@ -823,7 +871,7 @@ def report(home: Path) -> dict:
         "workspace": workspace,
         "timezone": config.get("timezone") or default_timezone(),
         "schedules": config.get("schedules") or {},
-        "permissions": config.get("permissions") or {},
+        "permissions": _public_permissions(config.get("permissions") or {}),
         "working": [s["step"] for s in result["working"]],
         "blocked": result["blocked"],
         "untested": result["untested"],

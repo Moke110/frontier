@@ -173,8 +173,7 @@ def test_resource_preflight_proves_base_and_drive_reads(tmp_path):
         tmp_path,
         "lark-cli",
         base_token="bas_x",
-        source_folder="fld_src",
-        push_folder="fld_push",
+        folders=["fld_src", "fld_push"],
         runner=runner,
     )
 

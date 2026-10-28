@@ -506,8 +506,6 @@ def resource_preflight(
     cli: str | None,
     *,
     base_token: str | None = None,
-    source_folder: str | None = None,
-    push_folder: str | None = None,
     folders: list[str] | None = None,
     runner=subprocess.run,
 ) -> dict:
@@ -532,6 +530,8 @@ def resource_preflight(
         except HostRunError:
             base_token = None
     checks = {}
+    # ``untested`` means there are no resource tokens to probe yet, not that
+    # permissions passed: #53 stays blocked until a real Base/Drive read succeeds.
     if not base_token:
         checks["base"] = {"status": "untested", "note": "设施尚未创建或接入"}
     else:
@@ -544,9 +544,7 @@ def resource_preflight(
             "status": "ok" if result["ok"] else "blocked",
             "note": "可读取 Base 表结构" if result["ok"] else "Base 读取失败：" + result["error"],
         }
-    folder_list = list(folders or []) or [
-        folder for folder in (source_folder, push_folder) if folder
-    ]
+    folder_list = list(folders or [])
     if not folder_list:
         checks["drive"] = {"status": "untested", "note": "云盘目录尚未创建或接入"}
     else:

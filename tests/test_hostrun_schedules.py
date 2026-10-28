@@ -57,6 +57,9 @@ def test_plan_has_exactly_two_tasks_and_no_maintenance(tmp_path):
     assert "maintenance" not in {task["intent"] for task in spec["tasks"]}
     assert "08:00" == spec["tasks"][0]["at"]
     assert spec["tasks"][1]["at"].startswith("*:")
+    offsets = {task["utc_offset_seconds"] for task in spec["tasks"]}
+    assert len(offsets) == 1
+    assert next(iter(offsets)) == schedules._local_utc_offset_seconds()
 
 
 def test_hourly_feedback_runs_maintenance_but_never_starts_retrieval(tmp_path):
@@ -200,6 +203,16 @@ def test_paused_confirmation_still_requires_initialized_knowledge(tmp_path):
     assert status["created"] is False
 
 
+def _pin_offset(home, seconds=8 * 3600):
+    """Pin the planned offset so wall-clock fixtures don't depend on the host zone."""
+    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
+    schedules_config = config["schedules"]
+    for task in schedules_config["tasks"]:
+        task["utc_offset_seconds"] = seconds
+    update_config(home, schedules=schedules_config)
+    return schedules_config
+
+
 def _confirmed_home(tmp_path):
     home = _home(tmp_path)
     install.record(home, "knowledge", "ok")
@@ -209,8 +222,8 @@ def _confirmed_home(tmp_path):
         host_created=True,
         task_ids={"frontier-daily": "d1", "frontier-feedback": "f1"},
     )
-    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
-    proofs = {row["id"]: row["proof"] for row in config["schedules"]["tasks"]}
+    config = _pin_offset(home)
+    proofs = {row["id"]: row["proof"] for row in config["tasks"]}
     return home, proofs
 
 
@@ -266,6 +279,38 @@ def test_daily_trigger_rejects_a_run_outside_the_startup_window(tmp_path):
     assert "计划" in result["note"]
     status = schedules.status(home)
     assert status["tasks"]["frontier-daily"]["scheduled_runs"] == 0
+
+
+def test_daily_trigger_rejects_a_run_in_another_planned_offset(tmp_path):
+    home, proofs = _confirmed_home(tmp_path)
+    _write_runs(
+        home,
+        "frontier-daily",
+        "daily",
+        proofs["frontier-daily"],
+        "2026-10-28T08:03:00+00:00",
+    )
+
+    result = schedules.record_trigger(home, "frontier-daily")
+
+    assert result["ok"] is False
+    assert result["reason"] == "no_scheduled_run"
+
+
+def test_daily_trigger_rejects_a_run_beyond_the_five_minute_window(tmp_path):
+    home, proofs = _confirmed_home(tmp_path)
+    _write_runs(
+        home,
+        "frontier-daily",
+        "daily",
+        proofs["frontier-daily"],
+        "2026-10-28T08:06:00+08:00",
+    )
+
+    result = schedules.record_trigger(home, "frontier-daily")
+
+    assert result["ok"] is False
+    assert result["reason"] == "no_scheduled_run"
 
 
 def test_feedback_trigger_accepts_the_configured_minute_window(tmp_path):
@@ -368,8 +413,8 @@ def test_manual_run_does_not_count_and_scheduled_runs_do(tmp_path):
     install.record(home, "knowledge", "ok")
     ids = {"frontier-daily": "d1", "frontier-feedback": "f1"}
     schedules.confirm(home, confirmed_by_user=True, host_created=True, task_ids=ids)
-    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
-    proofs = {row["id"]: row["proof"] for row in config["schedules"]["tasks"]}
+    config = _pin_offset(home)
+    proofs = {row["id"]: row["proof"] for row in config["tasks"]}
     (home / "hostrun").mkdir(parents=True, exist_ok=True)
     runs = home / "hostrun" / "runs.jsonl"
     runs.write_text(

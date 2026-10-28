@@ -26,6 +26,7 @@ import json
 from pathlib import Path
 
 from common import now, read_json, write_json
+from frontier.model import temporary_card_id
 from hostrun import facilities as facilities_mod
 from hostrun import install as install_mod
 from hostrun import lark
@@ -34,11 +35,11 @@ from hostrun.base import (
     base_client,
     base_config,
     load_config,
-    update_config,
 )
 from question_queue.store import QueueError, QueueStore
 
 SMOKE_REL = Path("install") / "smoke.json"
+RECIPIENT_REL = Path("install") / "recipient.json"
 PLAN_REL = Path("install") / "smoke-plan.json"
 STEPS = ("retrieved", "written", "rendered", "sent", "rated", "decided", "applied")
 TERMINAL_FAILED = ("failed", "aborted")
@@ -93,7 +94,9 @@ def _card_path(home: Path, card_id: str) -> Path:
 
 
 def _temp_card(test_id: str, keyword: str) -> dict:
-    card_id = f"card_{test_id}"
+    # The prefix is shared with formal loaders so ``card_smoke_*`` is excluded
+    # from ranking/writer context by the same rule everywhere.
+    card_id = temporary_card_id(test_id)
     return {
         "id": card_id,
         "label": f"[临时验收] {keyword}",
@@ -224,7 +227,7 @@ def verify_recipient(home: Path, owner: str, *, verifier=None) -> dict | None:
     verifier = verifier or lark.user_open_id
     cli = _recorded_lark_cli(home)
     try:
-        checked = verifier(cli) if cli else verifier(None)
+        checked = verifier(cli)
     except Exception as exc:  # noqa: BLE001 - an unverifiable recipient refuses
         return _recipient_refusal(
             "recipient_unverified",
@@ -379,7 +382,17 @@ def start(
         return _fail(home, state, "temp_card_write_failed", error=str(exc))
 
     save(home, state)
-    update_config(home, permissions={"owner": owner, "owner_verified_at": now()})
+    # The verified recipient is a user identifier original: keep it out of the
+    # install config/report and in its own data-root record (#53).
+    write_json(
+        home / RECIPIENT_REL,
+        {
+            "schema_version": 1,
+            "owner": owner,
+            "verified_at": now(),
+            "source": "smoke.start",
+        },
+    )
     install_mod.record(
         home,
         "test_loop",
@@ -530,6 +543,43 @@ def _push_record_refusal(home: Path, state: dict, push_id: str) -> dict | None:
     return None
 
 
+def _sent_message_refusal(home: Path, state: dict, push_id: str, message_id: str) -> dict | None:
+    """The recorded send must prove it reached the verified recipient.
+
+    ``sent`` is side-effect evidence, not an assertion: the publisher's message
+    store must already map this id to a ``push_file`` for this push and the
+    verified owner.  A rating-card message id or a send to someone else is not
+    evidence that the push file reached the user.
+    """
+    from publisher.store import PublisherStore
+
+    row = PublisherStore(Path(home)).find_message(message_id)
+    if not row:
+        return {
+            "ok": False,
+            "reason": "message_recipient_unverified",
+            "message": message_id,
+            "note": (
+                "发送记录中没有该消息：先由 publisher 真实发送推送文件，并确认 "
+                "publisher/messages.jsonl 已登记 push_file"
+            ),
+        }
+    owner = str(state.get("owner") or "") if state.get("owner_verified") else ""
+    if (
+        str(row.get("kind") or "") != "push_file"
+        or str(row.get("push_id") or "") != str(push_id)
+        or not owner
+        or str(row.get("target") or "") != owner
+    ):
+        return {
+            "ok": False,
+            "reason": "message_mismatch",
+            "message": message_id,
+            "note": "该消息不是本次推送文件，或收件人不是已核实的本人；不能作为发送证据",
+        }
+    return None
+
+
 def _submission_refusal(
     home: Path,
     state: dict,
@@ -674,6 +724,10 @@ def record(
             return refusal
     if step == "sent" and not (push and message and question):
         raise HostRunError("sent 步骤需要 --push、--message 与 --question，记录本次副作用归属")
+    if step == "sent":
+        refusal = _sent_message_refusal(home, state, str(push), str(message))
+        if refusal:
+            return refusal
     if step == "rated" and (not item or verdict not in ("irrelevant", "ok", "great")):
         raise HostRunError("rated 步骤需要 --item 和 --verdict")
     if step == "decided" and (not item or decision not in ("agree_all", "adopt", "keep_previous", "reject_all")):

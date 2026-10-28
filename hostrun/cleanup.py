@@ -22,6 +22,7 @@ from pathlib import Path
 
 from common import now, read_json, write_json
 from hostrun import install as install_mod
+from hostrun import lark as lark_mod
 from hostrun import smoke
 from hostrun.base import HostRunError, base_client
 from library.drive import LarkDrive
@@ -158,6 +159,31 @@ def _still_present(client, table_id: str, record_ids: list[str]) -> list[str]:
     return [record_id for record_id in record_ids if record_id in present]
 
 
+def _usable_cli(home: Path, explicit: str | None) -> str | None:
+    """Only a recorded/explicit *absolute existing* lark-cli may touch messages.
+
+    A bare ``lark-cli`` would be a silent PATH guess, and cleanup must never
+    recall/read through a different binary than the installation recorded
+    (ADR 0007, contracts/README.md §12).  ``None`` means "no usable CLI";
+    callers report a failed scope instead of falling back.
+    """
+    from hostrun.base import load_config
+
+    spec = str(explicit or "").strip()
+    if not spec:
+        spec = str((load_config(Path(home)).get("paths") or {}).get("lark_cli") or "").strip()
+    path = lark_mod.explicit_cli_path(spec)
+    if path is None or not path.is_absolute():
+        return None
+    resolved = lark_mod.resolve_cli(str(path))
+    if not resolved.get("found"):
+        return None
+    found = Path(str(resolved["path"]))
+    if not found.is_absolute() or not found.is_file():
+        return None
+    return str(found)
+
+
 def _drive_folders(home: Path, drive) -> list[str]:
     from hostrun import facilities
 
@@ -219,6 +245,7 @@ def run(
     messenger=None,
     message_checker=None,
     lark_cli: str | None = None,
+    cli_resolver=None,
 ) -> dict:
     """Delete every recorded artifact, then verify nothing is left behind."""
     home = Path(home).expanduser().resolve()
@@ -268,11 +295,14 @@ def run(
         except Exception as exc:  # noqa: BLE001 - keep going, report the residue
             failed.append(f"Base {key}: {exc}")
 
-    executable = lark_cli or ""
-    if not executable and (messenger is None or message_checker is None):
-        from hostrun.base import load_config
-
-        executable = (load_config(home).get("paths") or {}).get("lark_cli") or "lark-cli"
+    message_needs_cli = messenger is None or message_checker is None
+    file_needs_cli = drive is None and bool(found["file_ids"])
+    executable = ""
+    if message_needs_cli or file_needs_cli:
+        resolve = cli_resolver or _usable_cli
+        executable = resolve(home, lark_cli) or ""
+    if found["message_ids"] and message_needs_cli and not executable:
+        failed.append("消息：未记录可用的 lark-cli 绝对路径，无法撤回或读回")
     if message_checker is None:
         from publisher import feishu
 
@@ -282,6 +312,8 @@ def run(
             )
 
     for message_id in found["message_ids"]:
+        if message_needs_cli and not executable:
+            continue
         try:
             if messenger is None:
                 from publisher import feishu
@@ -303,16 +335,13 @@ def run(
         else:
             removed_messages += 1
 
-    if drive is None:
-        try:
-            from hostrun.base import lark_bin
-
-            drive = LarkDrive(bin=lark_bin(home))
-        except Exception:  # noqa: BLE001
-            drive = None
+    if file_needs_cli:
+        if executable:
+            drive = LarkDrive(bin=executable)
+        else:
+            failed.append("云盘：未记录可用的 lark-cli 绝对路径，无法删除或读回")
     for file_id in found["file_ids"]:
         if drive is None:
-            failed.append(f"Drive {file_id}: 无云盘客户端，无法删除或验证")
             continue
         present = None
         for folder in _drive_folders(home, drive):

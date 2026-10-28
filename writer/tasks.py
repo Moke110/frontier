@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from common import now, read_json
+from frontier.model import is_temporary_card
 from writer.model import _context
 from writer.render import inspect as inspect_pdf
 
@@ -68,7 +69,11 @@ PROP_ID_RE = re.compile(r"^prop_[a-z0-9][a-z0-9_]*$")
 def _cards(home: Path) -> dict[str, dict]:
     card_dir = Path(home) / "archive" / "cards"
     rows = [read_json(p) for p in sorted(card_dir.glob("*.json"))] if card_dir.exists() else []
-    return {r["id"]: r for r in rows if r and r.get("id")}
+    return {
+        r["id"]: r
+        for r in rows
+        if r and r.get("id") and not is_temporary_card(r)
+    }
 
 
 def build_task(home: Path, selection: dict, date: str) -> dict:

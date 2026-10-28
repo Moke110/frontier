@@ -123,6 +123,11 @@ def _ready(tmp_path, *, with_artifacts=True):
         json.dumps({"push_id": push_id, "paper_ids": [paper_id]}), encoding="utf-8"
     )
     smoke.record(home, "rendered", push=push_id, html=str(_rendered_file(tmp_path)))
+    from publisher.store import PublisherStore
+
+    publisher = PublisherStore(home)
+    publisher.init()
+    publisher.record_message(message, "push_file", push_id, target=OWNER)
     smoke.record(
         home, "sent", push=push_id, message=message, question=question
     )
@@ -157,7 +162,6 @@ def _ready(tmp_path, *, with_artifacts=True):
         state = smoke.load(home)
         state["artifacts"]["file_ids"].append(token)
         state["artifacts"]["source_ids"].append(f"src_{test_id}")
-        state["artifacts"]["message_ids"].append(message)
         smoke.save(home, state)
 
     # accept a real change on the temporary card
@@ -265,6 +269,9 @@ def test_message_recall_uses_the_recorded_cli_path(tmp_path, monkeypatch):
     ctx = _ready(tmp_path)
     calls = []
     checks = []
+    binary = tmp_path / "private-bin" / "lark-cli"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
 
     def recall(message_id, *, executable):
         calls.append((message_id, executable))
@@ -282,13 +289,40 @@ def test_message_recall_uses_the_recorded_cli_path(tmp_path, monkeypatch):
         confirmed=True,
         client=ctx["base"],
         drive=ctx["drive"],
-        lark_cli=str(tmp_path / "private-bin" / "lark-cli"),
+        lark_cli=str(binary),
     )
 
-    executable = str(tmp_path / "private-bin" / "lark-cli")
+    executable = str(binary)
     assert result["ok"] is True
     assert calls == [(ctx["message"], executable)]
     assert checks == [(ctx["message"], executable)]
+
+
+def test_cleanup_without_a_recorded_cli_blocks_instead_of_guessing_path(
+    tmp_path, monkeypatch
+):
+    ctx = _ready(tmp_path)
+    home = ctx["home"]
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("cleanup must not recall/read through a PATH guess")
+
+    monkeypatch.setattr("publisher.feishu.delete_message", forbidden)
+    monkeypatch.setattr("publisher.feishu.get_message", forbidden)
+
+    result = cleanup.run(
+        home,
+        confirmed=True,
+        client=ctx["base"],
+        drive=ctx["drive"],
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert any("消息" in line and "lark-cli" in line for line in result["cleanup"]["failed"])
+    assert smoke.load(home).get("cleaned_at") is None
+    with pytest.raises(HostRunError):
+        cleanup.require_cleaned(home)
 
 
 def test_unretractable_message_keeps_the_gate_closed(tmp_path):
@@ -588,6 +622,13 @@ def test_unverifiable_message_readback_blocks_cleanup(tmp_path):
 def test_cleanup_reports_per_scope_delete_counts(tmp_path):
     ctx = _ready(tmp_path)
     home = ctx["home"]
+    planned = cleanup.plan(home, client=ctx["base"])
+    before = smoke.load(home)
+    queue_before = [
+        item
+        for item in QueueStore(home).items()
+        if item.get("push_id") == ctx["push_id"]
+    ]
 
     result = cleanup.run(
         home,
@@ -600,11 +641,12 @@ def test_cleanup_reports_per_scope_delete_counts(tmp_path):
 
     assert result["ok"] is True
     counts = result["cleanup"]["counts"]
-    assert counts["base_records"] == 7
-    assert counts["messages"] == 1
-    assert counts["drive_files"] == 1
-    assert counts["local_files"] == 3
-    assert counts["queue_items"] == 2
+    # Derived from this test's own inventory, not a hand-maintained total.
+    assert counts["base_records"] == sum(planned["records"].values())
+    assert counts["messages"] == len(before["artifacts"]["message_ids"])
+    assert counts["drive_files"] == len(before["artifacts"]["file_ids"])
+    assert counts["local_files"] == len(planned["local_files"])
+    assert counts["queue_items"] == len(queue_before)
     # per-table detail survives next to the per-scope totals
     assert result["cleanup"]["removed"]["papers"]["record_ids"]
 
