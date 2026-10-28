@@ -124,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     ssub = p.add_subparsers(dest="action", required=True)
     st = ssub.add_parser("start", help="create the temporary card and test record")
     st.add_argument("--keyword", required=True)
-    st.add_argument("--owner", default="")
+    st.add_argument("--owner", required=True, help="用户本人 open_id（与登录身份核实）")
     st.add_argument("--repo")
     st.add_argument("--yes", action="store_true", help="the user confirmed this test")
     sp = ssub.add_parser("plan", help="write a plan limited to the temporary card")
@@ -791,6 +791,7 @@ def _smoke(args, root: Path, offline: bool) -> tuple[int, dict]:
             repo=args.repo,
             client=client,
             confirmed=args.yes,
+            verifier=lark.user_open_id,
         )
         return (0 if result.get("ok") else 1), result
     if args.action == "plan":
@@ -820,7 +821,7 @@ def _smoke(args, root: Path, offline: bool) -> tuple[int, dict]:
             targets=args.targets,
             applied_fields=args.applied_fields,
         )
-        return 0, result
+        return (0 if result.get("ok", True) else 1), result
     if args.action == "verify":
         fields = args.fields or []
         expecteds = args.expected or []

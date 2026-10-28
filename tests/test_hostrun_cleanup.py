@@ -60,6 +60,38 @@ class Admin:
         }
 
 
+OWNER = "ou_owner"
+
+
+def _verifier(open_id: str = OWNER):
+    return lambda cli: {"ok": True, "open_id": open_id}
+
+
+def _seed_queue(home, push_id, question, decision_item):
+    """The user's own card submissions: rating, then adoption."""
+    root = Path(home) / "queue"
+    items = [
+        {
+            "id": question,
+            "kind": "rating",
+            "push_id": push_id,
+            "status": "answered",
+            "answer": {"verdict": "great", "operator_id": OWNER},
+        },
+        {
+            "id": decision_item,
+            "kind": "card_update",
+            "push_id": push_id,
+            "status": "answered",
+            "answer": {"decision": "agree_all", "operator_id": OWNER},
+        },
+    ]
+    (root / "state.json").write_text(
+        json.dumps({"schema_version": 1, "active_id": None, "items": items}),
+        encoding="utf-8",
+    )
+
+
 def _ready(tmp_path, *, with_artifacts=True):
     home = tmp_path / "home"
     home.mkdir()
@@ -68,20 +100,37 @@ def _ready(tmp_path, *, with_artifacts=True):
     facilities.create(
         home, confirmed=True, admin=Admin(base), client=base, drive=drive
     )
-    started = smoke.start(home, "虚拟细胞", owner="ou_owner", confirmed=True, client=base)
+    started = smoke.start(
+        home,
+        "虚拟细胞",
+        owner=OWNER,
+        confirmed=True,
+        client=base,
+        verifier=_verifier(),
+    )
     card_id = started["card"]["id"]
     test_id = started["test_id"]
     push_id = f"push_{test_id}"
     message = "om_test_message"
     question = f"q_{push_id}_rating"
+    decision_item = f"q_{push_id}_decision"
+    paper_id = f"paper_{test_id}"
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
-    smoke.record(home, "written", papers=[f"paper_{test_id}"])
+    smoke.record(home, "written", papers=[paper_id])
+    push_path = home / "archive" / "pushes" / f"{push_id}.json"
+    push_path.parent.mkdir(parents=True, exist_ok=True)
+    push_path.write_text(
+        json.dumps({"push_id": push_id, "paper_ids": [paper_id]}), encoding="utf-8"
+    )
     smoke.record(home, "rendered", push=push_id, html=str(_rendered_file(tmp_path)))
     smoke.record(
         home, "sent", push=push_id, message=message, question=question
     )
+    queue = QueueStore(home)
+    queue.init()
+    _seed_queue(home, push_id, question, decision_item)
     smoke.record(home, "rated", item=question, verdict="great")
-    smoke.record(home, "decided", item=question, decision="agree_all")
+    smoke.record(home, "decided", item=decision_item, decision="agree_all")
     smoke.record(home, "applied")
 
     config = json.loads((home / "knowledge" / "base.json").read_text(encoding="utf-8"))
@@ -104,13 +153,7 @@ def _ready(tmp_path, *, with_artifacts=True):
         base.create(tables["logs"], [{"source_id": test_id}])
         drive.put_bytes(record["folders"]["source"], "smoke.pdf", b"%PDF-1.4")
         token = drive.find(record["folders"]["source"], "smoke.pdf")["token"]
-        push_path = home / "archive" / "pushes" / f"{push_id}.json"
-        push_path.parent.mkdir(parents=True, exist_ok=True)
-        push_path.write_text(json.dumps({"push_id": push_id}), encoding="utf-8")
         (home / "install" / "smoke-plan.json").write_text("{}", encoding="utf-8")
-        queue = QueueStore(home)
-        queue.init()
-        queue.enqueue_push({"push_id": push_id, "proposals": []})
         state = smoke.load(home)
         state["artifacts"]["file_ids"].append(token)
         state["artifacts"]["source_ids"].append(f"src_{test_id}")
@@ -295,7 +338,14 @@ def test_failed_test_cannot_be_reported_as_cleaned_success(tmp_path):
     base = _fresh_base(tmp_path)
     drive = FixtureDrive()
     facilities.create(home, confirmed=True, admin=Admin(base), client=base, drive=drive)
-    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    smoke.start(
+        home,
+        "虚拟细胞",
+        owner=OWNER,
+        confirmed=True,
+        client=base,
+        verifier=_verifier(),
+    )
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.fail(home, "send_timeout")
 
@@ -554,7 +604,7 @@ def test_cleanup_reports_per_scope_delete_counts(tmp_path):
     assert counts["messages"] == 1
     assert counts["drive_files"] == 1
     assert counts["local_files"] == 3
-    assert counts["queue_items"] == 1
+    assert counts["queue_items"] == 2
     # per-table detail survives next to the per-scope totals
     assert result["cleanup"]["removed"]["papers"]["record_ids"]
 

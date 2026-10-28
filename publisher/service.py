@@ -31,6 +31,85 @@ def _push_path(home: Path, push_id: str) -> Path:
     return Path(home) / "archive" / "pushes" / f"{push_id}.json"
 
 
+ATTEMPTS_REL = Path("publisher") / "send-attempts.jsonl"
+
+
+def _attempts_path(home: Path) -> Path:
+    return Path(home) / ATTEMPTS_REL
+
+
+def _attempt_rows(home: Path) -> list[dict]:
+    return read_jsonl(_attempts_path(home))
+
+
+def _append_attempt(home: Path, row: dict) -> None:
+    append_jsonl(_attempts_path(home), {"schema_version": 1, "at": now(), **row})
+
+
+def _latest_attempt(home: Path, push_id: str) -> dict | None:
+    rows = [row for row in _attempt_rows(home) if row.get("push_id") == push_id]
+    return rows[-1] if rows else None
+
+
+def _unresolved_attempt(home: Path, push_id: str) -> dict | None:
+    """An attempt whose send outcome was never established (or never checked)."""
+    latest = _latest_attempt(home, push_id)
+    if latest and latest.get("state") in {"sending", "unknown"}:
+        return latest
+    return None
+
+
+def resolve_send(
+    home: Path,
+    push_id: str,
+    *,
+    message_id: str | None = None,
+    not_sent: bool = False,
+) -> dict:
+    """Reconcile an unknown send explicitly: it landed, or it never left."""
+    home = Path(home)
+    if bool(message_id) == bool(not_sent):
+        return {
+            "ok": False,
+            "reason": "resolve_needs_one_action",
+            "note": "用 --message <message_id>（已在飞书看到）或 --not-sent（确认未发出）",
+            "push_id": push_id,
+        }
+    pending = _unresolved_attempt(home, push_id)
+    if not pending:
+        return {"ok": False, "reason": "no_unresolved_attempt", "push_id": push_id}
+    if message_id:
+        store = PublisherStore(home)
+        store.init()
+        store.record_message(
+            str(message_id), "push_file", push_id, target=pending.get("target") or ""
+        )
+        _append_attempt(
+            home,
+            {
+                "push_id": push_id,
+                "attempt_id": pending.get("attempt_id"),
+                "state": "sent",
+                "message_id": str(message_id),
+            },
+        )
+        return {
+            "ok": True,
+            "push_id": push_id,
+            "state": "sent",
+            "message_id": str(message_id),
+        }
+    _append_attempt(
+        home,
+        {
+            "push_id": push_id,
+            "attempt_id": pending.get("attempt_id"),
+            "state": "not_sent",
+        },
+    )
+    return {"ok": True, "push_id": push_id, "state": "not_sent"}
+
+
 def _queue(home: Path) -> QueueStore:
     store = QueueStore(home)
     store.init()
@@ -493,6 +572,21 @@ def send_push(
             "file": str(file_path),
         }
 
+    if not dry_run:
+        pending = _unresolved_attempt(home, push["push_id"])
+        if pending:
+            return {
+                "ok": False,
+                "reason": "send_status_unknown",
+                "push_id": push["push_id"],
+                "attempt_at": pending.get("at"),
+                "note": (
+                    "上次发送结果不明：先在飞书核对是否已收到；用 "
+                    "`publisher.cli resolve-send --push <id> --message <message_id>` "
+                    "登记已送达，或确认未发出后加 --not-sent；不要盲目重发"
+                ),
+            }
+
     if not force:
         duplicate = _duplicate_reason(home, push)
         if duplicate:
@@ -512,8 +606,45 @@ def send_push(
             },
         )
     else:
-        sent = feishu.send_file(to_user, str(file_path), identity)
+        attempt_id = stable_id("sa", push["push_id"], now())
+        _append_attempt(
+            home,
+            {
+                "push_id": push["push_id"],
+                "attempt_id": attempt_id,
+                "target": to_user,
+                "state": "sending",
+            },
+        )
+        try:
+            sent = feishu.send_file(to_user, str(file_path), identity)
+        except Exception as exc:  # noqa: BLE001 - unknown outcome must be recorded
+            _append_attempt(
+                home,
+                {
+                    "push_id": push["push_id"],
+                    "attempt_id": attempt_id,
+                    "state": "unknown",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            return {
+                "ok": False,
+                "reason": "send_failed",
+                "push_id": push["push_id"],
+                "error": f"{type(exc).__name__}: {exc}",
+                "note": "发送结果不明：先在飞书核对，再用 resolve-send 处理；不要重发",
+            }
         file_message_id = sent["message_id"]
+        _append_attempt(
+            home,
+            {
+                "push_id": push["push_id"],
+                "attempt_id": attempt_id,
+                "state": "sent",
+                "message_id": file_message_id,
+            },
+        )
 
     store.record_message(file_message_id, "push_file", push["push_id"], target=to_user)
     library = (

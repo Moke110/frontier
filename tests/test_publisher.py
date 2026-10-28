@@ -328,3 +328,111 @@ def test_get_message_raises_when_the_read_cannot_prove_absence(monkeypatch):
     with pytest.raises(feishu.FeishuError):
         feishu.get_message("om_1")
 
+
+# ------------------------------------- unknown send outcome (spec #56)
+def _patch_send(monkeypatch, *, fail=False):
+    from publisher import service
+
+    calls = []
+
+    def send_file(target, path, identity):
+        calls.append((target, path))
+        if fail:
+            raise TimeoutError("read timed out after upload")
+        return {"message_id": f"om_file_{len(calls)}"}
+
+    monkeypatch.setattr(service.feishu, "send_file", send_file)
+    monkeypatch.setattr(
+        service.feishu, "send_card", lambda *args, **kwargs: {"message_id": "om_card"}
+    )
+    return calls
+
+
+def _retry_push():
+    return {
+        **PUSH_PDF,
+        "push_id": "2026-10-20_hmbs_retry",
+        "paper_ids": ["paper_retry"],
+    }
+
+
+def test_unknown_send_outcome_blocks_a_blind_retry(kl_home, tmp_path, monkeypatch):
+    html = tmp_path / "push.html"
+    html.write_text("<!doctype html><p>hello</p>", encoding="utf-8")
+    calls = _patch_send(monkeypatch, fail=True)
+
+    first = send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    assert first["ok"] is False
+    assert first["reason"] == "send_failed"
+    attempts = [
+        json.loads(line)
+        for line in (kl_home / "publisher" / "send-attempts.jsonl").read_text().splitlines()
+    ]
+    assert [row["state"] for row in attempts] == ["sending", "unknown"]
+
+    second = send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    assert second["ok"] is False
+    assert second["reason"] == "send_status_unknown"
+    assert len(calls) == 1
+
+
+def test_resolve_send_not_sent_allows_a_successful_retry(kl_home, tmp_path, monkeypatch):
+    from publisher.service import resolve_send
+
+    html = tmp_path / "push.html"
+    html.write_text("<!doctype html><p>hello</p>", encoding="utf-8")
+    calls = _patch_send(monkeypatch, fail=True)
+    send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    resolved = resolve_send(kl_home, _retry_push()["push_id"], not_sent=True)
+
+    assert resolved["ok"] is True
+    assert resolved["state"] == "not_sent"
+    retry_calls = _patch_send(monkeypatch, fail=False)
+    retried = send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    assert retried["ok"] is True
+    assert len(calls) == 1
+    assert len(retry_calls) == 1
+
+
+def test_resolve_send_message_makes_the_duplicate_check_already_sent(
+    kl_home, tmp_path, monkeypatch
+):
+    from publisher.service import resolve_send
+
+    html = tmp_path / "push.html"
+    html.write_text("<!doctype html><p>hello</p>", encoding="utf-8")
+    calls = _patch_send(monkeypatch, fail=True)
+    send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    resolved = resolve_send(
+        kl_home, _retry_push()["push_id"], message_id="om_seen_in_feishu"
+    )
+    assert resolved["ok"] is True
+    assert resolved["state"] == "sent"
+
+    again = send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    assert again["ok"] is False
+    assert again["reason"] == "already_sent"
+    assert len(calls) == 1
+
+
+def test_cli_resolve_send_not_sent_clears_the_attempt(kl_home, tmp_path, monkeypatch):
+    from publisher.cli import main
+
+    html = tmp_path / "push.html"
+    html.write_text("<!doctype html><p>hello</p>", encoding="utf-8")
+    _patch_send(monkeypatch, fail=True)
+    push_id = _retry_push()["push_id"]
+    send_push(kl_home, _retry_push(), html, "ou_demo")
+
+    code = main(
+        ["--home", str(kl_home), "resolve-send", "--push", push_id, "--not-sent"]
+    )
+
+    assert code == 0
+    assert main(["--home", str(kl_home), "resolve-send", "--push", push_id, "--not-sent"]) == 1
