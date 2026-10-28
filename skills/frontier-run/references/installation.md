@@ -82,25 +82,30 @@ python -m hostrun.cli facilities status --home <home>
 ### 3.4 关键词临时闭环（不改正式知识）
 
 ```bash
-python -m hostrun.cli smoke start --home <home> --keyword "<用户给的关键词>" --owner <open_id> --yes
+python -m hostrun.cli smoke start --home <home> --keyword "<用户给的关键词>" --owner <本人 open_id> --yes
 python -m hostrun.cli smoke plan  --home <home>
 python -m hostrun.cli smoke brief --home <home>          # 给宿主 agent 的下一步命令
 python -m hostrun.cli smoke record --home <home> --step retrieved --plan <已存在的计划/候选文件>
 python -m hostrun.cli smoke record --home <home> --step written --paper <选中 paper_id>（可重复）
+python -m writer.cli render --push <push> --out <html>
+python -m archive.cli add-push --file <push json>        # 先登记进推送库
 python -m hostrun.cli smoke record --home <home> --step rendered --push <push_id> --html <渲染文件>
 # ... sent（必须带 --push --message --question；上传文件用 --file，可重复）
+# 用户在飞书卡片本人评分/采纳后（不得代填），先 feedback sync 再记录：
 python -m hostrun.cli smoke record --home <home> --step rated --item <id> --verdict great
 python -m hostrun.cli smoke record --home <home> --step decided --item <id> --decision agree_all
 python -m hostrun.cli smoke record --home <home> --step applied --target <被采纳目标 id> --applied-field <字段>（每字段重复一次）
 python -m hostrun.cli smoke verify --home <home> --target-key cards --target-id <card_id> --field <字段>=<值>（可重复）
 ```
 
+- `smoke start --owner` 必填，且必须与当前登录的飞书用户一致：`smoke start` 用记录的 CLI 读取已认证 user 身份核对；缺失 CLI、未登录或身份未就绪返回 `recipient_unverified`，与登录用户不一致返回 `recipient_mismatch`（报告不回显 open_id）。核实后的收件人写入测试记录与配置，后续只用该收件人。
 - 只取本次临时卡片的检索式；临时卡片同时写入本地与 Base，ID/标签带测试标记。
-- `retrieved` 必须指向真实存在的计划/候选文件，候选数由该文件得出（可选 `--candidates` 必须与之一致）；`written` 至少一个选中论文 ID（`--paper`）；`rendered` 必须带推送 ID 与渲染文件，并按 `writer/render.py` 契约校验七段段落和 `原文图`/`生成图` 图注；这些证据与 `sent` 的副作用 ID 一并写入测试记录，供精确清理。
+- `retrieved` 必须指向真实存在的计划/候选文件，候选数由该文件得出（可选 `--candidates` 必须与之一致）；`written` 至少一个选中论文 ID（`--paper`）；`rendered` 必须在推送库中已有对应记录（先 `archive.cli add-push`），记录存在、push_id 一致且属于本次选中论文（否则 `push_record_missing` / `push_record_mismatch`），并按 `writer/render.py` 契约校验七段段落和 `原文图`/`生成图` 图注；这些证据与 `sent` 的副作用 ID 一并写入测试记录，供精确清理。
+- `rated`/`decided` 只认用户本人在飞书卡片提交的答案：统一问题队列中该题必须已由已核实收件人回答且分/采纳值与 `--verdict`/`--decision` 一致，否则拒绝（`rating_not_submitted`/`rating_not_by_user`/`rating_mismatch`，采纳同理）；agent 不得代填或自证。`feedback submit` 仍用于其他路径，但不是临时闭环的验收动作。
 - `applied` 用 `--target` 与 `--applied-field` 登记被采纳的目标与字段（省略时按临时卡片、只要求至少一个字段）；`verify` 必须覆盖每个已登记目标字段才完整，覆盖不足返回 `verification_incomplete`，字段不一致判失败。
 - 使用标准检索、写作、publisher、统一队列与反馈链路；只推一篇，评分先行，采纳后才写入。
 - 用户在飞书检查展示并提交反馈；agent 处理并读回验证。只有全部步骤 + 读回一致才算通过。
-- 任何失败先核对；发送超时不能确认则暂停，不重发。失败不开启正式初始化或日常推送。
+- 任何失败先核对；发送超时不能确认则暂停，不重发。`publisher` 在真正发送前写入持久发送尝试记录：异常或超时留下未决尝试，之后同一推送的发送会以 `send_status_unknown` 拒绝。必须先核对飞书，再用 `publisher.cli resolve-send --push <id> --message <message_id>`（已送达）或 `--not-sent`（确认未发出，才允许重试）。失败不开启正式初始化或日常推送。
 
 ### 3.5 清理测试产物
 

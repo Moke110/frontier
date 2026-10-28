@@ -28,8 +28,15 @@ from pathlib import Path
 from common import now, read_json, write_json
 from hostrun import facilities as facilities_mod
 from hostrun import install as install_mod
-from hostrun.base import HostRunError, base_client, base_config
-from question_queue.store import QueueStore
+from hostrun import lark
+from hostrun.base import (
+    HostRunError,
+    base_client,
+    base_config,
+    load_config,
+    update_config,
+)
+from question_queue.store import QueueError, QueueStore
 
 SMOKE_REL = Path("install") / "smoke.json"
 PLAN_REL = Path("install") / "smoke-plan.json"
@@ -176,6 +183,68 @@ def _rendered_artifact_errors(path: Path) -> list[str]:
     return errors
 
 
+# ------------------------------------------------------- recipient verification
+RECIPIENT_LOGIN_GUIDANCE = (
+    "先用 `python -m hostrun.cli lark login` 让用户本人完成飞书登录，"
+    "再运行 `python -m hostrun.cli lark status` 确认 user 身份可用；"
+    "本次未生成测试记录"
+)
+
+
+def _recorded_lark_cli(home: Path) -> str | None:
+    """Only the recorded absolute CLI path — never a bare-name PATH guess."""
+    config = load_config(Path(home))
+    spec = str((config.get("paths") or {}).get("lark_cli") or "").strip()
+    explicit = lark.explicit_cli_path(spec)
+    if explicit is None:
+        # A bare command name would be a silent PATH guess; require a recorded path.
+        return None
+    resolved = lark.resolve_cli(str(explicit))
+    return str(resolved["path"]) if resolved.get("found") else None
+
+
+def _recipient_refusal(reason: str, note: str, **extra) -> dict:
+    return {
+        "ok": False,
+        "status": "blocked",
+        "reason": reason,
+        "retryable": True,
+        "note": note,
+        **extra,
+    }
+
+
+def verify_recipient(home: Path, owner: str, *, verifier=None) -> dict | None:
+    """Return a refusal unless ``owner`` is the authenticated Feishu user.
+
+    The raw authenticated open id is never echoed; a mismatch is reported only
+    as ``mismatch: True``.  ``verifier`` is ``hostrun.lark.user_open_id`` by
+    default and is injectable so offline tests never spawn the real CLI.
+    """
+    verifier = verifier or lark.user_open_id
+    cli = _recorded_lark_cli(home)
+    try:
+        checked = verifier(cli) if cli else verifier(None)
+    except Exception as exc:  # noqa: BLE001 - an unverifiable recipient refuses
+        return _recipient_refusal(
+            "recipient_unverified",
+            f"无法核实飞书收件人身份：{type(exc).__name__}；{RECIPIENT_LOGIN_GUIDANCE}",
+        )
+    if not isinstance(checked, dict) or not checked.get("ok") or not checked.get("open_id"):
+        return _recipient_refusal(
+            "recipient_unverified",
+            "无法核实飞书收件人身份（未记录可用 CLI，或用户身份未就绪）；"
+            + RECIPIENT_LOGIN_GUIDANCE,
+        )
+    if str(checked["open_id"]) != str(owner):
+        return _recipient_refusal(
+            "recipient_mismatch",
+            "--owner 与当前登录的飞书用户不一致；请使用本人 open_id 或完成正确账号登录",
+            mismatch=True,
+        )
+    return None
+
+
 # -------------------------------------------------------------------- start
 def start(
     home: Path,
@@ -185,6 +254,7 @@ def start(
     repo: str | Path | None = None,
     client=None,
     confirmed: bool = False,
+    verifier=None,
 ) -> dict:
     """Create the temporary card and the resumable test record."""
     home = Path(home).expanduser().resolve()
@@ -200,6 +270,16 @@ def start(
         raise HostRunError("需要用户提供关键词或检索式")
     if len(keyword) > 120:
         raise HostRunError("关键词过长，请提供一个可用于检索的短语")
+    owner = " ".join(str(owner or "").split())
+    if not owner:
+        return _recipient_refusal(
+            "recipient_unverified",
+            "缺少收件人：`smoke start --owner <本人 open_id>` 必须由用户本人提供；"
+            + RECIPIENT_LOGIN_GUIDANCE,
+        )
+    refusal = verify_recipient(home, owner, verifier=verifier)
+    if refusal:
+        return refusal
 
     previous = load(home)
     if previous:
@@ -255,6 +335,7 @@ def start(
         "test_id": test_id,
         "keyword": keyword,
         "owner": owner,
+        "owner_verified": True,
         "repo": str(repo) if repo else "",
         "status": "running",
         "created_at": now(),
@@ -298,6 +379,7 @@ def start(
         return _fail(home, state, "temp_card_write_failed", error=str(exc))
 
     save(home, state)
+    update_config(home, permissions={"owner": owner, "owner_verified_at": now()})
     install_mod.record(
         home,
         "test_loop",
@@ -343,6 +425,9 @@ def brief(home: Path) -> dict:
         f'python -m hostrun.cli --home "{home}" smoke record --step {{step}} '
         f"--evidence '{{...}}'"
     )
+    owner = str(state.get("owner") or "")
+    if not owner:
+        raise HostRunError("测试记录缺少已核实的收件人；重新运行 smoke start --owner")
     steps = [
         "python -m frontier.cli validate --include-temporary（临时卡片也校验）",
         f'python -m hostrun.cli --home "{home}" smoke plan --out "{home / PLAN_REL}"',
@@ -360,19 +445,21 @@ def brief(home: Path) -> dict:
         "python -m writer.cli figures ...；你亲自写七段 HTML 与 assets",
         "python -m writer.cli check ...",
         f'python -m writer.cli render --push <push> --out "<临时目录>/{test_id}.html"',
+        "python -m archive.cli add-push --file <push json>（先把渲染结果登记进推送库）",
         f'python -m hostrun.cli --home "{home}" smoke record --step rendered '
         "--push <push_id> --html <渲染文件路径>"
-        "（文件须含七段段落与原文图/生成图图注）",
-        "python -m archive.cli add-push --file <push json>",
+        "（该推送记录必须已存在、push_id 一致且属于本次选中的论文；"
+        "文件须含七段段落与原文图/生成图图注）",
         "python -m library.cli ensure-source --paper <paper_id>",
-        f'python -m publisher.cli send --push <push> --html <html> --to {state.get("owner") or "<owner>"}',
+        f'python -m publisher.cli send --push <push> --html <html> --to {owner}'
+        "（若上次发送结果不明，先核对飞书并用 publisher.cli resolve-send 处理，禁止重发）",
         "python -m hostrun.cli feedback sync",
         f'python -m hostrun.cli --home "{home}" smoke record --step sent '
         "--push <push_id> --message <file_message_id> --question <item_id> "
         "--source <source_id> --file <source_file_token> --file <push_file_token>",
-        "请用户在飞书检查展示并评分；用户提交后运行 feedback submit --item <id> --verdict ...",
+        "请用户在飞书卡片上本人评分（不要代填）；用户提交后可运行 feedback sync 同步",
         f'python -m hostrun.cli --home "{home}" smoke record --step rated --item <id> --verdict <verdict>',
-        "用户明确采纳更新：feedback submit --item <id> --decision agree_all（或 adopt）",
+        "请用户在飞书卡片上本人明确采纳（agree_all/adopt）；不得代填",
         f'python -m hostrun.cli --home "{home}" smoke record --step decided --item <id> --decision <decision>',
         "python -m hostrun.cli feedback process",
         f'python -m hostrun.cli --home "{home}" smoke record --step applied '
@@ -386,6 +473,8 @@ def brief(home: Path) -> dict:
         "test_id": test_id,
         "keyword": state.get("keyword"),
         "card_id": card_id,
+        "recipient": owner,
+        "recipient_verified": bool(state.get("owner_verified")),
         "steps": steps,
         "record_command": command,
         "rules": [
@@ -393,12 +482,112 @@ def brief(home: Path) -> dict:
             "论文必须来自本次临时检索，不得编造",
             "更新只落到本次临时卡片；若必须新建命题/证据，其 ID 必须包含本次 test_id",
             "任何一步失败先核对再重试；发送不确定时暂停，不能重发",
+            "评分与采纳只能由用户本人在飞书卡片提交，agent 不得代填或自证",
             "不得改动已有正式知识、正式待答问题与唯一离线备份",
         ],
     }
 
 
 # ------------------------------------------------------------------- record
+def _push_record_refusal(home: Path, state: dict, push_id: str) -> dict | None:
+    """The rendered push must already be registered and belong to this test."""
+    record = read_json(Path(home) / "archive" / "pushes" / f"{push_id}.json")
+    if not record:
+        return {
+            "ok": False,
+            "reason": "push_record_missing",
+            "push_id": push_id,
+            "note": (
+                "找不到该推送记录：先用 `python -m archive.cli add-push --file <push json>` "
+                "登记渲染结果，再记录 rendered"
+            ),
+        }
+    if str(record.get("push_id") or "") != str(push_id):
+        return {
+            "ok": False,
+            "reason": "push_record_mismatch",
+            "push_id": push_id,
+            "note": "推送记录中的 push_id 与本次登记不一致",
+        }
+    selected = {
+        str(paper)
+        for paper in ((state.get("artifacts") or {}).get("paper_ids") or [])
+        if str(paper)
+    }
+    recorded_papers = {str(paper) for paper in (record.get("paper_ids") or []) if str(paper)}
+    test_id = str(state.get("test_id") or "")
+    carries_test = bool(test_id) and test_id in {
+        str(record.get("test_id") or ""),
+        str(record.get("smoke") or ""),
+    }
+    if not (recorded_papers & selected) and not carries_test:
+        return {
+            "ok": False,
+            "reason": "push_record_mismatch",
+            "push_id": push_id,
+            "note": "该推送记录不属于本次测试（论文或测试 ID 不匹配）",
+        }
+    return None
+
+
+def _submission_refusal(
+    home: Path,
+    state: dict,
+    item_id: str,
+    *,
+    verdict: str | None = None,
+    decision: str | None = None,
+) -> dict | None:
+    """Only a user-submitted answer by the verified owner advances the loop."""
+    kind = "rating" if verdict is not None else "decision"
+    not_submitted = f"{kind}_not_submitted"
+    not_by_user = f"{kind}_not_by_user"
+    mismatch = f"{kind}_mismatch"
+    owner = str(state.get("owner") or "") if state.get("owner_verified") else ""
+    if not owner:
+        return {
+            "ok": False,
+            "reason": not_by_user,
+            "item": item_id,
+            "note": "测试记录没有已核实的收件人，无法确认提交人",
+        }
+    try:
+        row = QueueStore(Path(home)).get(item_id)
+    except QueueError:
+        row = None
+    answer = (row or {}).get("answer") or {}
+    if not row or row.get("status") != "answered" or not answer:
+        return {
+            "ok": False,
+            "reason": not_submitted,
+            "item": item_id,
+            "note": "该问题尚无人提交答案；请由用户在飞书卡片上提交后再记录",
+        }
+    operator = str(answer.get("operator_id") or "")
+    if not operator or operator != owner:
+        return {
+            "ok": False,
+            "reason": not_by_user,
+            "item": item_id,
+            "note": "该答案不是已核实收件人提交的，不能代填或自证",
+        }
+    if verdict is not None and answer.get("verdict") != verdict:
+        return {
+            "ok": False,
+            "reason": mismatch,
+            "item": item_id,
+            "note": "记录的分值与用户实际提交的不一致",
+        }
+    if decision is not None and answer.get("decision") != decision:
+        return {
+            "ok": False,
+            "reason": mismatch,
+            "item": item_id,
+            "note": "记录的采纳与用户实际提交的不一致",
+        }
+    return None
+
+
 def record(
     home: Path,
     step: str,
@@ -480,12 +669,25 @@ def record(
             raise HostRunError(
                 "rendered 步骤的推送件不完整：" + "；".join(render_errors)
             )
+        refusal = _push_record_refusal(home, state, str(push))
+        if refusal:
+            return refusal
     if step == "sent" and not (push and message and question):
         raise HostRunError("sent 步骤需要 --push、--message 与 --question，记录本次副作用归属")
     if step == "rated" and (not item or verdict not in ("irrelevant", "ok", "great")):
         raise HostRunError("rated 步骤需要 --item 和 --verdict")
     if step == "decided" and (not item or decision not in ("agree_all", "adopt", "keep_previous", "reject_all")):
         raise HostRunError("decided 步骤需要 --item 和 --decision")
+    if step in ("rated", "decided"):
+        refusal = _submission_refusal(
+            home,
+            state,
+            str(item),
+            verdict=verdict if step == "rated" else None,
+            decision=decision if step == "decided" else None,
+        )
+        if refusal:
+            return refusal
 
     artifacts = state.setdefault("artifacts", {})
     applied_targets = [

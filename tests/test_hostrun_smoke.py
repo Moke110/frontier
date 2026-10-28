@@ -34,6 +34,7 @@ def _rendered_file(directory, name: str = "push.html"):
 
 
 def _home(tmp_path) -> Path:
+
     home = tmp_path / "home"
     (home / "knowledge").mkdir(parents=True)
     (home / "knowledge" / "base.json").write_text(
@@ -48,6 +49,74 @@ def _home(tmp_path) -> Path:
         encoding="utf-8",
     )
     return home
+
+
+OWNER = "ou_owner"
+
+
+def _verifier(open_id: str = OWNER):
+    """Offline stand-in for lark.user_open_id: never spawns the real CLI."""
+    return lambda cli: {"ok": True, "open_id": open_id}
+
+
+def _start(home, client=None, keyword="虚拟细胞", *, owner=OWNER, verifier=None, confirmed=True):
+    return smoke.start(
+        home,
+        keyword,
+        owner=owner,
+        confirmed=confirmed,
+        client=client,
+        verifier=verifier or _verifier(owner),
+    )
+
+
+def _write_push(home, push_id="push_1", papers=("paper_1",), **extra) -> Path:
+    path = Path(home) / "archive" / "pushes" / f"{push_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"push_id": push_id, "paper_ids": list(papers), **extra}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _seed_answer(home, item="q_1", *, verdict="great", decision="agree_all", owner=OWNER):
+    """The unified queue holds the user's own card submission."""
+    root = Path(home) / "queue"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "active_id": None,
+                "items": [
+                    {
+                        "id": item,
+                        "kind": "rating",
+                        "push_id": "p_1",
+                        "status": "answered",
+                        "answer": {
+                            "verdict": verdict,
+                            "decision": decision,
+                            "operator_id": owner,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "events.jsonl").touch()
+
+
+def _record_rendered(home, directory, *, push="push_1", papers=("paper_1",), html=None):
+    _write_push(home, push, papers)
+    return smoke.record(
+        home,
+        "rendered",
+        push=push,
+        html=str(html if html is not None else _rendered_file(directory)),
+    )
 
 
 def _base(tmp_path) -> JsonBase:
@@ -71,7 +140,7 @@ def test_start_creates_tagged_card_locally_and_in_base(tmp_path):
     base = _base(tmp_path)
     _seed_tables(home, base)
 
-    result = smoke.start(home, "虚拟细胞", owner="ou_owner", confirmed=True, client=base)
+    result = _start(home, base)
 
     assert result["ok"] is True
     card_id = result["card"]["id"]
@@ -90,9 +159,9 @@ def test_start_requires_confirmation_and_a_keyword(tmp_path):
     base = _base(tmp_path)
     _seed_tables(home, base)
 
-    assert smoke.start(home, "x", confirmed=False, client=base)["reason"] == "needs_user_confirmation"
+    assert _start(home, base, keyword="x", confirmed=False)["reason"] == "needs_user_confirmation"
     with pytest.raises(HostRunError):
-        smoke.start(home, "  ", confirmed=True, client=base)
+        smoke.start(home, "  ", owner=OWNER, confirmed=True, client=base, verifier=_verifier())
 
 
 def test_start_blocks_when_formal_queue_is_unfinished(tmp_path):
@@ -119,7 +188,7 @@ def test_start_blocks_when_formal_queue_is_unfinished(tmp_path):
         ),
         encoding="utf-8",
     )
-    result = smoke.start(home, "x", confirmed=True, client=base)
+    result = _start(home, base, keyword="x")
 
     assert result["ok"] is False
     assert result["reason"] == "queue_busy"
@@ -143,7 +212,7 @@ def test_plan_contains_only_the_temporary_card(tmp_path):
         ),
         encoding="utf-8",
     )
-    started = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    started = _start(home, base)
 
     plan = smoke.plan(home)
 
@@ -156,17 +225,18 @@ def test_steps_are_ordered_and_success_needs_a_real_read_back(tmp_path):
     home = _home(tmp_path)
     base = _base(tmp_path)
     config = _seed_tables(home, base)
-    started = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    started = _start(home, base)
     card_id = started["card"]["id"]
 
     with pytest.raises(HostRunError):
         smoke.record(home, "sent", push="push_1", message="om_1", question="q_1")
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path, 3)))
     smoke.record(home, "written", papers=["paper_1"])
-    smoke.record(home, "rendered", push="push_1", html=str(_rendered_file(tmp_path)))
+    _record_rendered(home, tmp_path)
     with pytest.raises(HostRunError):
         smoke.record(home, "sent", push="push_1")
     smoke.record(home, "sent", push="push_1", message="om_1", question="q_1")
+    _seed_answer(home)
     smoke.record(home, "rated", item="q_1", verdict="great")
     smoke.record(home, "decided", item="q_1", decision="agree_all")
     smoke.record(home, "applied")
@@ -197,11 +267,12 @@ def test_verification_mismatch_fails_and_never_opens_formal_init(tmp_path):
     home = _home(tmp_path)
     base = _base(tmp_path)
     _seed_tables(home, base)
-    started = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    started = _start(home, base)
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.record(home, "written", papers=["paper_1"])
-    smoke.record(home, "rendered", push="push_1", html=str(_rendered_file(tmp_path)))
+    _record_rendered(home, tmp_path)
     smoke.record(home, "sent", push="p", message="m", question="q")
+    _seed_answer(home, "q", verdict="ok", decision="adopt")
     smoke.record(home, "rated", item="q", verdict="ok")
     smoke.record(home, "decided", item="q", decision="adopt")
     smoke.record(home, "applied")
@@ -227,11 +298,12 @@ def test_verification_refuses_to_touch_formal_knowledge(tmp_path):
     home = _home(tmp_path)
     base = _base(tmp_path)
     _seed_tables(home, base)
-    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    _start(home, base)
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.record(home, "written", papers=["paper_1"])
-    smoke.record(home, "rendered", push="push_1", html=str(_rendered_file(tmp_path)))
+    _record_rendered(home, tmp_path)
     smoke.record(home, "sent", push="p", message="m", question="q")
+    _seed_answer(home, "q", verdict="ok", decision="adopt")
     smoke.record(home, "rated", item="q", verdict="ok")
     smoke.record(home, "decided", item="q", decision="adopt")
     smoke.record(home, "applied")
@@ -258,7 +330,7 @@ def test_failed_base_write_removes_the_local_card(tmp_path):
         def create(self, table, rows):
             raise RuntimeError("permission denied")
 
-    result = smoke.start(home, "虚拟细胞", confirmed=True, client=Broken(tmp_path / "broken.json"))
+    result = _start(home, Broken(tmp_path / "broken.json"))
 
     assert result["ok"] is False
     assert result["status"] == "failed"
@@ -271,9 +343,9 @@ def test_second_start_is_refused_until_the_first_is_cleaned(tmp_path):
     home = _home(tmp_path)
     base = _base(tmp_path)
     _seed_tables(home, base)
-    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    _start(home, base)
 
-    second = smoke.start(home, "另一个", confirmed=True, client=base)
+    second = _start(home, base, keyword="另一个")
 
     assert second["ok"] is False
     assert second["reason"] == "test_in_progress"
@@ -284,7 +356,7 @@ def test_retrieved_requires_a_real_retrieval_artifact(tmp_path):
     home = _home(tmp_path)
     base = _base(tmp_path)
     _seed_tables(home, base)
-    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    _start(home, base)
 
     with pytest.raises(HostRunError):
         smoke.record(home, "retrieved")
@@ -314,7 +386,7 @@ def test_written_requires_a_selected_paper_id(tmp_path):
     home = _home(tmp_path)
     base = _base(tmp_path)
     _seed_tables(home, base)
-    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    _start(home, base)
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
 
     with pytest.raises(HostRunError):
@@ -335,7 +407,7 @@ def test_missing_facilities_is_reported_and_retryable(tmp_path):
     home.mkdir()
     base = _base(tmp_path)
 
-    first = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    first = _start(home, base)
 
     assert first["ok"] is False
     assert first["reason"] == "facilities_missing"
@@ -351,7 +423,7 @@ def test_missing_facilities_is_reported_and_retryable(tmp_path):
     )
     _seed_tables(home, base)
 
-    second = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    second = _start(home, base)
 
     assert second["ok"] is True
     assert second["status"] == "running"
@@ -363,7 +435,7 @@ def test_cli_record_accepts_retrieval_and_selection_evidence(tmp_path):
     home = _home(tmp_path)
     base = _base(tmp_path)
     _seed_tables(home, base)
-    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    _start(home, base)
 
     refused = cli.main(
         ["--home", str(home), "smoke", "record", "--step", "retrieved"]
@@ -410,11 +482,12 @@ def test_cli_record_accepts_retrieval_and_selection_evidence(tmp_path):
 
 # ------------------------------------------------- rendered / verify evidence
 def _run_to_applied(home, base, *, applied_fields=None, targets=None):
-    started = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    started = _start(home, base)
     smoke.record(home, "retrieved", plan=str(_plan_file(home.parent)))
     smoke.record(home, "written", papers=["paper_1"])
-    smoke.record(home, "rendered", push="push_1", html=str(_rendered_file(home.parent)))
+    _record_rendered(home, home.parent)
     smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
+    _seed_answer(home)
     smoke.record(home, "rated", item="q_1", verdict="great")
     smoke.record(home, "decided", item="q_1", decision="agree_all")
     applied_kwargs = {}
@@ -445,7 +518,7 @@ def test_rendered_requires_a_valid_render_artifact(tmp_path):
     home = _home(tmp_path)
     base = _base(tmp_path)
     _seed_tables(home, base)
-    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    _start(home, base)
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.record(home, "written", papers=["paper_1"])
 
@@ -463,6 +536,11 @@ def test_rendered_requires_a_valid_render_artifact(tmp_path):
     with pytest.raises(HostRunError):
         smoke.record(home, "rendered", push="push_1", html=str(incomplete))
 
+    missing = smoke.record(home, "rendered", push="push_1", html=str(good))
+    assert missing["ok"] is False
+    assert missing["reason"] == "push_record_missing"
+
+    _write_push(home, "push_1", ["paper_1"])
     result = smoke.record(home, "rendered", push="push_1", html=str(good))
 
     assert result["ok"] is True
@@ -476,15 +554,16 @@ def test_decided_cannot_be_recorded_before_the_user_rates(tmp_path):
     home = _home(tmp_path)
     base = _base(tmp_path)
     _seed_tables(home, base)
-    smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    _start(home, base)
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.record(home, "written", papers=["paper_1"])
-    smoke.record(home, "rendered", push="push_1", html=str(_rendered_file(tmp_path)))
+    _record_rendered(home, tmp_path)
     smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
 
     with pytest.raises(HostRunError):
         smoke.record(home, "decided", item="q_1", decision="agree_all")
 
+    _seed_answer(home)
     smoke.record(home, "rated", item="q_1", verdict="great")
     smoke.record(home, "decided", item="q_1", decision="agree_all")
 
@@ -675,12 +754,13 @@ def test_cli_record_applied_captures_targets_and_fields(tmp_path):
     home = _home(tmp_path)
     base = _base(tmp_path)
     _seed_tables(home, base)
-    started = smoke.start(home, "虚拟细胞", confirmed=True, client=base)
+    started = _start(home, base)
     card_id = started["card"]["id"]
     smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
     smoke.record(home, "written", papers=["paper_1"])
-    smoke.record(home, "rendered", push="push_1", html=str(_rendered_file(tmp_path)))
+    _record_rendered(home, tmp_path)
     smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
+    _seed_answer(home)
     smoke.record(home, "rated", item="q_1", verdict="great")
     smoke.record(home, "decided", item="q_1", decision="agree_all")
 
@@ -706,3 +786,212 @@ def test_cli_record_applied_captures_targets_and_fields(tmp_path):
     assert state["artifacts"]["applied_targets"] == [
         {"target": card_id, "fields": ["label", "annotation"]}
     ]
+
+
+# ------------------------------------------- recipient verification (spec #56)
+def test_start_requires_a_verified_owner_and_persists_the_recipient(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+
+    empty = smoke.start(home, "虚拟细胞", confirmed=True, client=base, verifier=_verifier())
+    assert empty["ok"] is False
+    assert empty["reason"] == "recipient_unverified"
+    assert not (home / "install" / "smoke.json").exists()
+
+    unready = _start(home, base, verifier=lambda cli: {"ok": False, "open_id": ""})
+    assert unready["reason"] == "recipient_unverified"
+    assert not (home / "install" / "smoke.json").exists()
+
+    mismatch = _start(home, base, verifier=_verifier("ou_someone_else"))
+    assert mismatch["reason"] == "recipient_mismatch"
+    assert mismatch["mismatch"] is True
+    # the authenticated open id is never echoed back
+    assert "ou_someone_else" not in json.dumps(mismatch, ensure_ascii=False)
+    assert not (home / "install" / "smoke.json").exists()
+
+    result = _start(home, base)
+    assert result["ok"] is True
+    assert result["owner"] == OWNER
+    assert result["owner_verified"] is True
+    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
+    assert config["permissions"]["owner"] == OWNER
+
+
+def test_start_verifies_with_the_recorded_cli_and_never_guesses(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    binary = tmp_path / "private-bin" / "lark-cli"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+    (home / "install").mkdir(parents=True, exist_ok=True)
+    (home / "install" / "config.json").write_text(
+        json.dumps({"schema_version": 1, "paths": {"lark_cli": str(binary)}}),
+        encoding="utf-8",
+    )
+    seen = {}
+
+    def verifier(cli):
+        seen["cli"] = cli
+        return {"ok": True, "open_id": OWNER}
+
+    assert _start(home, base, verifier=verifier)["ok"] is True
+    assert seen["cli"] == str(binary)
+
+    other = _home(tmp_path / "bare")
+    other_base = _base(tmp_path / "bare")
+    _seed_tables(other, other_base)
+    (other / "install").mkdir(parents=True, exist_ok=True)
+    (other / "install" / "config.json").write_text(
+        json.dumps({"schema_version": 1, "paths": {"lark_cli": "lark-cli"}}),
+        encoding="utf-8",
+    )
+    bare_seen = {}
+
+    def bare_verifier(cli):
+        bare_seen["cli"] = cli
+        return {"ok": True, "open_id": OWNER}
+
+    _start(other, other_base, verifier=bare_verifier)
+    # a bare name would be a silent PATH guess, so no CLI is passed through
+    assert bare_seen["cli"] is None
+
+
+def test_brief_uses_the_verified_recipient_and_registers_the_push_first(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    _start(home, base)
+
+    brief = smoke.brief(home)
+    text = "\n".join(brief["steps"])
+
+    assert brief["recipient"] == OWNER
+    assert "<owner>" not in text
+    assert f"--to {OWNER}" in text
+    assert text.index("archive.cli add-push") < text.index("--step rendered")
+    assert "feedback submit --item" not in text
+
+
+# ------------------------------------------- user submission gate (spec #56)
+def _to_sent(home, base, tmp_path):
+    started = _start(home, base)
+    smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
+    smoke.record(home, "written", papers=["paper_1"])
+    _record_rendered(home, tmp_path)
+    smoke.record(home, "sent", push="p_1", message="m_1", question="q_1")
+    return started
+
+
+def test_rated_requires_the_owner_to_have_answered(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    _to_sent(home, base, tmp_path)
+
+    unanswered = smoke.record(home, "rated", item="q_1", verdict="great")
+
+    assert unanswered["ok"] is False
+    assert unanswered["reason"] == "rating_not_submitted"
+    assert "rated" not in smoke.load(home)["steps"]
+
+    _seed_answer(home, owner="ou_other")
+    other = smoke.record(home, "rated", item="q_1", verdict="great")
+    assert other["reason"] == "rating_not_by_user"
+
+    _seed_answer(home, verdict="ok")
+    mismatch = smoke.record(home, "rated", item="q_1", verdict="great")
+    assert mismatch["reason"] == "rating_mismatch"
+
+    _seed_answer(home, verdict="great")
+    accepted = smoke.record(home, "rated", item="q_1", verdict="great")
+    assert accepted["ok"] is True
+    assert "rated" in smoke.load(home)["steps"]
+
+
+def test_decided_requires_the_owner_to_have_adopted(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    _to_sent(home, base, tmp_path)
+    _seed_answer(home, verdict="great", decision="agree_all")
+    smoke.record(home, "rated", item="q_1", verdict="great")
+
+    unanswered = smoke.record(home, "decided", item="missing_item", decision="agree_all")
+    assert unanswered["reason"] == "decision_not_submitted"
+
+    _seed_answer(home, decision="reject_all")
+    mismatch = smoke.record(home, "decided", item="q_1", decision="agree_all")
+    assert mismatch["reason"] == "decision_mismatch"
+
+    _seed_answer(home, decision="agree_all")
+    accepted = smoke.record(home, "decided", item="q_1", decision="agree_all")
+    assert accepted["ok"] is True
+
+
+def test_decided_refuses_an_answer_from_someone_else(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    _to_sent(home, base, tmp_path)
+    _seed_answer(home, owner=OWNER)
+    smoke.record(home, "rated", item="q_1", verdict="great")
+
+    _seed_answer(home, owner="ou_other")
+    result = smoke.record(home, "decided", item="q_1", decision="agree_all")
+
+    assert result["reason"] == "decision_not_by_user"
+
+
+# ------------------------------------- rendered push registration (spec #56)
+def test_rendered_refuses_an_unregistered_push_id(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    _start(home, base)
+    smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
+    smoke.record(home, "written", papers=["paper_1"])
+
+    result = smoke.record(
+        home, "rendered", push="push_unknown", html=str(_rendered_file(tmp_path))
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "push_record_missing"
+    assert "rendered" not in smoke.load(home)["steps"]
+
+
+def test_rendered_refuses_a_push_record_for_another_test(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    _start(home, base)
+    smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
+    smoke.record(home, "written", papers=["paper_1"])
+    _write_push(home, "push_other", ["paper_unrelated"])
+
+    result = smoke.record(
+        home, "rendered", push="push_other", html=str(_rendered_file(tmp_path))
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "push_record_mismatch"
+    assert "rendered" not in smoke.load(home)["steps"]
+
+
+def test_rendered_accepts_the_registered_push_for_this_test(tmp_path):
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    started = _start(home, base)
+    smoke.record(home, "retrieved", plan=str(_plan_file(tmp_path)))
+    smoke.record(home, "written", papers=["paper_1"])
+    # a test-id marker is enough even without overlapping paper ids
+    _write_push(home, "push_new", ["paper_elsewhere"], test_id=started["test_id"])
+
+    result = smoke.record(
+        home, "rendered", push="push_new", html=str(_rendered_file(tmp_path))
+    )
+
+    assert result["ok"] is True
