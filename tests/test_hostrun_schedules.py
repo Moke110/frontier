@@ -568,3 +568,42 @@ def test_confirm_refuses_to_create_tasks_without_a_recorded_interpreter(tmp_path
     assert result["reason"] == "interpreter_not_absolute"
     config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
     assert not (config.get("schedules") or {}).get("tasks")
+
+def test_scheduled_run_logs_its_start_time_not_the_completion_time(tmp_path, monkeypatch):
+    """A long maintenance must not push the on-time evidence out of its window."""
+    home = _home(tmp_path)
+    install.record(home, "knowledge", "ok")
+    schedules.confirm(
+        home,
+        confirmed_by_user=True,
+        host_created=True,
+        task_ids={"frontier-daily": "d1", "frontier-feedback": "f1"},
+    )
+    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
+    task = next(
+        row for row in config["schedules"]["tasks"] if row["id"] == "frontier-feedback"
+    )
+    start = "2026-10-27T08:00:04+08:00"
+    calls = {"n": 0}
+
+    def fake_now():
+        calls["n"] += 1
+        return start if calls["n"] == 1 else "2026-10-27T08:19:44+08:00"
+
+    monkeypatch.setattr(intents, "now", fake_now)
+    captured = {}
+    monkeypatch.setattr(intents, "_runlog", lambda home_, row: captured.update(row))
+
+    intents.run(
+        home,
+        "feedback",
+        offline=True,
+        library=FakeLibrary(),
+        date="2026-10-27",
+        scheduled=True,
+        task="frontier-feedback",
+        proof=task["proof"],
+    )
+
+    assert captured["scheduled"] is True
+    assert captured["at"] == start

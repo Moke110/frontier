@@ -366,6 +366,11 @@ def run(
     _runlog(
         home,
         {
+            # The run log's ``at`` is the scheduled *start* moment: a bounded
+            # feedback run can spend many minutes on maintenance, and completion
+            # time would fall outside the on-time window and be rejected even
+            # though the host fired the task exactly on schedule.
+            "at": result["at"],
             "intent": intent,
             "host": room,
             "scheduled": scheduled_ok,
