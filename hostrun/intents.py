@@ -9,23 +9,22 @@ Intents:
   daily           每日 08:00：处理反馈、恢复、再请求并（闸门允许时）开始一篇推送
   feedback        每小时：只处理反馈与恢复；**不创建**检索请求
   maintenance     每天至多一次：原文/推送库对账与配额；不删除、不创建检索请求
-  listener-check  每日 09:00：只读判定监听进程健康；离线时至多拉起一次；不推送
+  listener-check  每日 09:00：只读判定监听进程健康 + 至多一次受控拉起；不推送
 
 No daemon, no detached child, no OS scheduler write. If the host is off, the
 run simply does not happen; missed daily requests coalesce into one.
 
-``listener-check`` is special: it is a mechanical health probe, so it never
-takes the executor lease (a running 08:00 push must not hide the 09:00 check),
-never writes a ``scheduled_run`` row and never folds in feedback/maintenance.
-Its evidence is the ``listener_health`` install step.
+``listener-check`` is special: it is a mechanical health probe. Its judgement is
+read-only; when it reports offline it spawns the recorded start command at most
+once and re-checks. It never takes the executor lease (a running 08:00 push must
+not hide the 09:00 check), never writes a ``scheduled_run`` row and never folds in
+feedback/maintenance. Its evidence is the ``listener_health`` install step.
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from common import append_jsonl, ensure_dir, now, read_json, today, write_json
@@ -37,8 +36,6 @@ INTENT_LISTENER_CHECK = "listener-check"
 INTENTS = ("daily", "feedback", "maintenance", INTENT_LISTENER_CHECK)
 MAINTENANCE_REL = Path("library") / "maintenance"
 RUNS_REL = Path("hostrun") / "runs.jsonl"
-HEARTBEAT_REL = Path("listener") / "heartbeat.json"
-DEFAULT_HEARTBEAT_STALE_SECONDS = 600
 
 PIPELINE_BRIEF = """frontier 有界运行（{intent}）：请在**当前会话**中完成一篇论文推送，只处理一篇。
 
@@ -78,19 +75,24 @@ def _runlog(home: Path, row: dict) -> None:
     append_jsonl(Path(home) / RUNS_REL, {"schema_version": 1, "at": now(), **row})
 
 
-def _owner(home: Path) -> str:
+def owner(home: Path) -> str:
     """The verified recipient, kept out of the install report/config.
 
     ``install/recipient.json`` is the current source (written by ``smoke start``).
     The config fallback is read-only for pre-existing installs; it is never
-    copied into a report.
+    copied into a report. Public so the listener can route replies and apply the
+    DM allow-list without a private bridge.
     """
     recipient = read_json(Path(home) / "install" / "recipient.json") or {}
-    owner = str(recipient.get("owner") or "")
-    if owner:
-        return owner
+    owner_id = str(recipient.get("owner") or "")
+    if owner_id:
+        return owner_id
     config = load_config(home)
     return str((config.get("permissions") or {}).get("owner") or "")
+
+
+#: Backwards-compatible private alias (existing callers and tests use it).
+_owner = owner
 
 
 def _brief(
@@ -113,7 +115,7 @@ def _brief(
         home=home,
         date=today(),
         tmp=temp_dir(),
-        owner=_owner(home) or "<owner open_id>",
+        owner=owner(home) or "<owner open_id>",
         extra=extra,
         finish=FINISH_HINT.format(intent=intent),
     ).strip()
@@ -131,75 +133,55 @@ def _default_sleep(seconds: float) -> None:
 
 
 def _pid_alive(pid) -> bool:
-    """Whether the heartbeat's pid still names a live process."""
-    try:
-        value = int(pid)
-    except (TypeError, ValueError):
-        return False
-    if value <= 0:
-        return False
-    if os.name == "nt":
-        import ctypes
+    """Thin alias for the canonical ``listener.pid_alive`` (#70).
 
-        PROCESS_SYNCHRONIZE = 0x00100000
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_SYNCHRONIZE, False, value)
-        if not handle:
-            return False
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return True
-    try:
-        os.kill(value, 0)
-    except OSError:
-        return False
-    return True
+    Kept as a module symbol so existing tests can monkeypatch
+    ``intents._pid_alive`` without touching the real process table.
+    """
+    from hostrun import listener
+
+    return listener.pid_alive(pid)
 
 
-def _age_seconds(updated_at, moment: datetime) -> int | None:
-    try:
-        updated = datetime.fromisoformat(str(updated_at))
-    except (TypeError, ValueError):
-        return None
-    if updated.tzinfo is None:
-        # The listener writes offset-aware timestamps; a naive one is read as
-        # UTC, matching install.probe_listener's convention.
-        updated = updated.replace(tzinfo=timezone.utc)
-    return max(0, int((moment - updated).total_seconds()))
+def listener_alive(health: dict) -> bool:
+    """Whether a health snapshot names a process that may still be serving.
 
-
-def _read_heartbeat(path: Path) -> tuple[dict | None, str]:
-    if not path.exists():
-        return None, ""
-    try:
-        payload = read_json(path)
-    except (OSError, ValueError) as exc:
-        return None, f"心跳文件不可读：{path}（{type(exc).__name__}）"
-    if not isinstance(payload, dict):
-        return None, f"心跳文件格式不正确：{path}"
-    return payload, ""
+    ``online`` is the normal case; a stale heartbeat with a live pid is a wedged
+    listener that ``stop`` should still try to stop rather than claim is gone.
+    Shared by ``listener stop`` so the CLI does not carry its own copy.
+    """
+    evidence = health.get("evidence") or {}
+    return health.get("state") == "online" or bool(evidence.get("pid_alive"))
 
 
 def listener_health(
     home: Path, *, clock=None, pid_check=None
 ) -> dict:
-    """Read-only judgement: heartbeat freshness, pid liveness, last event.
+    """Health judgement: heartbeat freshness, pid liveness, last event.
 
-    No lease, no spawn, no writes.  ``online`` requires a heartbeat no older
-    than ``listener.heartbeat_stale_seconds`` (default 10 minutes) **and** a
-    live pid; anything else is ``stale``/``offline`` with named problems.
+    This function itself is read-only (no lease, no spawn, no writes); the
+    surrounding ``listener-check`` intent may spawn the recorded start command
+    once when it reports offline.  ``online`` requires a heartbeat no older than
+    ``listener.heartbeat_stale_seconds`` (default 10 minutes) **and** a live pid;
+    anything else is ``stale``/``offline`` with named problems.  Freshness and
+    pid liveness come from ``listener.heartbeat_facts``/``listener.pid_alive``,
+    the same helpers the install probe and ``listener stop`` use.
     """
+    from hostrun import listener
+
     home = Path(home)
     moment = (clock or _clock_now)()
     config = load_config(home)
     listener_config = config.get("listener") or {}
     stale_seconds = int(
-        listener_config.get("heartbeat_stale_seconds") or DEFAULT_HEARTBEAT_STALE_SECONDS
+        listener_config.get("heartbeat_stale_seconds")
+        or listener.DEFAULT_HEARTBEAT_STALE_SECONDS
     )
-    path = home / HEARTBEAT_REL
-    payload, read_problem = _read_heartbeat(path)
+    facts = listener.heartbeat_facts(home, moment=moment, stale_seconds=stale_seconds)
     problems: list[str] = []
     evidence = {
         "checked_at": moment.isoformat(timespec="seconds"),
-        "heartbeat_path": str(path),
+        "heartbeat_path": facts["path"],
         "heartbeat_at": None,
         "age_seconds": None,
         "pid": None,
@@ -209,14 +191,15 @@ def listener_health(
         "state": "offline",
         "action": "none",
     }
-    if read_problem:
-        problems.append(read_problem)
-    elif payload is None:
-        problems.append(f"心跳文件不存在：{path}")
+    if facts["problem"]:
+        problems.append(facts["problem"])
+    elif not facts["present"]:
+        problems.append(f"心跳文件不存在：{facts['path']}")
     else:
-        updated_at = payload.get("updated_at")
-        pid = payload.get("pid")
-        age = _age_seconds(updated_at, moment)
+        payload = facts["payload"] or {}
+        updated_at = facts["updated_at"]
+        pid = facts["pid"]
+        age = facts["age_seconds"]
         alive = bool(pid_check(pid)) if pid_check is not None else _pid_alive(pid)
         evidence.update(
             {
@@ -247,27 +230,17 @@ def listener_health(
 
 
 def _listener_start_argv(command: str) -> list[str]:
-    """Spawn argv for the recorded start script (batch files need cmd.exe)."""
-    text = str(command)
-    if os.name == "nt" and Path(text).suffix.lower() in (".cmd", ".bat"):
-        return [os.environ.get("COMSPEC") or "cmd.exe", "/c", text]
-    return [text]
+    """Thin alias for ``listener.start_argv`` (kept as a test seam)."""
+    from hostrun import listener
+
+    return listener.start_argv(command)
 
 
 def _default_spawn(argv: list[str]):
-    """Start the recorded command detached: no inherited console, no blocking."""
-    kwargs = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    if os.name == "nt":
-        kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
-        )
-    else:
-        kwargs["start_new_session"] = True
-    return subprocess.Popen(argv, **kwargs)
+    """Thin alias for the canonical detached-spawn contract (kept as a seam)."""
+    from hostrun import listener
+
+    return listener.spawn_detached(argv, new_console=True)
 
 
 def _listener_health_note(result: dict) -> str:
@@ -305,8 +278,10 @@ def run_listener_check(
 ) -> dict:
     """One mechanical listener health check; at most one restart attempt.
 
-    Offline with a recorded ``listener.start_command``: spawn it detached once,
-    wait ``listener.recovery_recheck_seconds`` and re-check.  No retry loop, no
+    The judgement is read-only; when it reports offline and a recorded
+    ``listener.start_command`` exists, spawn it detached once, wait
+    ``listener.recovery_recheck_seconds`` and re-check (a bounded
+    read-only-judgement-plus-one-controlled-restart).  No retry loop, no
     executor lease; evidence goes to the ``listener_health`` install step.
     """
     home = Path(home)
@@ -493,9 +468,11 @@ def run(
     room = host or (config.get("host") or {}).get("product") or "host"
 
     if intent == INTENT_LISTENER_CHECK:
-        # Mechanical, read-only health probe: never takes the executor lease
-        # (a running daily push must not hide the check), never writes a
-        # ``scheduled_run`` row; its evidence is the ``listener_health`` step.
+        # Mechanical health probe: a read-only judgement that may spawn the
+        # recorded start command at most once and re-check. It never takes the
+        # executor lease (a running daily push must not hide the check), never
+        # writes a ``scheduled_run`` row; its evidence is the
+        # ``listener_health`` step.
         return run_listener_check(home)
 
     scheduled_ok = False

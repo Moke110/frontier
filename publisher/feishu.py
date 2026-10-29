@@ -24,13 +24,14 @@ STDERR_TAIL_LINES = 20
 STDERR_TAIL_CHARS = 400
 
 # Exit-code meanings observed on a real host (docs/acceptance/README.md:115).
-# ADR 0008 / decision D9: 3 is fatal, 4 and 5 are transient.
+# ADR 0008 / decision D9: 3 is fatal, 4 and 5 are transient.  The retryable set
+# is derived from the kind table below so the two can never disagree.
 EXIT_APP_SCOPE_NOT_APPLIED = 3
-EXIT_TRANSIENT = (4, 5)
+_TRANSIENT_EXIT_KINDS = {4: "transient", 5: "token_storage_lock"}
+EXIT_TRANSIENT = tuple(_TRANSIENT_EXIT_KINDS)
 _EXIT_KINDS = {
     EXIT_APP_SCOPE_NOT_APPLIED: "app_scope_not_applied",
-    4: "transient",
-    5: "token_storage_lock",
+    **_TRANSIENT_EXIT_KINDS,
 }
 
 # A read-back proves a message is gone only through a documented not-found or
@@ -546,7 +547,9 @@ def listen_events(
     ``[event] ready event_key=...`` marker is exposed as ``ready`` /
     ``ready_event_key`` (plus ``on_ready``).  ``on_line`` receives each stripped
     stdout line and may return ``False`` to stop early; ``deadline_seconds``
-    kills a hung child.
+    kills a hung child.  ``on_stderr`` is the diagnostic seam proving the drain
+    keeps up (the bounded tail/readiness logic is internal); no production
+    caller is required for it to be worth keeping.
 
     Never raises for a non-zero child exit; returns
     ``{"ok", "reason", "kind", "returncode", "fatal", "retryable", "ready",

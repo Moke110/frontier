@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from hostrun import executor, install, intents
+from hostrun import executor, install, intents, listener
 from hostrun.base import update_config
 
 TZ = timezone(timedelta(hours=8))
@@ -337,4 +337,144 @@ def test_listener_check_writes_no_scheduled_run_evidence(tmp_path, monkeypatch):
     assert "scheduled_run" not in steps
     assert steps["listener_health"]["status"] == "ok"
     assert "scheduled" not in json.dumps(steps["listener_health"])
+
+
+# ---------------------------------------------------------------- pid liveness
+# Regression for #70: on Windows a process that has already exited can still
+# yield a usable handle while another handle keeps the object alive.  Liveness
+# therefore has to be decided on the wait result, not on OpenProcess.
+WAIT_TIMEOUT = 0x102
+WAIT_OBJECT_0 = 0x0
+
+
+class _FakeKernel32:
+    """Fake kernel32 whose handle always opens; only the wait result decides."""
+
+    PROCESS_SYNCHRONIZE = 0x00100000
+
+    def __init__(self, *, opened=True, wait=WAIT_TIMEOUT):
+        self.opened = opened
+        self.wait = wait
+        self.opened_pids = []
+        self.waited = []
+        self.closed = []
+
+    def OpenProcess(self, access, inherit, pid):
+        self.opened_pids.append((access, inherit, pid))
+        return 1234 if self.opened else 0
+
+    def WaitForSingleObject(self, handle, timeout):
+        self.waited.append((handle, timeout))
+        return self.wait
+
+    def CloseHandle(self, handle):
+        self.closed.append(handle)
+        return 1
+
+
+def test_windows_pid_liveness_treats_an_exited_process_with_an_open_handle_as_dead():
+    kernel32 = _FakeKernel32(wait=WAIT_OBJECT_0)  # already signalled = exited
+
+    assert listener.pid_alive(4242, platform="nt", kernel32=kernel32) is False
+    assert kernel32.opened_pids == [(0x00100000, False, 4242)]
+    assert kernel32.waited == [(1234, 0)]
+    assert kernel32.closed == [1234]
+
+
+def test_windows_pid_liveness_accepts_a_running_process():
+    kernel32 = _FakeKernel32(wait=WAIT_TIMEOUT)  # still running
+
+    assert listener.pid_alive(4242, platform="nt", kernel32=kernel32) is True
+    assert kernel32.closed == [1234]
+
+
+def test_windows_pid_liveness_handles_an_unopenable_pid():
+    kernel32 = _FakeKernel32(opened=False)
+
+    assert listener.pid_alive(4242, platform="nt", kernel32=kernel32) is False
+    assert kernel32.waited == []
+    assert kernel32.closed == []
+
+
+def test_pid_liveness_rejects_invalid_pids_without_opening_a_handle():
+    for pid in (None, "", 0, -3, "abc"):
+        kernel32 = _FakeKernel32()
+        assert listener.pid_alive(pid, platform="nt", kernel32=kernel32) is False
+        assert kernel32.opened_pids == []
+
+
+def test_windows_pid_liveness_closes_the_handle_when_the_wait_fails():
+    class Exploding(_FakeKernel32):
+        def WaitForSingleObject(self, handle, timeout):
+            raise OSError("kernel32 exploded")
+
+    kernel32 = Exploding()
+
+    assert listener.pid_alive(4242, platform="nt", kernel32=kernel32) is False
+    assert kernel32.closed == [1234]
+
+
+def test_posix_pid_liveness_keeps_the_os_kill_semantics():
+    calls = []
+
+    def kill(pid, signal_number):
+        calls.append((pid, signal_number))
+
+    assert listener.pid_alive(4242, platform="posix", kill=kill) is True
+    assert calls == [(4242, 0)]
+
+    def missing(pid, signal_number):
+        raise ProcessLookupError
+
+    assert listener.pid_alive(4242, platform="posix", kill=missing) is False
+
+
+def test_listener_health_uses_the_shared_pid_judgement(tmp_path, monkeypatch):
+    home = _home(tmp_path)
+    _heartbeat(home, updated_at=CHECK_AT.isoformat(), pid=4242)
+    monkeypatch.setattr(listener, "pid_alive", lambda pid: False)
+
+    health = intents.listener_health(home, clock=lambda: CHECK_AT)
+
+    assert health["ok"] is False
+    assert health["state"] == "offline"
+    assert health["evidence"]["pid_alive"] is False
+    assert any("pid" in problem for problem in health["problems"])
+
+
+def test_a_fresh_heartbeat_whose_pid_is_dead_restarts_the_listener(tmp_path, monkeypatch):
+    home = _home(tmp_path)
+    command = _start_command(tmp_path)
+    update_config(
+        home,
+        listener={"start_command": str(command), "recovery_recheck_seconds": 30},
+    )
+    _heartbeat(home, updated_at=(CHECK_AT - timedelta(seconds=10)).isoformat(), pid=111)
+    clock = _Clock(CHECK_AT)
+    spawns = []
+
+    def sleep(seconds):
+        clock.sleep(seconds)
+        _heartbeat(home, updated_at=clock.moment.isoformat(), pid=222)
+
+    monkeypatch.setattr(listener, "pid_alive", lambda pid: int(pid) == 222)
+
+    result = intents.run_listener_check(
+        home, clock=clock.now, sleep=sleep, spawn=_recording_spawn(spawns)
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "restart_ok"
+    assert len(spawns) == 1
+
+
+def test_heartbeat_facts_read_a_naive_timestamp_as_utc(tmp_path):
+    home = _home(tmp_path)
+    _heartbeat(home, updated_at="2026-10-29T00:59:00", pid=4242)
+
+    facts = listener.heartbeat_facts(home, moment=CHECK_AT, stale_seconds=600)
+
+    assert facts["present"] is True
+    assert facts["age_seconds"] == 60
+    assert facts["state"] == "online"
 

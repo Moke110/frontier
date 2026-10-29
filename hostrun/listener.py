@@ -30,6 +30,7 @@ import json
 import os
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from common import append_jsonl, ensure_dir, file_lock, now, read_json, write_json
@@ -45,6 +46,11 @@ STOP_NAME = "stop"
 DERIVED_LOCK_NAME = "derived.lock"
 
 HEARTBEAT_SCHEMA_VERSION = 1
+DEFAULT_HEARTBEAT_STALE_SECONDS = 600
+# Win32 constants for the pid-liveness check (#70): a usable OpenProcess handle
+# is not proof of life; the wait result is.
+PROCESS_SYNCHRONIZE = 0x00100000
+WAIT_TIMEOUT = 0x102
 LOG_MAX_BYTES = 1024 * 1024
 CONSUME_TIMEOUT = "30s"
 TICK_PAUSE_SECONDS = 1.0
@@ -109,6 +115,80 @@ def read_heartbeat(home: Path) -> dict:
     return read_json(heartbeat_path(home)) or {}
 
 
+def _age_seconds(updated_at, moment: datetime) -> int | None:
+    """Seconds between a heartbeat timestamp and ``moment``.
+
+    The listener writes offset-aware timestamps; a naive one is read as UTC,
+    the same convention the install probe uses.
+    """
+    try:
+        updated = datetime.fromisoformat(str(updated_at))
+    except (TypeError, ValueError):
+        return None
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return max(0, int((moment - updated).total_seconds()))
+
+
+def _read_heartbeat_payload(path: Path) -> tuple[dict | None, str]:
+    """Read one heartbeat file, keeping the reason it cannot be used."""
+    path = Path(path)
+    if not path.exists():
+        return None, ""
+    try:
+        payload = read_json(path)
+    except (OSError, ValueError) as exc:
+        return None, f"心跳文件不可读：{path}（{type(exc).__name__}）"
+    if not isinstance(payload, dict):
+        return None, f"心跳文件格式不正确：{path}"
+    return payload, ""
+
+
+def heartbeat_facts(
+    home: Path,
+    *,
+    moment: datetime | None = None,
+    stale_seconds: int = DEFAULT_HEARTBEAT_STALE_SECONDS,
+) -> dict:
+    """One canonical read of the heartbeat: payload, age and freshness (D2).
+
+    Shared by the ``listener-check`` intent and the install probe, so the
+    freshness window and the naive-UTC handling cannot drift between callers.
+    A missing file is ``present=False`` without a problem; an unreadable or
+    malformed one is ``present=True`` plus ``problem``.
+    """
+    home = Path(home)
+    moment = moment or datetime.now().astimezone()
+    path = heartbeat_path(home)
+    facts = {
+        "path": str(path),
+        "present": False,
+        "problem": "",
+        "payload": None,
+        "updated_at": None,
+        "age_seconds": None,
+        "state": "unknown",
+        "pid": None,
+        "degraded": False,
+    }
+    if not path.exists():
+        return facts
+    facts["present"] = True
+    payload, problem = _read_heartbeat_payload(path)
+    if problem:
+        facts["problem"] = problem
+        return facts
+    payload = payload or {}
+    facts["payload"] = payload
+    facts["updated_at"] = payload.get("updated_at")
+    facts["pid"] = payload.get("pid")
+    facts["degraded"] = payload.get("state") == "degraded"
+    facts["age_seconds"] = _age_seconds(facts["updated_at"], moment)
+    if facts["age_seconds"] is not None:
+        facts["state"] = "online" if facts["age_seconds"] <= int(stale_seconds) else "stale"
+    return facts
+
+
 def write_heartbeat(
     home: Path,
     *,
@@ -149,9 +229,99 @@ def stop_requested(home: Path) -> bool:
     return stop_path(home).exists()
 
 
+# -------------------------------------------------------- process lifecycle
+def pid_alive(pid, *, platform: str | None = None, kernel32=None, kill=None) -> bool:
+    """Whether ``pid`` names a process that is still running (#70).
+
+    On Windows an already-exited process can still yield a usable handle while
+    another handle keeps the process object alive, so ``OpenProcess`` alone is
+    not proof of life: after opening, the process is only alive when
+    ``WaitForSingleObject(handle, 0)`` returns ``WAIT_TIMEOUT``, and the handle
+    is always closed.  POSIX keeps the ``os.kill(pid, 0)`` probe.  ``kernel32``
+    and ``kill`` are injectable, so the decision is testable offline without a
+    real process table or the real Windows API.
+    """
+    try:
+        value = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+    if (platform or os.name) == "nt":
+        if kernel32 is None:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+        try:
+            handle = kernel32.OpenProcess(PROCESS_SYNCHRONIZE, False, value)
+        except Exception:  # noqa: BLE001 - an unavailable API is not proof of life
+            return False
+        if not handle:
+            return False
+        try:
+            return int(kernel32.WaitForSingleObject(handle, 0)) == WAIT_TIMEOUT
+        except Exception:  # noqa: BLE001 - an unknown wait result is not proof of life
+            return False
+        finally:
+            try:
+                kernel32.CloseHandle(handle)
+            except Exception:  # noqa: BLE001 - closing must not mask the judgement
+                pass
+    probe = kill or os.kill
+    try:
+        probe(value, 0)
+    except OSError:
+        return False
+    return True
+
+
+def start_argv(command: str) -> list[str]:
+    """Spawn argv for the recorded start script (batch files need cmd.exe)."""
+    text = str(command)
+    if os.name == "nt" and Path(text).suffix.lower() in (".cmd", ".bat"):
+        return [os.environ.get("COMSPEC") or "cmd.exe", "/c", text]
+    return [text]
+
+
+def spawn_detached(
+    argv: list[str],
+    *,
+    new_console: bool = False,
+    new_session: bool = True,
+    **kwargs,
+):
+    """One detached ``Popen`` contract: no inherited stdio, never blocks.
+
+    ``new_console`` gives the listener start command its own Windows console
+    window; ``new_session`` (POSIX) detaches it from the caller's session.  A
+    derived model child keeps the listener's console/session so stopping the
+    listener still ends it, which is why both toggles exist.
+    """
+    options = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    options.update(kwargs)
+    if os.name == "nt":
+        flags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        if new_console:
+            flags |= int(getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+        options["creationflags"] = flags
+    elif new_session:
+        options["start_new_session"] = True
+    return subprocess.Popen(argv, **options)
+
+
 # -------------------------------------------------------------- console title
 def set_console_title(title: str, *, platform: str | None = None) -> bool:
-    """Set the Windows console title; a guarded no-op everywhere else."""
+    """Set the Windows console title; a guarded no-op everywhere else.
+
+    ``platform`` is an intentional injection seam, not test-only production
+    surface: the Windows branch cannot be exercised on a POSIX CI host, and
+    patching the global ``os.name`` from a test would leak into other modules.
+    ``serve`` calls this with the title only.
+    """
     if (platform or os.name) != "nt":
         return False
     try:
@@ -171,13 +341,10 @@ def _message_envelope(raw: object) -> tuple[dict | None, str]:
     if not isinstance(raw, dict):
         return None, ""
     event_type = ""
-    for holder in (raw,):
-        for key in ("type", "event_type"):
-            value = holder.get(key)
-            if isinstance(value, str) and value:
-                event_type = value
-                break
-        if event_type:
+    for key in ("type", "event_type"):
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            event_type = value
             break
     header = raw.get("header")
     if not event_type and isinstance(header, dict) and header.get("event_type"):
@@ -253,17 +420,13 @@ def parse_message_event(raw: object) -> dict | None:
 
 
 # ------------------------------------------------------------ command routing
-def _owner(home: Path) -> str:
-    return str(intents._owner(Path(home)) or "")
-
-
 def classify_message(home: Path, event: dict | None, *, owner: str | None = None) -> dict:
     """Decide the action for one parsed message; pure apart from the owner read.
 
     Only the verified owner's direct message (``chat_type == "p2p"``) is
     actionable. Everything else is ``ignored`` with no reply and no action.
     """
-    resolved_owner = str(owner if owner is not None else _owner(home)).strip()
+    resolved_owner = str(owner if owner is not None else intents.owner(home)).strip()
     decision = {
         "ok": True,
         "action": "ignored",
@@ -418,15 +581,9 @@ def _install_report(home: Path) -> dict:
     return install.report(Path(home))
 
 
-def _spawn(argv: list[str]):
-    kwargs = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    if os.name == "nt":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    return subprocess.Popen(argv, **kwargs)
+def _spawn(argv: list[str], **kwargs):
+    """Derived-run spawner: canonical contract, listener's session retained."""
+    return spawn_detached(argv, new_session=False, **kwargs)
 
 
 def _kill_child(proc) -> None:
@@ -483,7 +640,7 @@ def run_derived(
         if timeout_seconds is not None
         else (listener_config.get("derived_timeout_seconds") or 1200)
     )
-    reply_target = str(target or _owner(home))
+    reply_target = str(target or intents.owner(home))
     state: dict = {
         "ok": False,
         "reason": "",

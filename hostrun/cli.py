@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -1144,31 +1143,17 @@ LISTENER_STOP_POLL_SECONDS = 1.0
 
 
 def _listener_argv(command: str) -> list[str]:
-    """Start argv for the recorded script; a batch file needs ``cmd.exe``."""
-    text = str(command)
-    if os.name == "nt" and Path(text).suffix.lower() in (".cmd", ".bat"):
-        return [os.environ.get("COMSPEC") or "cmd.exe", "/c", text]
-    return [text]
+    """Thin alias for the canonical start argv (kept as a test seam)."""
+    return listener.start_argv(command)
 
 
 def _spawn_detached(argv: list[str]):
-    """Start the listener without inheriting or blocking this console.
+    """Thin alias for the canonical detached spawn (kept as a test seam).
 
     Returns the ``Popen`` handle immediately; ``start`` never waits for the
     listener (the single-instance lock decides whether it will actually serve).
     """
-    kwargs = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    if os.name == "nt":
-        kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
-        )
-    else:
-        kwargs["start_new_session"] = True
-    return subprocess.Popen(argv, **kwargs)
+    return listener.spawn_detached(argv, new_console=True)
 
 
 def _listener_sleep(seconds: float) -> None:
@@ -1241,13 +1226,12 @@ def _listener_start(root: Path) -> tuple[int, dict]:
 
 
 def _listener_alive(health: dict) -> bool:
-    """Whether the heartbeat names a process that may still be serving.
+    """Thin alias for ``intents.listener_alive`` (shared health predicate).
 
     ``online`` is the normal case; a stale heartbeat with a live pid is a wedged
     listener that ``stop`` should still try to stop rather than claim is gone.
     """
-    evidence = health.get("evidence") or {}
-    return health.get("state") == "online" or bool(evidence.get("pid_alive"))
+    return intents.listener_alive(health)
 
 
 def _listener_stop(root: Path) -> tuple[int, dict]:

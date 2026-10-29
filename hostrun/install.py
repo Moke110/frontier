@@ -25,11 +25,11 @@ from pathlib import Path
 
 from common import ensure_dir, now, read_json, write_json
 from hostrun import lark as lark_mod
+from hostrun import listener as listener_mod
 from hostrun import workspace as workspace_mod
 from hostrun.base import (
     HostRunError,
     dsh_bin,
-    listener_dir,
     load_config,
     redact,
     require_dsh,
@@ -407,40 +407,32 @@ def _write_listener_scripts(home: Path, repo: Path, python: str) -> dict:
 
 
 def _heartbeat_facts(home: Path, *, stale_seconds: int) -> tuple[dict | None, str]:
-    """Read the heartbeat if present; never start anything to obtain it."""
-    path = listener_dir(home) / "heartbeat.json"
-    if not path.exists():
+    """Read the heartbeat through the canonical listener helper; never starts.
+
+    ``listener.heartbeat_facts`` owns freshness and naive-UTC handling so this
+    probe cannot drift from the ``listener-check`` intent; only the reporting
+    shape (``None`` when unusable) is adapted here.
+    """
+    facts = listener_mod.heartbeat_facts(Path(home), stale_seconds=stale_seconds)
+    if facts["problem"]:
+        return None, facts["problem"]
+    if not facts["present"]:
         return None, ""
-    try:
-        payload = read_json(path)
-    except (OSError, ValueError) as exc:
-        return None, f"心跳文件不可读：{path}（{type(exc).__name__}）"
-    if not isinstance(payload, dict):
-        return None, f"心跳文件格式不正确：{path}"
-    updated_raw = payload.get("updated_at")
-    age_seconds = None
-    state = "unknown"
-    if updated_raw:
-        try:
-            updated = datetime.fromisoformat(str(updated_raw))
-        except ValueError:
-            updated = None
-        if updated is not None:
-            if updated.tzinfo is None:
-                updated = updated.replace(tzinfo=timezone.utc)
-            age_seconds = max(
-                0, int((datetime.now().astimezone() - updated).total_seconds())
+    return (
+        {
+            key: facts[key]
+            for key in (
+                "path",
+                "present",
+                "state",
+                "age_seconds",
+                "pid",
+                "updated_at",
+                "degraded",
             )
-            state = "online" if age_seconds <= stale_seconds else "stale"
-    return {
-        "path": str(path),
-        "present": True,
-        "state": state,
-        "age_seconds": age_seconds,
-        "pid": payload.get("pid"),
-        "updated_at": updated_raw,
-        "degraded": payload.get("state") == "degraded",
-    }, ""
+        },
+        "",
+    )
 
 
 def probe_listener(home: Path, *, dsh: str | None = None) -> dict:
