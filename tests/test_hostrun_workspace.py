@@ -685,6 +685,24 @@ def test_skill_target_cannot_overwrite_the_source_entry(tmp_path):
         workspace.register_skill(root, repo / "skills" / "frontier-run")
 
 
+def test_skill_registration_reports_an_unwritable_host_directory(tmp_path, monkeypatch):
+    """A host that denies its skills directory is blocked, not a traceback."""
+    root, repo, home = _workspace(tmp_path)
+
+    def deny(path):
+        raise PermissionError(13, "Access denied", str(path))
+
+    monkeypatch.setattr(workspace, "ensure_dir", deny)
+
+    result = workspace.register_skill(root, tmp_path / "host-skills" / "frontier-run")
+
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert result["reason"] == "skill_target_not_writable"
+    assert "Access denied" in result["error"]
+    assert "skill" not in workspace.load_record(root)
+
+
 def test_status_reports_missing_interpreter(tmp_path):
     root, repo, home = _workspace(tmp_path)
     workspace.register_skill(root, root / "host-skills" / "frontier-run")

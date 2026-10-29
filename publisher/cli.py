@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -82,6 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p = sub.add_parser("pending")
+    p = sub.add_parser(
+        "deliver",
+        help="deliver the next ready question to the verified recipient",
+    )
+    p.add_argument("--to", required=True, help="open_id (ou_...)")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--as", dest="identity", default="bot", choices=["bot", "user"])
     return parser
 
 
@@ -102,6 +110,10 @@ def _emit_result(result: dict) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = home(args.home)
+    # The data root the command was given must govern the recorded lark-cli path
+    # and every store path, even when the host passed --home instead of KL_HOME
+    # (the host instruction always passes --home explicitly).
+    os.environ["KL_HOME"] = str(root)
     try:
         if args.cmd == "send":
             push = read_json(Path(args.push))

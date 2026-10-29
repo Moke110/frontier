@@ -903,6 +903,9 @@ def test_brief_uses_the_verified_recipient_and_registers_the_push_first(tmp_path
     assert brief["recipient"] == OWNER
     assert "<owner>" not in text
     assert f"--to {OWNER}" in text
+    # The send command must carry the data root, or the recorded lark-cli path
+    # and the publisher store resolve against the default root instead.
+    assert f'publisher.cli --home "{home}" send' in text
     assert text.index("archive.cli add-push") < text.index("--step rendered")
     assert "feedback submit --item" not in text
 

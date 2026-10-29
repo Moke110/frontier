@@ -48,7 +48,7 @@ PIPELINE_BRIEF = """frontier 有界运行（{intent}）：请在**当前会话**
 9. python -m writer.cli render --push ... --out {tmp}/<push_id>.html
 10. python -m archive.cli add-push --file ...
 11. python -m library.cli ensure-source --paper <push 里的 paper_id>
-12. python -m publisher.cli send --push ... --html ... --to {owner}
+12. python -m publisher.cli --home "{home}" send --push ... --html ... --to {owner}
 13. python -m hostrun.cli feedback sync（把新题持久化到飞书）
 {extra}"""
 

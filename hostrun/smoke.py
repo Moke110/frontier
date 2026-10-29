@@ -464,7 +464,7 @@ def brief(home: Path) -> dict:
         "（该推送记录必须已存在、push_id 一致且属于本次选中的论文；"
         "文件须含七段段落与原文图/生成图图注）",
         "python -m library.cli ensure-source --paper <paper_id>",
-        f'python -m publisher.cli send --push <push> --html <html> --to {owner}'
+        f'python -m publisher.cli --home "{home}" send --push <push> --html <html> --to {owner}'
         "（若上次发送结果不明，先核对飞书并用 publisher.cli resolve-send 处理，禁止重发）",
         "python -m hostrun.cli feedback sync",
         f'python -m hostrun.cli --home "{home}" smoke record --step sent '
