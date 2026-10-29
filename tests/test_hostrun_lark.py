@@ -271,6 +271,40 @@ def test_user_open_id_is_absent_when_not_reported():
     assert result == {"ok": False, "open_id": ""}
 
 
+def test_user_open_id_rejects_an_unusable_identity():
+    """A cached open id is not evidence when the user token is missing."""
+    payload = _auth_payload()
+    payload["identities"]["user"] = {
+        "status": "missing",
+        "available": False,
+        "tokenStatus": "needs_refresh",
+        "userOpenId": "ou_x",
+        "refreshExpiresAt": "2099-01-01T00:00:00+08:00",
+    }
+
+    result = lark.user_open_id(
+        "lark-cli", runner=lambda argv, **kwargs: Proc(stdout=json.dumps(payload))
+    )
+
+    assert result == {"ok": False, "open_id": ""}
+
+
+def test_user_open_id_accepts_a_refreshable_identity():
+    payload = _auth_payload()
+    payload["identities"]["user"] = {
+        "available": True,
+        "tokenStatus": "needs_refresh",
+        "userOpenId": "ou_x",
+        "refreshExpiresAt": "2099-01-01T00:00:00+00:00",
+    }
+
+    result = lark.user_open_id(
+        "lark-cli", runner=lambda argv, **kwargs: Proc(stdout=json.dumps(payload))
+    )
+
+    assert result == {"ok": True, "open_id": "ou_x"}
+
+
 def test_status_accepts_explicit_tokens_without_writing_the_library(tmp_path):
     home = tmp_path / "home"
     (home / "install").mkdir(parents=True)

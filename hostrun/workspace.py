@@ -862,8 +862,25 @@ def register_skill(
             "entry": str(entry),
             "references": [str(path) for path in references],
         }
-    ensure_dir(target_dir)
-    launcher.write_text(_launcher_text(record), encoding="utf-8")
+    try:
+        ensure_dir(target_dir)
+        launcher.write_text(_launcher_text(record), encoding="utf-8")
+    except OSError as exc:
+        # A host that does not allow writing its skills directory is a missing
+        # capability, not a crash: report it as a blocked step with the exact
+        # path so the install report stays actionable.
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "skill_target_not_writable",
+            "skill": str(launcher),
+            "target": str(target_dir),
+            "error": f"{type(exc).__name__}: {exc}",
+            "note": (
+                f"无法写入宿主技能目录 {target_dir}：{exc}；"
+                "需要宿主允许该路径写入，或把入口指针注册到宿主可写的技能目录"
+            ),
+        }
     record = {**record, "skill": str(launcher), "skill_target": str(target_dir)}
     save_record(root, record)
     return {

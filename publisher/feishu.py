@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
+
+from common import home as data_home
+from common import read_json
 
 BIN = "lark-cli"
 
@@ -26,8 +30,57 @@ class FeishuError(RuntimeError):
     pass
 
 
+def _recorded_executable() -> str:
+    """The absolute CLI path recorded by ``hostrun lark discover`` (ADR 0007).
+
+    The data root holds ``install/config.json`` with ``paths.lark_cli``; nothing
+    here reads or copies a credential.
+    """
+    try:
+        root = data_home()
+    except Exception:  # noqa: BLE001 - no data root means no recorded path
+        return ""
+    config = read_json(Path(root) / "install" / "config.json", {}) or {}
+    recorded = str((config.get("paths") or {}).get("lark_cli") or "").strip()
+    if not recorded or not Path(recorded).expanduser().is_absolute():
+        # A bare command name is a PATH guess, not a recorded path (ADR 0007).
+        return ""
+    return recorded
+
+
+def _cli_command() -> list[str]:
+    """argv prefix for lark-cli: the recorded absolute path, PATH only as fallback.
+
+    A recorded path that no longer exists is stale, not a hint to guess another
+    CLI.  ``shutil.which`` returns an absolute path (possibly a ``.cmd`` shim),
+    which CreateProcess can start; a bare ``lark-cli`` is not resolved through
+    PATHEXT the same way, which is why delivery used to fail on Windows.
+    """
+    recorded = _recorded_executable()
+    if recorded:
+        path = Path(recorded)
+        if not path.is_file():
+            raise FeishuError(
+                f"记录的飞书 CLI 路径已失效：{recorded}；"
+                "请重新运行 `hostrun lark discover --cli <可执行文件绝对路径>`"
+            )
+        return [str(path)]
+    found = shutil.which(BIN)
+    if not found:
+        raise FeishuError(
+            "lark-cli 未找到：未记录可执行文件，PATH 中也没有；"
+            "先运行 `hostrun lark discover --cli <绝对路径>`"
+        )
+    return [found]
+
+
 def available() -> bool:
-    return shutil.which(BIN) is not None
+    """Whether a CLI path resolves now — an existence check, not a login check."""
+    try:
+        _cli_command()
+    except FeishuError:
+        return False
+    return True
 
 
 def _run(
@@ -36,10 +89,8 @@ def _run(
     timeout: int = 60,
     cwd: str | None = None,
 ) -> dict:
-    if not available():
-        raise FeishuError("lark-cli not found in PATH")
     proc = subprocess.run(
-        [BIN, *args],
+        [*_cli_command(), *args],
         input=stdin,
         capture_output=True,
         text=True,
@@ -85,8 +136,6 @@ def send_text(target: str, text: str, identity: str = "bot", to_chat: bool = Fal
 
 def send_file(target: str, path: str, identity: str = "bot", to_chat: bool = False) -> dict:
     """Send a local file. lark-cli only accepts cwd-relative paths."""
-    from pathlib import Path
-
     file_path = Path(path).resolve()
     if not file_path.is_file():
         raise FeishuError(f"file not found: {file_path}")
@@ -116,15 +165,16 @@ def update_card(token: str, card: dict, identity: str = "bot") -> dict:
 
 
 def delete_message(
-    message_id: str, identity: str = "bot", executable: str = BIN
+    message_id: str, identity: str = "bot", executable: str | None = None
 ) -> dict:
     """Recall one test message using the *recorded* CLI path, not PATH.
 
     Authority and age limits are the server's; either can legitimately refuse,
     which the caller reports as an unretractable message.
     """
+    command = [str(executable)] if executable else _cli_command()
     proc = subprocess.run(
-        [executable, "im", "messages", "delete", "--message-id", message_id, "--as", identity],
+        [*command, "im", "messages", "delete", "--message-id", message_id, "--as", identity],
         capture_output=True,
         text=True,
         timeout=60,
@@ -134,11 +184,11 @@ def delete_message(
         payload = json.loads(text or "{}")
     except json.JSONDecodeError:
         raise FeishuError(
-            f"{executable} messages delete returned non-JSON: {text[:300]}"
+            f"{' '.join(command)} messages delete returned non-JSON: {text[:300]}"
         ) from None
     if proc.returncode != 0 or payload.get("ok") is False:
         raise FeishuError(
-            f"{executable} messages delete failed: "
+            f"{' '.join(command)} messages delete failed: "
             f"{json.dumps(payload.get('error') or payload, ensure_ascii=False)[:400]}"
         )
     return {"ok": True, "message_id": message_id, "payload": payload}
@@ -154,7 +204,7 @@ def _gone_error(payload: dict) -> bool:
 
 
 def get_message(
-    message_id: str, identity: str = "bot", executable: str = BIN
+    message_id: str, identity: str = "bot", executable: str | None = None
 ) -> dict:
     """Read one message back through the recorded CLI path.
 
@@ -163,9 +213,10 @@ def get_message(
     raises :class:`FeishuError`, so the caller reports an unverifiable read
     instead of claiming the scope is clean.
     """
+    command = [str(executable)] if executable else _cli_command()
     proc = subprocess.run(
         [
-            executable,
+            *command,
             "api",
             "GET",
             f"/open-apis/im/v1/messages/{message_id}",
@@ -183,13 +234,13 @@ def get_message(
         payload = json.loads(text or "{}")
     except json.JSONDecodeError:
         raise FeishuError(
-            f"{executable} api GET message returned non-JSON: {text[:300]}"
+            f"{' '.join(command)} api GET message returned non-JSON: {text[:300]}"
         ) from None
     if proc.returncode != 0 or payload.get("ok") is False:
         if _gone_error(payload):
             return {"message_id": message_id, "present": False, "payload": payload}
         detail = json.dumps(payload.get("error") or payload, ensure_ascii=False)
-        raise FeishuError(f"{executable} api GET message failed: {detail[:400]}")
+        raise FeishuError(f"{' '.join(command)} api GET message failed: {detail[:400]}")
     data = payload.get("data") or {}
     items = [item for item in (data.get("items") or []) if isinstance(item, dict)]
     if not items:
@@ -197,7 +248,7 @@ def get_message(
         # that the message is gone.  Only a documented not-found/recalled answer
         # may report ``present: False``.
         raise FeishuError(
-            f"{executable} api GET message returned no items; "
+            f"{' '.join(command)} api GET message returned no items; "
             "message presence is unverifiable"
         )
     item = items[0]
@@ -214,9 +265,7 @@ def consume_events(
     event_key: str = "card.action.trigger",
 ):
     """Blocking consume, yielded as raw NDJSON lines (for `listen`)."""
-    if not available():
-        raise FeishuError("lark-cli not found in PATH")
-    args = [BIN, "event", "consume", event_key, "--as", identity]
+    args = [*_cli_command(), "event", "consume", event_key, "--as", identity]
     if max_events:
         args += ["--max-events", str(max_events)]
     if timeout and timeout != "0":

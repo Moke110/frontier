@@ -1,8 +1,48 @@
-﻿# 验收记录与待补证据
+# 验收记录与待补证据
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下按日期归并证据；规格 [#51](https://github.com/Moke110/frontier/issues/51) 的历史离线实现与本轮文档修订分开记录。历史阻塞须在目标宿主重新探测，不能直接当作当前结果。代码通过离线测试不等于产品通过真实验收。
 
+## 2026-10-29 安装工作区重试（数据根可写；飞书凭据存储与 user 身份仍阻塞）
+
+本轮把 DeepSeek Harness 0.2.1-rc.3 的会话工作区改为**安装工作区** `E:\Desktop\frontier-dev`：代码目录 `frontier` 与数据根 `frontier-archive` 为同级子目录，数据根不再落在会话工作区之外。**未创建 Base、未发送任何消息、未创建宿主任务、未删除任何云端数据。**
+
+| 项目 | 实测结果 |
+|---|---|
+| 工作区与数据根 | `install workspace --root E:\Desktop\frontier-dev --repo-url …` → `ok`，`layout_valid: true`；数据根 `frontier-archive` 创建/复用成功，指针 `.frontier/install.json` 记录 root/repo/home 三个独立路径 |
+| 数据根写入 | 真实临时探针写入并删除成功（`install check` 的 `writes.data_root.status: ok`） |
+| 私有解释器 | `install toolchain --root E:\Desktop\frontier-dev` → `ok`；uv 0.11.19 在数据根创建 CPython 3.13.13，`yaml`/`fitz` 导入自检通过；解释器、venv、uv 路径写入安装配置 |
+| 依赖来源（非纯在线） | 宿主对 `files.pythonhosted.org` 的大文件传输长时间停滞：PyMuPDF 2.0（60.1 MiB）、numpy（12.0 MiB）、onnxruntime（14.2 MiB）经 uv 与 Node 直连均在数分钟内无进展；累计约 100 MB 后停住。依赖包因此取自工作区已有 uv 环境 `frontier\.venv` 的同版本安装（PyYAML 6.0.3、PyMuPDF 2.0 等），随后由官方 `install toolchain` 记录并通过导入自检。**这不是 `uv pip install -r requirements.txt` 的完整真实下载证据**；网络恢复后应按官方路径重建并复核。 |
+| 飞书 CLI | `lark discover --cli <npx 缓存绝对路径>` → `ok`（1.0.98），绝对路径写入安装配置（ADR 0007）；PATH 中的 `lark-cli.cmd` 首次运行仍因 EPERM 写 `D:\nodejs` 失败 |
+| 身份 | bot `ready`/`verified`；user `missing`（DPoP `failed to acquire key storage lock`，`dpopKeyStatus: missing`；令牌 `needs_refresh`，刷新窗口至 2026-11-03 23:56） |
+| 授权与资源 | `lark status`：CLI `ok`、授权范围 `ok`（用户令牌已授予 222 项细粒度 scope，含 `base:*`、`drive:file:*`、`im:message`）；user 身份不可用时真实 Base/Drive 读取全部 `untested` |
+| 技能入口 | `install skill --target C:\Users\Chang\.agents\skills\frontier-run` → `PermissionError [WinError 5]`；宿主技能目录不可写，`skill` 步骤 `blocked` |
+| 权限预检 | `install check` 的 `permissions` → `blocked`：数据根探针 `ok`；`C:\Users\Chang\.lark-cli` 探针 `PermissionError`；DPoP 密钥库锁位于 `%LOCALAPPDATA%\lark-cli\keysigner\key_store.lock`，同样不可达 |
+| 报告 | `install report`：`working = [host, workspace, dependencies, lark_cli]`；`blocked = [skill, identity, permissions]`；`facilities/test_loop/cleanup/knowledge/schedules/scheduled_run` 仍 `pending` |
+| 研究输入 | 工作区 `PDFs` 含 162 个 PDF（路径由 `E:\Desktop\PDFs` 变为 `E:\Desktop\frontier-dev\PDFs`）；本轮仅核对数量，未重新执行全文提取 |
+| 离线代码基线 | **395 passed, 3 skipped**（在 `0bbc2c9` 上修复下列 4 个验收阻塞缺陷后） |
+
+本轮修复的验收阻塞缺陷（均已补离线测试）：
+
+| 缺陷 | 影响 | 修复 |
+|---|---|---|
+| `hostrun.lark.user_open_id` 在 user 身份不可用时仍返回缓存的 open_id | 收件人核验会在身份未就绪时错误通过，违背 #56 “身份未就绪返回 `recipient_unverified`” | 复用 `parse_auth` 的同一就绪规则；未就绪一律 `ok: false` |
+| `publisher.feishu` 只从 PATH 调用裸 `lark-cli` | 裸命令名不会解析到 PATH 中的 `.cmd` 垫片（CreateProcess 不做 PATHEXT 扩展），真实发送与事件监听必然 `FileNotFoundError`；且数据根没有通过 `--home` 传给 publisher，记录路径查不到，即使权限齐全也无法完成 #56 投递 | 优先使用 `install/config.json` 记录的绝对路径，记录失效即拒绝并给出 `lark discover` 指引；`publisher.cli` 现在把 `--home` 解析出的数据根导出为 `KL_HOME` 供记录查找；临时闭环 brief 的 send 命令与日常 pipeline brief 都补上 `--home` |
+| `publisher.cli` 缺少 `deliver` 子命令 | `workflow.md` 与 `hostrun/intents.py` 指引的恢复命令不可用 | 补上 `deliver --to/--dry-run/--as` 解析 |
+| `hostrun.workspace.register_skill` 在宿主技能目录不可写时抛未捕获异常 | `install skill` 以 traceback 结束而非记录 `blocked`，安装报告无法如实分项 | 返回 `skill_target_not_writable` 的 blocked 结果并说明所需宿主授权 |
+
+### 结论与仍缺的真实证据
+
+数据根写入与私有解释器两个历史阻塞已在正确的安装工作区中解除；`host`、`workspace`、`dependencies`、`lark_cli` 四项为 `working`。真实端到端闭环仍阻塞于宿主与账号层前置条件，不属于本轮代码可修复范围：
+
+1. **DeepSeek Harness 需允许飞书 CLI 凭据存储写入**：`C:\Users\Chang\.lark-cli` 与 `%LOCALAPPDATA%\lark-cli\keysigner`（DPoP 密钥库锁）当前对沙箱进程树只读。需要宿主权限（窄范围路径放行或等价授权），不是解释器位置问题，也不能用“全局完全访问”或迁移凭据绕过。
+2. **飞书 user 身份需重新可用**：凭据存储可写后由用户本人执行 `lark-cli auth login`；刷新窗口到 2026-11-03 23:56，过期需重新登录。
+3. **宿主技能目录需可写**：`C:\Users\Chang\.agents\skills` 当前拒绝写入；需要宿主允许该路径，或确认 DSH 支持的工作区内技能目录后再注册 `frontier-run` 入口指针。
+4. 应用 scope 以用户令牌计已具备；`drive files list --as bot` 仍报 app 缺 `drive:drive` 等，bot 不作为验收路径，记录在案。
+
+在上述前置条件就绪前 #53–#59 保持开放，不宣称通过；本轮未写入任何真实飞书数据。
+
 ## 2026-10-29 DeepSeek Harness 重新预检（真实只读；未写云端）
+
 
 本轮在 DeepSeek Harness 0.2.1-rc.3（`D:\dsh\DeepSeek Harness.exe` 的产品版本；会话工作区 `E:\Desktop\frontier`，策略 workspace-write）重新执行规格 #51 要求的权限预检。**未创建 Base、未发送消息、未创建宿主任务、未删除任何云端数据。**
 

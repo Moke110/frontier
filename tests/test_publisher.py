@@ -1,4 +1,5 @@
-import json
+﻿import json
+import os
 
 import pytest
 
@@ -10,8 +11,8 @@ PUSH = {
     "push_id": "2026-10-20_hmbs_01",
     "date": "2026-10-20",
     "checkpoint_id": "hmbs",
-    "title": "HMBS：test",
-    "body_md": "### HMBS\n\n**发现** something",
+    "title": "HMBS锛歵est",
+    "body_md": "### HMBS\n\n**鍙戠幇** something",
     "proposals": [
         {
             "proposal_id": "p1",
@@ -41,9 +42,9 @@ PUSH_PDF = {
     "push_id": "2026-10-20_hmbs_02",
     "date": "2026-10-20",
     "checkpoint_id": "hmbs",
-    "title": "HMBS：长文 PDF",
+    "title": "HMBS锛氶暱鏂?PDF",
     "paper_ids": ["europepmc_42900001"],
-    "sections": {"takeaway": "一句话结论：HMBS 缺失影响血红素合成。"},
+    "sections": {"takeaway": "涓€鍙ヨ瘽缁撹锛欻MBS 缂哄け褰卞搷琛€绾㈢礌鍚堟垚銆?},
 }
 
 
@@ -60,23 +61,23 @@ def test_rating_card_has_three_submit_buttons_and_comment():
     assert form["elements"][0]["tag"] == "input"
     buttons = _buttons(card)
     assert [b["text"]["content"] for b in buttons] == [
-        "质量差/不在关注领域",
-        "质量一般",
-        "质量优秀",
+        "璐ㄩ噺宸?涓嶅湪鍏虫敞棰嗗煙",
+        "璐ㄩ噺涓€鑸?,
+        "璐ㄩ噺浼樼",
     ]
     assert [b["name"] for b in buttons] == ["score_low", "score_mid", "score_high"]
     assert all(b["form_action_type"] == "submit" for b in buttons)
-    # 每行一个按钮：按钮直接排在 form 的纵向流里，不再用 column_set 并排
+    # 姣忚涓€涓寜閽細鎸夐挳鐩存帴鎺掑湪 form 鐨勭旱鍚戞祦閲岋紝涓嶅啀鐢?column_set 骞舵帓
     assert [e["tag"] for e in form["elements"][1:]] == ["button", "button", "button"]
 
 
 def test_confirmation_and_approval_cards():
-    confirm = build_confirmation_card(PUSH, "great", "好看")
-    assert confirm["header"]["title"]["content"] == "反馈已记录"
+    confirm = build_confirmation_card(PUSH, "great", "濂界湅")
+    assert confirm["header"]["title"]["content"] == "鍙嶉宸茶褰?
     approval = build_approval_card(PUSH, PUSH["proposals"])
     text = approval["body"]["elements"][0]["content"]
-    assert "补一条证据" in text
-    assert "增加别名" in text
+    assert "琛ヤ竴鏉¤瘉鎹? in text
+    assert "澧炲姞鍒悕" in text
     buttons = approval["body"]["elements"][1]["columns"]
     assert buttons[0]["elements"][0]["behaviors"][0]["value"]["decision"] == "approve"
 
@@ -84,8 +85,8 @@ def test_confirmation_and_approval_cards():
 def test_pdf_rating_card_uses_takeaway():
     card = build_rating_card(PUSH_PDF)
     body = card["body"]["elements"][0]["content"]
-    assert "一句话结论" in body
-    assert "长文 PDF 已单独发送" in body
+    assert "涓€鍙ヨ瘽缁撹" in body
+    assert "闀挎枃 PDF 宸插崟鐙彂閫? in body
 
 
 def test_send_pdf_dry_run_sends_file_then_rating(kl_home, tmp_path):
@@ -127,7 +128,7 @@ def test_dry_run_then_rating_without_approval(kl_home, tmp_path):
         {
             "message_id": sent["message_id"],
             "action_name": "score_high",
-            "form_value": json.dumps({"comment": "很好"}, ensure_ascii=False),
+            "form_value": json.dumps({"comment": "寰堝ソ"}, ensure_ascii=False),
             "operator_id": "ou_demo",
             "token": "",
         },
@@ -136,7 +137,7 @@ def test_dry_run_then_rating_without_approval(kl_home, tmp_path):
     assert rating["verdict"] == "great"
     assert "approval_message_id" not in rating
     ratings = (kl_home / "ratings.jsonl").read_text().strip().splitlines()
-    assert json.loads(ratings[0])["comment"] == "很好"
+    assert json.loads(ratings[0])["comment"] == "寰堝ソ"
     assert not list((kl_home / "publisher" / "pending").glob("*.json"))
 
 
@@ -219,7 +220,7 @@ def test_library_alerts_are_delivered_as_copyable_text(kl_home):
         "limit_bytes": 5 * 1024**3,
         "percent": 80.0,
         "candidates": {"count": 3, "bytes": 200 * 1024**2},
-        "instruction": "清理 frontier 原文库：把 3 篇下载到 ~/frontier-offline/2026-10-26/。",
+        "instruction": "娓呯悊 frontier 鍘熸枃搴擄細鎶?3 绡囦笅杞藉埌 ~/frontier-offline/2026-10-26/銆?,
     }
     write_json(kl_home / "library" / "alerts" / "a1.json", alert)
 
@@ -233,7 +234,7 @@ def test_library_alerts_are_delivered_as_copyable_text(kl_home):
     text = read_json(outbox[0])["text"]
     assert "80.0%" in text
     assert "4.00 GB / 5.00 GB" in text
-    assert "清理 frontier 原文库" in text
+    assert "娓呯悊 frontier 鍘熸枃搴? in text
 
 
 def test_put_push_is_skipped_without_library_config(kl_home, tmp_path):
@@ -268,6 +269,9 @@ def _fake_api(monkeypatch, payload, *, returncode=0):
         return _Proc(json.dumps(payload, ensure_ascii=False), returncode)
 
     monkeypatch.setattr(feishu.subprocess, "run", run)
+    # Read-back tests must not depend on the developer machine's PATH or data
+    # root: pin the resolved CLI command explicitly.
+    monkeypatch.setattr(feishu, "_cli_command", lambda: ["C:/bin/lark-cli"])
     return calls
 
 
@@ -452,3 +456,141 @@ def test_cli_resolve_send_not_sent_clears_the_attempt(kl_home, tmp_path, monkeyp
 
     assert code == 0
     assert main(["--home", str(kl_home), "resolve-send", "--push", push_id, "--not-sent"]) == 1
+
+# ------------------------------------------------------- recorded lark-cli path
+def test_feishu_prefers_the_recorded_cli_path(monkeypatch, tmp_path):
+    from publisher import feishu
+
+    root = tmp_path / "home"
+    (root / "install").mkdir(parents=True)
+    executable = tmp_path / "bin" / "lark-cli.exe"
+    executable.parent.mkdir()
+    executable.write_text("", encoding="utf-8")
+    (root / "install" / "config.json").write_text(
+        json.dumps({"paths": {"lark_cli": str(executable)}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(feishu, "data_home", lambda *args, **kwargs: root)
+    calls = []
+
+    class Proc:
+        returncode = 0
+        stdout = json.dumps({"ok": True, "data": {"message_id": "om_sent"}})
+        stderr = ""
+
+    def run(argv, **kwargs):
+        calls.append([str(item) for item in argv])
+        return Proc()
+
+    monkeypatch.setattr(feishu.subprocess, "run", run)
+
+    result = feishu.send_text("ou_x", "hello")
+
+    assert calls and calls[0][0] == str(executable)
+    assert result["message_id"] == "om_sent"
+
+
+def test_feishu_refuses_a_stale_recorded_cli_path(monkeypatch, tmp_path):
+    from publisher import feishu
+
+    root = tmp_path / "home"
+    (root / "install").mkdir(parents=True)
+    (root / "install" / "config.json").write_text(
+        json.dumps({"paths": {"lark_cli": str(tmp_path / "retired" / "lark-cli.exe")}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(feishu, "data_home", lambda *args, **kwargs: root)
+    monkeypatch.setattr(
+        feishu.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not spawn")
+    )
+
+    with pytest.raises(feishu.FeishuError, match="宸插け鏁?):
+        feishu.send_text("ou_x", "hello")
+
+
+def test_publisher_cli_exposes_deliver():
+    from publisher.cli import build_parser
+
+    args = build_parser().parse_args(["deliver", "--to", "ou_x", "--dry-run"])
+
+    assert args.cmd == "deliver"
+    assert args.to == "ou_x"
+    assert args.dry_run is True
+    assert args.identity == "bot"
+
+# ----------------------------------------- data-root wiring for the CLI record
+def test_cli_home_reaches_the_recorded_cli_lookup(monkeypatch, tmp_path):
+    from publisher import cli as publisher_cli
+    from publisher import feishu
+
+    root = tmp_path / "home"
+    (root / "install").mkdir(parents=True)
+    executable = tmp_path / "bin" / "lark-cli.exe"
+    executable.parent.mkdir()
+    executable.write_text("", encoding="utf-8")
+    (root / "install" / "config.json").write_text(
+        json.dumps({"paths": {"lark_cli": str(executable)}}), encoding="utf-8"
+    )
+    monkeypatch.delenv("KL_HOME", raising=False)
+    seen = {}
+
+    def fake_resolve_send(home_path, *args, **kwargs):
+        seen["home"] = home_path
+        seen["recorded"] = feishu._recorded_executable()
+        return {"ok": True}
+
+    monkeypatch.setattr(publisher_cli, "resolve_send", fake_resolve_send)
+
+    code = publisher_cli.main(
+        ["--home", str(root), "resolve-send", "--push", "p1", "--not-sent"]
+    )
+
+    assert code == 0
+    assert seen["home"] == root
+    assert seen["recorded"] == str(executable)
+    assert os.environ["KL_HOME"] == str(root)
+
+
+def test_get_message_uses_the_recorded_cli_path(monkeypatch, tmp_path):
+    from publisher import feishu
+
+    root = tmp_path / "home"
+    (root / "install").mkdir(parents=True)
+    executable = tmp_path / "bin" / "lark-cli.exe"
+    executable.parent.mkdir()
+    executable.write_text("", encoding="utf-8")
+    (root / "install" / "config.json").write_text(
+        json.dumps({"paths": {"lark_cli": str(executable)}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(feishu, "data_home", lambda *args, **kwargs: root)
+    calls = []
+
+    class Proc:
+        returncode = 0
+        stdout = json.dumps({"ok": True, "data": {"items": [{"message_id": "om_1"}]}})
+        stderr = ""
+
+    def run(argv, **kwargs):
+        calls.append([str(item) for item in argv])
+        return Proc()
+
+    monkeypatch.setattr(feishu.subprocess, "run", run)
+
+    result = feishu.get_message("om_1")
+
+    assert calls[0][0] == str(executable)
+    assert result["present"] is True
+
+
+def test_available_reports_a_stale_recorded_path_as_unavailable(monkeypatch, tmp_path):
+    from publisher import feishu
+
+    root = tmp_path / "home"
+    (root / "install").mkdir(parents=True)
+    (root / "install" / "config.json").write_text(
+        json.dumps({"paths": {"lark_cli": str(tmp_path / "retired" / "lark-cli.exe")}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(feishu, "data_home", lambda *args, **kwargs: root)
+    monkeypatch.setattr(feishu.shutil, "which", lambda name: "C:/somewhere/lark-cli.exe")
+
+    assert feishu.available() is False

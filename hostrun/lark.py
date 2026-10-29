@@ -405,8 +405,11 @@ def user_open_id(cli: str | None, *, runner=subprocess.run, timeout: int = 30) -
     """The authenticated *user's* open id, for recipient verification.
 
     Returned to the calling host agent only; reports and identity evidence keep
-    booleans, never the raw id.  Absence is not an error: the caller decides
-    whether a recipient can be resolved.
+    booleans, never the raw id.  A cached id alone is not evidence the identity
+    is usable: the CLI keeps reporting ``identities.user.openId`` while the user
+    token is missing or unrefreshable.  Recipient verification must therefore
+    use the same readiness rule as the identity preflight, otherwise a stale id
+    would satisfy a gate that the spec says must return ``recipient_unverified``.
     """
     if not cli:
         return {"ok": False, "open_id": ""}
@@ -415,7 +418,10 @@ def user_open_id(cli: str | None, *, runner=subprocess.run, timeout: int = 30) -
     )
     if not result.get("ok"):
         return {"ok": False, "open_id": ""}
-    identities = (result.get("payload") or {}).get("identities") or {}
+    payload = result.get("payload") or {}
+    if not parse_auth(payload)["user"]["ready"]:
+        return {"ok": False, "open_id": ""}
+    identities = payload.get("identities") or {}
     user = identities.get("user") or {}
     open_id = str(user.get("openId") or user.get("userOpenId") or "")
     return {"ok": bool(open_id), "open_id": open_id}
