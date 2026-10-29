@@ -764,10 +764,12 @@ def serve(
     title_setter = set_title or set_console_title
 
     ensure_dir(listener_dir(home))
-    stop_path(home).unlink(missing_ok=True)  # a stale stop must not stop a fresh start
     with file_lock(lock_path(home), blocking=False) as acquired:
         if not acquired:
             return {"ok": False, "reason": "already_running", "lock": str(lock_path(home))}
+        # Only the instance that owns the lock may clear a stale sentinel; a
+        # second start must not cancel a stop requested for the running one.
+        stop_path(home).unlink(missing_ok=True)
 
         log_line(home, "listener starting")
         title_setter(title)

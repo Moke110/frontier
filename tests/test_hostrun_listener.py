@@ -446,6 +446,19 @@ def test_serve_stops_on_the_sentinel_and_releases_the_lock(tmp_path):
         assert again is True
 
 
+def test_a_second_instance_does_not_clear_a_pending_stop(tmp_path):
+    home = _home(tmp_path)
+    _config(home)
+    listener.request_stop(home)
+
+    with file_lock(listener.lock_path(home), blocking=False) as held:
+        assert held is True
+        result = listener.serve(home, set_title=lambda title: None)
+
+    assert result["reason"] == "already_running"
+    assert listener.stop_path(home).exists() is True
+
+
 def test_serve_clears_a_stale_stop_sentinel_before_running(tmp_path):
     home = _home(tmp_path)
     _config(home)
