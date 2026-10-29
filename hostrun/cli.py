@@ -3,14 +3,17 @@
     python -m hostrun.cli install check|status|report|record
     python -m hostrun.cli kb attach|create|create-tables|verify|initial-confirm
     python -m hostrun.cli feedback setup|sync|status|submit|process|rebuild|correct
-    python -m hostrun.cli run --intent daily|feedback|maintenance [--finish ok|error]
+    python -m hostrun.cli run --intent daily|feedback|maintenance|listener-check [--finish ok|error]
     python -m hostrun.cli schedules plan|confirm|status
+    python -m hostrun.cli listener install|start|stop|status|serve|health
     python -m hostrun.cli audit run|streak
     python -m hostrun.cli executor status|handover
     python -m hostrun.cli status
 
-Every command is bounded and exits. Nothing installs a service, edits PATH or
-starts a background listener; the host's own scheduler calls ``run``.
+Every command is bounded and exits. The only resident component is the
+user-started listener (ADR 0008): ``listener serve`` runs in a foreground
+console, is not a service, does not autostart, does not write PATH/registry and
+never replaces the executor lease. The host's own scheduler calls ``run``.
 """
 
 from __future__ import annotations
@@ -18,15 +21,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 from common import emit, home, read_json
 from hostrun import audit as audit_mod
 from hostrun import cleanup as cleanup_mod
-from hostrun import executor, facilities, feedback, initialize, install, intents, kb, lark, schedules, smoke
+from hostrun import executor, facilities, feedback, initialize, install, intents, kb, lark, listener, schedules, smoke
 from hostrun import workspace as workspace_mod
-from hostrun.base import HostRunError
+from hostrun.base import HostRunError, load_config
 
 
 def _host_declaration(args) -> dict | None:
@@ -309,6 +314,21 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--at")
     tr.add_argument("--evidence")
 
+    # ----------------------------------------------------------------- listener
+    p = sub.add_parser(
+        "listener", help="user-started resident listener (ADR 0008)"
+    )
+    lsub = p.add_subparsers(dest="action", required=True)
+    li = lsub.add_parser("install", help="generate start/stop scripts and record dsh")
+    li.add_argument("--dsh", help="absolute dsh path the listener derives runs with")
+    li.add_argument("--python", dest="python_path", help="recorded private interpreter")
+    li.add_argument("--repo", help="code checkout the scripts cd into")
+    lsub.add_parser("start", help="spawn the recorded start command detached")
+    lsub.add_parser("stop", help="write the stop sentinel and wait up to 10 s")
+    lsub.add_parser("status", help="read-only online/stale/offline snapshot")
+    lsub.add_parser("serve", help="run the foreground loop (used by the start script)")
+    lsub.add_parser("health", help="read-only health judgement, never restarts")
+
     # -------------------------------------------------------------------- audit
     p = sub.add_parser("audit", help="existing data audit against the migration baseline")
     asub = p.add_subparsers(dest="action", required=True)
@@ -418,6 +438,8 @@ def _dispatch(args, root: Path, offline: bool) -> tuple[int, dict | None]:
         return _init(args, root, offline)
     if args.cmd == "schedules":
         return _schedules(args, root)
+    if args.cmd == "listener":
+        return _listener(args, root)
     if args.cmd == "audit":
         return _audit(args, root, offline)
     if args.cmd == "executor":
@@ -1115,6 +1137,173 @@ def _schedules(args, root: Path) -> tuple[int, dict]:
         result = schedules.record_trigger(root, args.task, at=args.at, evidence=evidence)
         return (0 if result.get("ok") else 1), result
     return 0, schedules.status(root)
+
+
+LISTENER_STOP_WAIT_SECONDS = 10.0
+LISTENER_STOP_POLL_SECONDS = 1.0
+
+
+def _listener_argv(command: str) -> list[str]:
+    """Start argv for the recorded script; a batch file needs ``cmd.exe``."""
+    text = str(command)
+    if os.name == "nt" and Path(text).suffix.lower() in (".cmd", ".bat"):
+        return [os.environ.get("COMSPEC") or "cmd.exe", "/c", text]
+    return [text]
+
+
+def _spawn_detached(argv: list[str]):
+    """Start the listener without inheriting or blocking this console.
+
+    Returns the ``Popen`` handle immediately; ``start`` never waits for the
+    listener (the single-instance lock decides whether it will actually serve).
+    """
+    kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    else:
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(argv, **kwargs)
+
+
+def _listener_sleep(seconds: float) -> None:
+    """The bounded stop-wait sleep; injectable in tests."""
+    time.sleep(seconds)
+
+
+def _listener_status(root: Path) -> dict:
+    """Read-only snapshot: nothing is written, spawned or stopped."""
+    health = intents.listener_health(root)
+    evidence = health.get("evidence") or {}
+    try:
+        beat = listener.read_heartbeat(root)
+    except (OSError, ValueError):
+        beat = {}
+    if not isinstance(beat, dict):
+        beat = {}
+    return {
+        "ok": True,
+        "state": health.get("state") or "offline",
+        "pid": evidence.get("pid"),
+        "pid_alive": bool(evidence.get("pid_alive")),
+        "heartbeat_at": evidence.get("heartbeat_at"),
+        "age_seconds": evidence.get("age_seconds"),
+        "last_event_at": evidence.get("last_event_at"),
+        "last_success_at": evidence.get("last_success_at"),
+        "consecutive_failures": beat.get("consecutive_failures", 0),
+        "heartbeat_path": evidence.get("heartbeat_path")
+        or str(listener.heartbeat_path(root)),
+        "problems": health.get("problems") or [],
+    }
+
+
+def _listener_start(root: Path) -> tuple[int, dict]:
+    """Spawn the recorded start command detached; never blocks or retries."""
+    config = load_config(root)
+    command = str((config.get("listener") or {}).get("start_command") or "").strip()
+    health = intents.listener_health(root)
+    evidence = health.get("evidence") or {}
+    if health.get("state") == "online":
+        return 0, {
+            "ok": True,
+            "state": "already_running",
+            "pid": evidence.get("pid"),
+            "heartbeat_at": evidence.get("heartbeat_at"),
+        }
+    if not command:
+        return 1, {
+            "ok": False,
+            "state": "not_installed",
+            "reason": "listener_start_command_missing",
+            "note": "先运行 hostrun.cli listener install 生成启停脚本",
+        }
+    try:
+        proc = _spawn_detached(_listener_argv(command))
+    except OSError as exc:
+        return 1, {
+            "ok": False,
+            "state": "start_failed",
+            "reason": "spawn_failed",
+            "error": f"{type(exc).__name__}: {exc}",
+            "command": command,
+        }
+    return 0, {
+        "ok": True,
+        "state": "started",
+        "pid": getattr(proc, "pid", None),
+        "command": command,
+    }
+
+
+def _listener_alive(health: dict) -> bool:
+    """Whether the heartbeat names a process that may still be serving.
+
+    ``online`` is the normal case; a stale heartbeat with a live pid is a wedged
+    listener that ``stop`` should still try to stop rather than claim is gone.
+    """
+    evidence = health.get("evidence") or {}
+    return health.get("state") == "online" or bool(evidence.get("pid_alive"))
+
+
+def _listener_stop(root: Path) -> tuple[int, dict]:
+    """Request a stop and wait up to ~10 s for the heartbeat to go not-online."""
+    health = intents.listener_health(root)
+    if not _listener_alive(health):
+        return 0, {
+            "ok": True,
+            "state": "not_running",
+            "heartbeat": health.get("evidence") or {},
+        }
+    sentinel = listener.request_stop(root)
+    current = health
+    attempts = int(LISTENER_STOP_WAIT_SECONDS / LISTENER_STOP_POLL_SECONDS)
+    for _ in range(attempts):
+        _listener_sleep(LISTENER_STOP_POLL_SECONDS)
+        current = intents.listener_health(root)
+        if not _listener_alive(current):
+            return 0, {
+                "ok": True,
+                "state": "stopped",
+                "heartbeat": current.get("evidence") or {},
+                "sentinel": str(sentinel),
+            }
+    return 1, {
+        "ok": False,
+        "state": "stop_timeout",
+        "reason": "stop_timeout",
+        "heartbeat": current.get("evidence") or {},
+        "sentinel": str(sentinel),
+        "note": (
+            f"已写入停止哨兵；{int(LISTENER_STOP_WAIT_SECONDS)} 秒内未观察到退出，"
+            "可关闭监听窗口或稍后再试"
+        ),
+    }
+
+
+def _listener(args, root: Path) -> tuple[int, dict]:
+    """Dispatch the six listener actions; results always carry ``ok``."""
+    if args.action == "install":
+        result = install.listener_install(
+            root, dsh=args.dsh, python=args.python_path, repo=args.repo
+        )
+        return (0 if result.get("ok") else 1), result
+    if args.action == "start":
+        return _listener_start(root)
+    if args.action == "stop":
+        return _listener_stop(root)
+    if args.action == "serve":
+        result = listener.serve(root)
+        return (0 if result.get("ok") else 1), result
+    if args.action == "health":
+        result = intents.listener_health(root)
+        result["action"] = "none"
+        return (0 if result.get("ok") else 1), result
+    return 0, _listener_status(root)
 
 
 def _audit(args, root: Path, offline: bool) -> tuple[int, dict]:
