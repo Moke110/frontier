@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -368,6 +369,10 @@ def _normalize(argv: list[str]) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(_normalize(list(sys.argv[1:] if argv is None else argv)))
     root = home(args.home)
+    # In-process helpers (library, knowledge) resolve the recorded lark-cli path
+    # from the data root; exporting the explicit --home keeps that lookup on the
+    # same root the command was given instead of the default one.
+    os.environ["KL_HOME"] = str(root)
     offline = bool(args.offline)
     try:
         code, payload = _dispatch(args, root, offline)

@@ -94,3 +94,22 @@ def test_record_updates_ema_and_weight(kl_home):
     after = model.record(kl_home, "card_hmbs", "irrelevant")
     assert after["ema"] < 0.72
     assert after["weight"] < 7
+
+
+def test_multi_word_ontology_term_is_not_an_exact_phrase():
+    """Recall must follow the concept, not one literal phrase (live 0-hit bug)."""
+    from frontier import model
+
+    query = model._arxiv_query(["single-cell perturbation prediction benchmark"], "2026-10-23", "2026-10-29")
+
+    assert 'abs:"single-cell perturbation prediction benchmark"' not in query
+    assert 'abs:"single-cell" OR abs:"perturbation" OR abs:"prediction" OR abs:"benchmark"' in query
+    assert query.count("abs:") == 4
+
+
+def test_single_word_ontology_term_keeps_its_quoted_form():
+    from frontier import model
+
+    query = model._epmc_query(["HMBS"], "2026-10-23", "2026-10-29")
+
+    assert 'TITLE_ABS:"HMBS"' in query

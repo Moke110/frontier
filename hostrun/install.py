@@ -604,6 +604,10 @@ def check(
 ) -> dict:
     """Run every probe that can run offline, record it, return the summary."""
     home = Path(home)
+    # A probe that receives ``None`` would fail when it spawns the CLI.  One
+    # normalization here keeps every default-runner path (identity, resource
+    # preflight) working when the caller leaves ``runner`` unset.
+    runner = runner or subprocess.run
     config = load_config(home, repo=Path(repo) if repo else None)
     repo_path = Path(repo or config["paths"]["repo"])
     ensure_dir(home / "install")

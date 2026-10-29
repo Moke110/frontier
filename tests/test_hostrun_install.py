@@ -795,3 +795,68 @@ def test_check_without_a_cli_records_permissions_blocked(tmp_path, monkeypatch):
     entry = install.load_state(home)["steps"]["permissions"]
     assert "CLI" in entry["note"]
 
+
+def test_check_normalizes_a_missing_runner_for_the_resource_preflight(tmp_path, monkeypatch):
+    """A caller that leaves ``runner`` unset must still get a working preflight."""
+    home = tmp_path / "home"
+    (home / "install").mkdir(parents=True)
+    binary = home / "bin" / "lark-cli"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+    captured = {}
+
+    monkeypatch.setattr(
+        install,
+        "probe_identity",
+        lambda path, runner=None: {
+            "status": "ok",
+            "note": "",
+            "scopes": [],
+            "evidence": {"user_ready": True, "bot_ready": True},
+        },
+    )
+    monkeypatch.setattr(
+        install,
+        "probe_writes",
+        lambda home_, store_dir=None, writer=None: {
+            "data_root": {"status": "ok", "path": str(home_), "error": ""},
+            "lark_store": {"status": "ok", "path": str(tmp_path / "lark"), "error": ""},
+        },
+    )
+    monkeypatch.setattr(
+        install.lark_mod,
+        "authorization",
+        lambda scopes, required=None: {
+            "status": "ok",
+            "note": "",
+            "required": list(required or []),
+            "granted": [],
+            "missing": [],
+        },
+    )
+
+    def fake_preflight(home_, cli, *, base_token=None, folders=None, runner=None):
+        captured["runner"] = runner
+        captured["base_token"] = base_token
+        captured["folders"] = list(folders or [])
+        return {
+            "status": "ok",
+            "base": {"status": "ok", "note": ""},
+            "drive": {"status": "ok", "note": ""},
+            "messages": {"status": "untested", "note": ""},
+        }
+
+    monkeypatch.setattr(install.lark_mod, "resource_preflight", fake_preflight)
+
+    result = install.check(
+        home,
+        repo=Path(__file__).resolve().parents[1],
+        host=_host(),
+        base_token="bas_probe",
+        folders=["fld_probe"],
+    )
+
+    assert captured["runner"] is install.subprocess.run
+    assert captured["base_token"] == "bas_probe"
+    assert captured["folders"] == ["fld_probe"]
+    assert result["steps"]["permissions"] == "ok"

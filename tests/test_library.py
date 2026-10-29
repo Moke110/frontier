@@ -657,3 +657,62 @@ def test_broken_row_with_a_backup_is_archived_even_if_md5_differs(tmp_path):
     row = base.record("sources", "原文 ID", "pdf_gone")
     assert row["fields"]["状态"] == [ARCHIVED]
     assert report["counts"]["mismatch"] == 1
+
+def test_create_base_reads_the_nested_base_create_envelope(monkeypatch):
+    """The shortcut nests base/table in ``data``; creation must still yield IDs."""
+    from library import admin as admin_mod
+
+    client = admin_mod.LarkAdminClient(bin="lark-cli")
+    monkeypatch.setattr(
+        client,
+        "_call",
+        lambda *args, **kwargs: {
+            "base": {
+                "base_token": "bas_created",
+                "url": "https://example.feishu.cn/base/bas_created",
+                "name": "frontier 知识库",
+            },
+            "created": True,
+            "table": {"id": "tbl_created", "name": "知识卡片", "fields": []},
+            "fields": [],
+        },
+    )
+
+    created = client.create_base("frontier 知识库", table_name="知识卡片", fields=[])
+
+    assert created["base_token"] == "bas_created"
+    assert created["table_id"] == "tbl_created"
+    assert created["url"] == "https://example.feishu.cn/base/bas_created"
+    assert created["name"] == "frontier 知识库"
+
+def test_library_and_bitable_clients_use_the_recorded_cli(monkeypatch):
+    """ADR 0007: the recorded absolute CLI path, never a bare PATH guess."""
+    import common
+    from knowledge.bitable import LarkBitableClient
+    from library.base import LarkBaseClient
+    from library.drive import LarkDrive
+
+    monkeypatch.setattr(common, "recorded_lark_cli", lambda: r"D:\lark\cli\lark-cli.exe")
+
+    assert LarkDrive().bin == r"D:\lark\cli\lark-cli.exe"
+    assert LarkBaseClient({"base_token": "bas_x"}).bin == r"D:\lark\cli\lark-cli.exe"
+    assert LarkBitableClient({"base_token": "bas_x"}).bin == r"D:\lark\cli\lark-cli.exe"
+
+def test_library_base_delete_confirms_the_high_risk_write(monkeypatch):
+    from library.base import LarkBaseClient
+
+    client = LarkBaseClient({"base_token": "bas_x"})
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(client, "_run", fake_run)
+
+    client.delete("tbl_x", ["rec_1", "rec_2"])
+
+    assert calls
+    args, kwargs = calls[0]
+    assert args[0] == "base" and args[1] == "+record-delete"
+    assert kwargs.get("yes") is True

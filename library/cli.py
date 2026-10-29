@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -233,6 +234,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     root = home(args.home)
+    # The live clients resolve the recorded lark-cli path from KL_HOME; keep it
+    # on the explicit --home rather than the default data root.
+    os.environ["KL_HOME"] = str(root)
     try:
         if args.cmd == "setup":
             if args.offline:

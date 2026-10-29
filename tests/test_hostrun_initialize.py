@@ -454,3 +454,11 @@ def test_apply_detects_a_tampered_remote_card_on_read_back(tmp_path, monkeypatch
     assert result["ok"] is False
     assert result["reason"] == "base_readback_mismatch"
     assert result["mismatched"] == ["card_virtual_cell"]
+
+def test_normalize_ontology_accepts_newline_and_comma_cells():
+    from hostrun import initialize
+
+    assert initialize._normalize_ontology("a\nb\n c ") == ["a", "b", "c"]
+    assert initialize._normalize_ontology("a，b,c") == ["a", "b", "c"]
+    assert initialize._normalize_ontology(["a", "b"]) == ["a", "b"]
+    assert initialize._normalize_ontology("") == []

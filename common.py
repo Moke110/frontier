@@ -46,6 +46,25 @@ def home(override: str | None = None) -> Path:
     return Path(override or os.environ.get("KL_HOME") or DEFAULT_HOME).expanduser().resolve()
 
 
+def recorded_lark_cli() -> str:
+    """The absolute lark-cli path recorded by ``hostrun lark discover``.
+
+    ADR 0007 makes the recorded absolute path authoritative: a bare
+    ``lark-cli`` does not resolve through PATHEXT on Windows and the PATH shim
+    is not executable by CreateProcess.  Returns ``""`` when nothing is
+    recorded, so callers can decide whether a PATH lookup is acceptable.
+    """
+    try:
+        root = home()
+    except Exception:  # noqa: BLE001 - no data root means no recorded path
+        return ""
+    config = read_json(Path(root) / "install" / "config.json", {}) or {}
+    recorded = str((config.get("paths") or {}).get("lark_cli") or "").strip()
+    if not recorded or not Path(recorded).expanduser().is_absolute():
+        return ""
+    return recorded
+
+
 def now() -> str:
     return datetime.now().astimezone().replace(microsecond=0).isoformat()
 

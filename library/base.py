@@ -45,7 +45,10 @@ class LarkBaseClient:
     def __init__(self, config: dict, *, identity: str = "user", bin: str = "lark-cli"):
         self.config = config
         self.identity = identity
-        self.bin = bin
+        from common import recorded_lark_cli
+
+        # Recorded absolute path is authoritative (ADR 0007).
+        self.bin = bin if bin != "lark-cli" else (recorded_lark_cli() or bin)
         self.base = config["base_token"]
         self._fields: dict[str, list[str]] = {}
 
@@ -58,7 +61,13 @@ class LarkBaseClient:
         ]
         if yes:
             cmd.append("--yes")
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         try:
             payload = json.loads(proc.stdout or "{}")
         except json.JSONDecodeError:
@@ -175,7 +184,9 @@ class LarkBaseClient:
         argv = ["base", "+record-delete", "--table-id", table]
         for record_id in ids:
             argv += ["--record-id", record_id]
-        self._run(*argv)
+        # Deleting records is a high-risk write in lark-cli: without --yes the
+        # server refuses with confirmation_required and cleanup reports residue.
+        self._run(*argv, yes=True)
         return {"ok": True, "deleted": ids}
 
     def rename_table(self, table: str, name: str) -> None:

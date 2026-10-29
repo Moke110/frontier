@@ -178,11 +178,12 @@ def _rendered_artifact_errors(path: Path) -> list[str]:
         for label in SECTION_LABELS.values()
         if label not in text
     ]
-    errors.extend(
-        f"缺少图注：{label}"
-        for label in CAPTION_LABELS.values()
-        if label not in text
-    )
+    # The contract requires figure captions to *distinguish* a source figure
+    # from a generated one; a paper with no retrievable figure legitimately
+    # renders only the generated kind, so require at least one labelled figure
+    # instead of demanding both kinds in every push.
+    if not any(label in text for label in CAPTION_LABELS.values()):
+        errors.append("缺少图注：每张图须标注 原文图 或 生成图")
     return errors
 
 
@@ -286,7 +287,13 @@ def start(
 
     previous = load(home)
     if previous:
-        if previous.get("status") not in TERMINAL_FAILED and previous.get("status") != "complete":
+        # Cleanup rewrites the record's status to ``cleaned``/``failed_cleaned``;
+        # a cleaned-out test must not block the next attempt forever.
+        finished = (
+            previous.get("status") in TERMINAL_FAILED
+            or previous.get("status") in ("complete", "cleaned", "failed_cleaned")
+        )
+        if not finished:
             return {
                 "ok": False,
                 "reason": "test_in_progress",
@@ -368,7 +375,9 @@ def start(
                 {
                     "卡片 ID": card["id"],
                     "label": card["label"],
-                    "ontology": [keyword],
+                    # Text cell: join terms instead of sending a list, which
+                    # the real Base API rejects as an invalid cell shape.
+                    "ontology": keyword,
                     "annotation": card["annotation"],
                     "created_at": card["created_at"],
                     "updated_at": card["updated_at"],

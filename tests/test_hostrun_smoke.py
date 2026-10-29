@@ -1104,3 +1104,55 @@ def test_offline_cli_start_refuses_and_never_spawns_the_real_cli(
     assert payload["reason"] == "recipient_unverified"
     assert payload["offline_note"]
     assert not (home / "install" / "smoke.json").exists()
+
+def test_start_allows_a_new_test_after_a_cleaned_failure(tmp_path):
+    """A cleaned-out failed test is terminal; it must not block forever."""
+    home = _home(tmp_path)
+    base = _base(tmp_path)
+    _seed_tables(home, base)
+    smoke.save(
+        home,
+        {
+            "schema_version": 1,
+            "test_id": "smoke_old_cleaned",
+            "status": "failed_cleaned",
+            "test_status": "failed",
+            "cleaned_at": "2026-10-29T12:24:05+08:00",
+            "created_at": "2026-10-29T12:22:42+08:00",
+            "steps": {},
+            "artifacts": {},
+            "card": {"id": "card_smoke_old_cleaned"},
+        },
+    )
+
+    result = _start(home, base)
+
+    assert result["ok"] is True
+    assert result["test_id"] != "smoke_old_cleaned"
+    assert result["status"] == "running"
+
+
+def test_rendered_contract_accepts_a_generated_only_figure(tmp_path):
+    """A paper without a retrievable figure renders generated figures only."""
+    from hostrun.smoke import _rendered_artifact_errors
+
+    sections = "".join(f"<h2>{label}</h2>" for label in SECTION_LABELS.values())
+    path = tmp_path / "generated-only.html"
+    path.write_text(
+        sections + '<span class="source-pill generated">生成图</span>',
+        encoding="utf-8",
+    )
+
+    assert _rendered_artifact_errors(path) == []
+
+
+def test_rendered_contract_rejects_a_push_without_any_labelled_figure(tmp_path):
+    from hostrun.smoke import _rendered_artifact_errors
+
+    sections = "".join(f"<h2>{label}</h2>" for label in SECTION_LABELS.values())
+    path = tmp_path / "no-caption.html"
+    path.write_text(sections + "<figure><img src=\"x\"></figure>", encoding="utf-8")
+
+    errors = _rendered_artifact_errors(path)
+
+    assert any("图注" in error for error in errors)

@@ -75,15 +75,24 @@ class LarkAdminClient:
             json.dumps(fields, ensure_ascii=False),
             runner=runner,
         )
-        token = _first(data, "app_token", "base_token", "token")
-        table_id = _first(data, "table_id", "table")
+        # The current shortcut nests the created Base under ``base`` and the
+        # first table under ``table``; older payloads put the token at the top
+        # level. Accept both instead of failing after Feishu already created it.
+        nested = data.get("base") if isinstance(data.get("base"), dict) else {}
+        table = data.get("table") if isinstance(data.get("table"), dict) else {}
+        token = _first(data, "app_token", "base_token", "token") or _first(
+            nested, "app_token", "base_token", "token"
+        )
+        table_id = table.get("id") or _first(data, "table_id")
         if not token:
             raise AdminError(f"base-create returned no token: {data}")
         return {
             "base_token": token,
             "table_id": table_id,
-            "url": _first(data, "url", "base_url") or f"https://feishu.cn/base/{token}",
-            "name": name,
+            "url": _first(data, "url", "base_url")
+            or _first(nested, "url", "base_url")
+            or f"https://feishu.cn/base/{token}",
+            "name": nested.get("name") or name,
         }
 
     def resolve_title(self, title: str, *, runner=subprocess.run) -> dict:
