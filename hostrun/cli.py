@@ -284,16 +284,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--proof", help="per-task proof embedded in the confirmed command")
 
     # ---------------------------------------------------------------- schedules
-    p = sub.add_parser("schedules", help="two-task schedule spec for the host scheduler")
+    p = sub.add_parser("schedules", help="two instant host tasks: daily push and listener check")
     ssub = p.add_subparsers(dest="action", required=True)
     pl = ssub.add_parser("plan")
     pl.add_argument("--timezone", dest="timezone_name")
     pl.add_argument("--daily", default=schedules.DEFAULT_DAILY)
-    pl.add_argument("--feedback-minute", type=int, default=schedules.DEFAULT_FEEDBACK_MINUTE)
+    pl.add_argument("--listener-check", default=schedules.DEFAULT_LISTENER_CHECK)
     cf = ssub.add_parser("confirm")
     cf.add_argument("--timezone", dest="timezone_name")
     cf.add_argument("--daily", default=schedules.DEFAULT_DAILY)
-    cf.add_argument("--feedback-minute", type=int, default=schedules.DEFAULT_FEEDBACK_MINUTE)
+    cf.add_argument("--listener-check", default=schedules.DEFAULT_LISTENER_CHECK)
     cf.add_argument("--yes", action="store_true", help="the user confirmed timezone and enablement")
     cf.add_argument("--host-created", action="store_true", help="the host actually created the tasks")
     cf.add_argument("--paused", action="store_true", help="confirm but keep the tasks disabled")
@@ -1088,7 +1088,7 @@ def _schedules(args, root: Path) -> tuple[int, dict]:
             root,
             timezone_name=args.timezone_name,
             daily=args.daily,
-            feedback_minute=args.feedback_minute,
+            listener_check=args.listener_check,
         )
         return (0 if result.get("ok") else 1), result
     if args.action == "confirm":
@@ -1097,7 +1097,7 @@ def _schedules(args, root: Path) -> tuple[int, dict]:
             root,
             timezone_name=args.timezone_name,
             daily=args.daily,
-            feedback_minute=args.feedback_minute,
+            listener_check=args.listener_check,
             confirmed_by_user=args.yes,
             host_created=args.host_created,
             enabled=not args.paused,
