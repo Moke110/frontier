@@ -50,7 +50,7 @@
 | #56 | 七段推送 + 生成图渲染（65 KB 自包含 HTML）→ 推送库登记 → Drive 上传 → 真实送达飞书文件消息、评分卡、更新卡；**用户本人评分 `great`、本人采纳 `agree_all`**；写回后 Base 逐字段读回一致；七步 + `verified` 齐全，`test_loop=ok` |
 | #57 | `cleanup run` 删除 3 条 Base 记录、撤回 1 条消息、删除 1 个云盘文件/3 个本地文件/2 个队列项；逐范围读回为空，`verified: true`，无残留、无不可撤回；`cleanup=ok` |
 | #58 | 162 篇 PDF 全部摄取（可读 162/162，无缺口）；从真实全文提炼 9 张卡片草案，用户确认（草案哈希绑定）后写入正式 Base，读回一致；标准检索生成 18 条查询，`knowledge=ok` |
-| #59 | 两个真实会话任务已创建并确认（任务 ID + proof）。`frontier-feedback` 在 **14:05 真实到点触发并通过校验**：`scheduled=true`、proof 匹配、`at=14:05:04` 在 ±5 分钟内、`schedules trigger` 写入 `triggered_at`、`scheduled_runs=1`；13:05 首轮真实触发因完成时刻记录缺陷被拒，已修复（`a9f4edb`）。`frontier-daily` 尚未到点（次日 08:00），因此 **`scheduled_run` 仍为 untested**。维护对账按契约报告 19 个分片孤儿差异（有差异退出码 1；无害、未删除）。<br>注：ADR 0008 计划改为“监听进程 + 每日 08:00 与 09:00 巡检两个瞬时任务”，其代码在 `spec61-*` 分支尚未并入 `dev`；本条验收基于当前 `dev` 代码。 |
+| #59 | 两个真实会话任务曾创建并确认（任务 ID + proof）。`frontier-feedback` 在 **14:05 真实到点触发并通过校验**：`scheduled=true`、proof 匹配、`at=14:05:04` 在 ±5 分钟内、`schedules trigger` 写入 `triggered_at`、`scheduled_runs=1`；13:05 首轮真实触发因完成时刻记录缺陷被拒，已修复（`a9f4edb`）。**2026-10-29 14:10 用户要求停止本会话的自动化任务**：已删除 DSH 两个会话提醒并 `schedules pause`（`enabled=false`），故 `frontier-daily` 不会再到点触发，**`scheduled_run` 保持 untested**。维护对账按契约报告 19 个分片孤儿差异（有差异退出码 1；无害、未删除）。<br>监听方式改由其他会话按 ADR 0008 实施（`spec61-*` 分支），本会话不再承担。 |
 
 ### 本轮修复的真实验收阻塞缺陷（`21b90fe`；离线 410 passed / 3 skipped）
 
@@ -58,7 +58,7 @@
 
 ### 仍缺
 
-1. `scheduled_run`：小时任务已在 14:05 通过真实到点校验（`triggered_at=14:05:04`、`scheduled_runs=1`）；**每日任务需在次日 08:00 真实触发一次**，两类任务都有证据后该步骤才会转 ok。若 ADR 0008 的监听进程设计落地，任务集改为 08:00 + 09:00 两个瞬时任务，需按新任务集重新验收（ADR 明确 `listener_health` 不复用 `scheduled_run` 的到点容差）。
+1. `scheduled_run`：小时任务曾在 14:05 通过真实到点校验（`triggered_at=14:05:04`、`scheduled_runs=1`）；**2026-10-29 14:10 用户要求停止本会话自动化任务**，两个 DSH 会话提醒已删除、`schedules pause` 已生效（`enabled=false`），因此 `frontier-daily` 不会再真实触发，`scheduled_run` 保持 untested，且不再在**本会话**补测。监听/巡检与新任务集由其他会话按 ADR 0008 实施与验收。
 2. ~~GitHub 推送~~：代理恢复后已推送；远端由其他会话推进到 `eb24b2f`（ADR 0008 文档），本轮验收提交均已在远端历史中。
 3. ~~旧卡片残留~~：早前中止轮次的卡片消息已按消息 ID 撤回并逐条读回：5 条此前仍在的消息全部撤回且确认已消失，3 条文件消息此前已由清理撤回。
 
