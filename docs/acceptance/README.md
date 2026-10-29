@@ -50,7 +50,7 @@
 | #56 | 七段推送 + 生成图渲染（65 KB 自包含 HTML）→ 推送库登记 → Drive 上传 → 真实送达飞书文件消息、评分卡、更新卡；**用户本人评分 `great`、本人采纳 `agree_all`**；写回后 Base 逐字段读回一致；七步 + `verified` 齐全，`test_loop=ok` |
 | #57 | `cleanup run` 删除 3 条 Base 记录、撤回 1 条消息、删除 1 个云盘文件/3 个本地文件/2 个队列项；逐范围读回为空，`verified: true`，无残留、无不可撤回；`cleanup=ok` |
 | #58 | 162 篇 PDF 全部摄取（可读 162/162，无缺口）；从真实全文提炼 9 张卡片草案，用户确认（草案哈希绑定）后写入正式 Base，读回一致；标准检索生成 18 条查询，`knowledge=ok` |
-| #59 | 已在 DSH 创建两个真实会话任务（`frontier-daily` 每日 08:00、`frontier-feedback` 每小时 :05，Asia/Shanghai），`schedules confirm --host-created` 写入任务 ID 与 proof，`schedules=ok`。13:05 小时任务已**真实到点触发**（`scheduled=true`、`task=frontier-feedback`、proof 匹配、run `ok=true`），但被时窗校验拒绝：运行日志的 `at` 记的是完成时刻（13:19，长维护耗时），超出 ±5 分钟。已修复为记录启动时刻（`a9f4edb`）并补回归测试；**`scheduled_run` 仍为 untested，等待下一次真实到点（14:05 起）通过校验** |
+| #59 | 两个真实会话任务曾创建并确认（任务 ID + proof）。`frontier-feedback` 在 **14:05 真实到点触发并通过校验**：`scheduled=true`、proof 匹配、`at=14:05:04` 在 ±5 分钟内、`schedules trigger` 写入 `triggered_at`、`scheduled_runs=1`；13:05 首轮真实触发因完成时刻记录缺陷被拒，已修复（`a9f4edb`）。**2026-10-29 14:10 用户要求停止本会话的自动化任务**：已删除 DSH 两个会话提醒并 `schedules pause`（`enabled=false`），故 `frontier-daily` 不会再到点触发，**`scheduled_run` 保持 untested**。维护对账按契约报告 19 个分片孤儿差异（有差异退出码 1；无害、未删除）。<br>监听方式改由其他会话按 ADR 0008 实施（`spec61-*` 分支），本会话不再承担。 |
 
 ### 本轮修复的真实验收阻塞缺陷（`21b90fe`；离线 410 passed / 3 skipped）
 
@@ -58,8 +58,8 @@
 
 ### 仍缺
 
-1. `scheduled_run`：13:05 小时任务已真实到点触发，但因运行日志记录完成时刻被时窗拒绝；修复（`a9f4edb`）后等待下一次到点（14:05 小时任务、次日 08:00 每日任务）通过校验。另：维护对账发现旧安装遗留在 Drive 原文目录的 174 个孤儿文件，本轮维护自动登记 155 个；剩余 19 个为分片 PDF（`.part01/.part02`），无本地 raw 记录无法自动补行，按契约属"无害孤儿"，报告保留但未清理。
-2. ~~GitHub 推送~~：代理恢复后已把本地 `dev`/`main` 推送到远端（当前 `d80fad6`），本轮验收证据与 #51/#53–#59 评论已补齐。
+1. `scheduled_run`：小时任务曾在 14:05 通过真实到点校验（`triggered_at=14:05:04`、`scheduled_runs=1`）；**2026-10-29 14:10 用户要求停止本会话自动化任务**，两个 DSH 会话提醒已删除、`schedules pause` 已生效（`enabled=false`），因此 `frontier-daily` 不会再真实触发，`scheduled_run` 保持 untested，且不再在**本会话**补测。监听/巡检与新任务集由其他会话按 ADR 0008 实施与验收。
+2. ~~GitHub 推送~~：代理恢复后已推送；远端由其他会话推进到 `eb24b2f`（ADR 0008 文档），本轮验收提交均已在远端历史中。
 3. ~~旧卡片残留~~：早前中止轮次的卡片消息已按消息 ID 撤回并逐条读回：5 条此前仍在的消息全部撤回且确认已消失，3 条文件消息此前已由清理撤回。
 
 ## 2026-10-29 安装工作区重试（数据根可写；飞书凭据存储与 user 身份仍阻塞）
