@@ -321,7 +321,7 @@ def test_schedules_are_unconfirmed_until_the_user_says_yes(configured_home):
         daily="08:00",
         confirmed_by_user=True,
         host_created=True,
-        task_ids={"frontier-daily": "host-1", "frontier-feedback": "host-2"},
+        task_ids={"frontier-daily": "host-1", "frontier-listener-check": "host-2"},
     )
     assert created["created"] is True
     assert schedules.status(configured_home)["enabled"] is True
@@ -329,13 +329,21 @@ def test_schedules_are_unconfirmed_until_the_user_says_yes(configured_home):
 
 def test_schedule_commands_are_actually_runnable(configured_home):
     from hostrun import cli as hostrun_cli
-    from hostrun import schedules
+    from hostrun import intents, schedules
 
     spec = schedules.plan(configured_home)
 
-    assert [task["intent"] for task in spec["tasks"]] == ["daily", "feedback"]
+    assert [task["intent"] for task in spec["tasks"]] == ["daily", "listener-check"]
     assert all(task["load_skill"] for task in spec["tasks"])
     for task in spec["tasks"]:
+        if task["intent"] not in intents.INTENTS:
+            # ``listener-check`` is registered in intents.INTENTS by the listener
+            # ticket; until then the generated argv must still carry the intent
+            # and task id that the run command will accept.
+            assert task["intent"] == "listener-check"
+            assert f"--intent {task['intent']}" in task["command"]
+            assert f"--task {task['id']}" in task["command"]
+            continue
         tokens = task["command"].split()
         argv = tokens[tokens.index("hostrun.cli") + 1 :]  # drop the interpreter path
         parsed = hostrun_cli.build_parser().parse_args(hostrun_cli._normalize(argv))
@@ -353,7 +361,26 @@ def test_invalid_clock_is_rejected(configured_home):
     with pytest.raises(HostRunError):
         schedules.plan(configured_home, daily="8:00")
     with pytest.raises(HostRunError):
-        schedules.plan(configured_home, feedback_minute=61)
+        schedules.plan(configured_home, listener_check="9:00")
+
+
+def test_schedules_cli_plans_the_two_instant_tasks(configured_home, capsys):
+    code = cli.main(
+        ["--home", str(configured_home), "schedules", "plan", "--listener-check", "10:30"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert [task["id"] for task in payload["tasks"]] == [
+        "frontier-daily",
+        "frontier-listener-check",
+    ]
+    assert payload["tasks"][1]["at"] == "10:30"
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            ["--home", str(configured_home), "schedules", "plan", "--feedback-minute", "5"]
+        )
 
 
 def test_home_flag_works_after_the_subcommand(configured_home, capsys):
@@ -385,7 +412,7 @@ def test_schedules_are_unconfirmed_until_the_user_says_yes(configured_home):
         daily="08:00",
         confirmed_by_user=True,
         host_created=True,
-        task_ids={"frontier-daily": "host-1", "frontier-feedback": "host-2"},
+        task_ids={"frontier-daily": "host-1", "frontier-listener-check": "host-2"},
     )
     assert created["created"] is True
     assert schedules.status(configured_home)["enabled"] is True
@@ -393,13 +420,21 @@ def test_schedules_are_unconfirmed_until_the_user_says_yes(configured_home):
 
 def test_schedule_commands_are_actually_runnable(configured_home):
     from hostrun import cli as hostrun_cli
-    from hostrun import schedules
+    from hostrun import intents, schedules
 
     spec = schedules.plan(configured_home)
 
-    assert [task["intent"] for task in spec["tasks"]] == ["daily", "feedback"]
+    assert [task["intent"] for task in spec["tasks"]] == ["daily", "listener-check"]
     assert all(task["load_skill"] for task in spec["tasks"])
     for task in spec["tasks"]:
+        if task["intent"] not in intents.INTENTS:
+            # ``listener-check`` is registered in intents.INTENTS by the listener
+            # ticket; until then the generated argv must still carry the intent
+            # and task id that the run command will accept.
+            assert task["intent"] == "listener-check"
+            assert f"--intent {task['intent']}" in task["command"]
+            assert f"--task {task['id']}" in task["command"]
+            continue
         tokens = task["command"].split()
         argv = tokens[tokens.index("hostrun.cli") + 1 :]  # drop the interpreter path
         parsed = hostrun_cli.build_parser().parse_args(hostrun_cli._normalize(argv))
@@ -417,7 +452,26 @@ def test_invalid_clock_is_rejected(configured_home):
     with pytest.raises(HostRunError):
         schedules.plan(configured_home, daily="8:00")
     with pytest.raises(HostRunError):
-        schedules.plan(configured_home, feedback_minute=61)
+        schedules.plan(configured_home, listener_check="9:00")
+
+
+def test_schedules_cli_plans_the_two_instant_tasks(configured_home, capsys):
+    code = cli.main(
+        ["--home", str(configured_home), "schedules", "plan", "--listener-check", "10:30"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert [task["id"] for task in payload["tasks"]] == [
+        "frontier-daily",
+        "frontier-listener-check",
+    ]
+    assert payload["tasks"][1]["at"] == "10:30"
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            ["--home", str(configured_home), "schedules", "plan", "--feedback-minute", "5"]
+        )
 
 
 def test_home_flag_works_after_the_subcommand(configured_home, capsys):

@@ -1,13 +1,19 @@
-"""Two host tasks: the daily push and the hourly feedback check.
+"""Two instant host tasks: the daily push and the listener check.
 
 The host's own scheduler creates them; frontier never writes a service, cron
-entry or OS task.  Maintenance is **not** a third task: the first hourly check
-of each day folds it in.  The hourly check never starts a retrieval push.
+entry or OS task.  Both are single-shot wake-ups: the daily push requests one
+paper, and the listener check asks whether the user-started listener process is
+still online (it restarts it once when it is not).  Neither task is a resident
+process, and neither folds maintenance in any more: maintenance belongs to the
+listener's five-minute feedback poll (issue #61).
 
 The command embeds the recorded absolute interpreter, repository, data root and
 ``frontier-run`` skill, so a wake-up does not depend on PATH or a working
 directory.  Task creation is not trigger evidence: a scheduled run counts only
 when the host actually invoked the generated command with ``--scheduled``.
+The old hourly ``frontier-feedback`` task is retired into
+``config.schedules.retired_tasks`` instead of being deleted silently, so the
+user can disable it in the host without losing its history.
 """
 
 from __future__ import annotations
@@ -24,9 +30,13 @@ from hostrun.base import HostRunError, load_config, update_config
 from hostrun.install import default_timezone, record
 
 DEFAULT_DAILY = "08:00"
-DEFAULT_FEEDBACK_MINUTE = 5
+DEFAULT_LISTENER_CHECK = "09:00"
 TASK_DAILY = "frontier-daily"
-TASK_FEEDBACK = "frontier-feedback"
+TASK_LISTENER_CHECK = "frontier-listener-check"
+INTENT_LISTENER_CHECK = "listener-check"
+# The listener check proves itself with ``listener_health``; it never writes a
+# scheduled run row, so it is exempt from ``scheduled_run`` completion.
+SCHEDULED_RUN_EXEMPT = (TASK_LISTENER_CHECK,)
 RUNS_REL = Path("hostrun") / "runs.jsonl"
 STARTUP_TOLERANCE_MINUTES = 5
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
@@ -134,9 +144,9 @@ def plan(
     skill: str | None = None,
     timezone_name: str | None = None,
     daily: str = DEFAULT_DAILY,
-    feedback_minute: int = DEFAULT_FEEDBACK_MINUTE,
+    listener_check: str = DEFAULT_LISTENER_CHECK,
 ) -> dict:
-    """Exactly two tasks, with the paths each wake-up must reuse."""
+    """Exactly two instant tasks, with the paths each wake-up must reuse."""
     home = Path(home).resolve()
     config = load_config(home, repo=Path(repo) if repo else None)
     paths = _paths(home, repo=repo, python=python, skill=skill)
@@ -145,8 +155,7 @@ def plan(
         return problem
     zone = timezone_name or config.get("timezone") or default_timezone()
     daily = _clock(daily, "每日推送")
-    if not 0 <= int(feedback_minute) < 60:
-        raise HostRunError("每小时反馈的分钟需在 0-59")
+    listener_check = _clock(listener_check, "监听巡检")
     base = [
         _quote(paths["python"]),
         "-m",
@@ -174,15 +183,15 @@ def plan(
             "load_skill": paths["skill"],
         },
         {
-            "id": TASK_FEEDBACK,
-            "intent": "feedback",
-            "every": "hour",
-            "at": f"*:{int(feedback_minute):02d}",
+            "id": TASK_LISTENER_CHECK,
+            "intent": INTENT_LISTENER_CHECK,
+            "every": "day",
+            "at": listener_check,
             "timezone": zone,
             "utc_offset_seconds": utc_offset_seconds,
             "cwd": paths["repo"],
-            "command": " ".join([*base, TASK_FEEDBACK, "--intent", "feedback"]),
-            "effect": "处理已提交反馈与未完成工作；当天首次执行维护；从不发起新检索",
+            "command": " ".join([*base, TASK_LISTENER_CHECK, "--intent", INTENT_LISTENER_CHECK]),
+            "effect": "检查监听进程是否在线；离线时用记录的启动命令拉起一次并记录 listener_health；从不发起检索或推送",
             "load_skill": paths["skill"],
         },
     ]
@@ -194,10 +203,11 @@ def plan(
         "paths": paths,
         "tasks": tasks,
         "host_instructions": [
-            "只创建上面两个任务；不要另建维护任务、系统任务或常驻进程",
+            "只创建上面两个任务；不要另建维护任务、系统任务或另一个常驻进程",
             "每个任务唤醒时先加载 load_skill 指向的 frontier-run，再以 cwd 为工作目录执行 command",
             "命令已包含解释器、仓库与数据根的绝对路径；含空格的参数已按平台引用",
             "只在用户确认时区、频率与启用状态后创建；创建成功不等于真实触发成功",
+            "每日巡检失败不推送内容：它只检查监听进程在线并记录 listener_health",
         ],
         "dedupe": "任务标识固定；重复安装时按 id 复用，不重复创建",
     }
@@ -252,12 +262,70 @@ def _merge_tasks(existing: list[dict], planned: list[dict], task_ids: dict) -> l
     return merged
 
 
+def _retire_tasks(
+    existing: list[dict], planned_ids: set[str], retired: list[dict] | None
+) -> list[dict]:
+    """Move every existing task outside the new plan into ``retired_tasks``.
+
+    Replacing ``schedules.tasks`` must not erase an old host task id or its
+    history: the user needs the id to disable the task in the host scheduler.
+    Rows keep id/host_task_id/proof/created_at and gain ``retired_at`` and a
+    ``reason``.  A repeated confirm never duplicates an already retired row.
+    """
+    kept = list(retired or [])
+    seen = {(row.get("id"), row.get("host_task_id")) for row in kept}
+    reason = (
+        "迁移到两个瞬时任务："
+        + "、".join(sorted(planned_ids))
+        + "；旧宿主任务需在宿主中停用"
+    )
+    for task in existing or []:
+        task_id = task.get("id")
+        if not task_id or task_id in planned_ids:
+            continue
+        key = (task_id, task.get("host_task_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(
+            {
+                "id": task_id,
+                "intent": task.get("intent"),
+                "every": task.get("every"),
+                "at": task.get("at"),
+                "host_task_id": task.get("host_task_id") or "",
+                "proof": task.get("proof") or "",
+                "created_at": task.get("created_at"),
+                "retired_at": now(),
+                "reason": reason,
+            }
+        )
+    return kept
+
+
+def _host_action(retired: list[dict]) -> str:
+    """Tell the user exactly which old host tasks still need disabling."""
+    if not retired:
+        return ""
+    targets = []
+    for row in retired:
+        if row.get("host_task_id"):
+            targets.append(f"{row['id']}（宿主任务 ID {row['host_task_id']}）")
+        else:
+            targets.append(f"{row['id']}（未记录宿主任务 ID，按名称查找）")
+    return (
+        "在宿主中停用旧任务："
+        + "、".join(targets)
+        + "；它们已记入 schedules.retired_tasks，不再计划，历史记录保留"
+    )
+
+
 def confirm(
     home: Path,
     *,
     timezone_name: str | None = None,
     daily: str = DEFAULT_DAILY,
-    feedback_minute: int = DEFAULT_FEEDBACK_MINUTE,
+    listener_check: str = DEFAULT_LISTENER_CHECK,
     confirmed_by_user: bool = False,
     host_created: bool = False,
     enabled: bool = True,
@@ -275,14 +343,21 @@ def confirm(
         skill=skill,
         timezone_name=timezone_name,
         daily=daily,
-        feedback_minute=feedback_minute,
+        listener_check=listener_check,
     )
     if not spec.get("ok"):
         # No valid command exists, so no task may be recorded.
         return spec
     config = load_config(home)
-    existing = (config.get("schedules") or {}).get("tasks") or []
+    existing_schedules = config.get("schedules") or {}
+    existing = existing_schedules.get("tasks") or []
     tasks = _merge_tasks(existing, spec["tasks"], task_ids or {})
+    retired = _retire_tasks(
+        existing,
+        {task["id"] for task in spec["tasks"]},
+        existing_schedules.get("retired_tasks"),
+    )
+    host_action = _host_action(retired)
     proofs = _task_proofs(home, [task["id"] for task in tasks])
     for task in tasks:
         task["proof"] = proofs[task["id"]]
@@ -297,6 +372,7 @@ def confirm(
                 "confirmed_at": None,
                 "timezone": spec["timezone"],
                 "tasks": tasks,
+                "retired_tasks": retired,
             },
         )
         record(
@@ -307,7 +383,13 @@ def confirm(
             evidence={"timezone": spec["timezone"], "tasks": [task["id"] for task in tasks]},
             recheck=True,
         )
-        return {"ok": False, "reason": "needs_user_confirmation", "plan": spec}
+        return {
+            "ok": False,
+            "reason": "needs_user_confirmation",
+            "plan": spec,
+            "retired_tasks": retired,
+            "host_action": host_action,
+        }
 
     if host_created and not _knowledge_ready(home):
         # The revision requires creation only after knowledge readiness and
@@ -338,6 +420,7 @@ def confirm(
             "confirmed_at": now(),
             "timezone": spec["timezone"],
             "tasks": tasks,
+            "retired_tasks": retired,
             "blocked_reason": None,
         },
     )
@@ -350,7 +433,15 @@ def confirm(
             evidence={"timezone": spec["timezone"], "tasks": [task["id"] for task in tasks]},
             recheck=True,
         )
-        return {"ok": True, "created": False, "enabled": False, "timezone": spec["timezone"], "tasks": tasks}
+        return {
+            "ok": True,
+            "created": False,
+            "enabled": False,
+            "timezone": spec["timezone"],
+            "tasks": tasks,
+            "retired_tasks": retired,
+            "host_action": host_action,
+        }
     if not all(task.get("host_task_id") for task in tasks):
         record(
             home,
@@ -365,17 +456,24 @@ def confirm(
             "reason": "missing_host_task_ids",
             "note": "为每个任务提供宿主中的真实任务 ID",
             "tasks": tasks,
+            "retired_tasks": retired,
+            "host_action": host_action,
         }
     record(
         home,
         "schedules",
         "ok",
-        note=f"宿主已创建 2 个任务（{spec['timezone']}）；真实触发另行验收",
+        note=(
+            f"宿主已创建 2 个瞬时任务（{spec['timezone']}）："
+            f"{TASK_DAILY}、{TASK_LISTENER_CHECK}；真实触发另行验收"
+            + (f"；已将 {len(retired)} 个旧任务移入 retired_tasks" if retired else "")
+        ),
         evidence={
             "timezone": spec["timezone"],
             "tasks": [
                 {"id": task["id"], "host_task_id": task["host_task_id"]} for task in tasks
             ],
+            "retired": [row.get("id") for row in retired],
         },
         recheck=True,
     )
@@ -384,7 +482,13 @@ def confirm(
         "scheduled_run",
         "untested",
         note="任务已创建，尚未观察到真实到点运行；手动调用不算",
-        evidence={"required": [task["id"] for task in tasks]},
+        evidence={
+            "required": [
+                task["id"]
+                for task in tasks
+                if task["id"] not in SCHEDULED_RUN_EXEMPT
+            ]
+        },
         recheck=True,
     )
     return {
@@ -393,6 +497,8 @@ def confirm(
         "enabled": bool(enabled),
         "timezone": spec["timezone"],
         "tasks": tasks,
+        "retired_tasks": retired,
+        "host_action": host_action,
         "next": "等待宿主到点触发后运行 schedules trigger 留证",
     }
 
@@ -539,6 +645,13 @@ def record_trigger(
     task = next((row for row in tasks if row.get("id") == task_id), None)
     if not task:
         raise HostRunError(f"未知任务：{task_id}")
+    if task_id in SCHEDULED_RUN_EXEMPT:
+        return {
+            "ok": False,
+            "reason": "exempt_task",
+            "note": "监听巡检不使用到点运行证据；它的证据是 listener_health（由巡检本身写入）",
+            "task_id": task_id,
+        }
     if not schedules.get("enabled") or not task.get("enabled", True):
         return {"ok": False, "reason": "task_disabled", "note": "任务已暂停，不记录触发"}
     rows = _scheduled_rows(home, task)
@@ -569,14 +682,16 @@ def record_trigger(
     )
     update_config(home, schedules={**schedules, "triggers": triggers})
     verified = {item["task_id"] for item in triggers}
-    required = {row["id"] for row in tasks}
+    required = {
+        row["id"] for row in tasks if row.get("id") not in SCHEDULED_RUN_EXEMPT
+    }
     complete = required <= verified
     record(
         home,
         "scheduled_run",
         "ok" if complete else "untested",
         note=(
-            "两类任务均已真实到点触发并留下运行日志"
+            "每日推送已真实到点触发并留下运行日志；监听巡检以 listener_health 为证据"
             if complete
             else "已有真实触发；仍缺：" + "、".join(sorted(required - verified))
         ),
@@ -597,6 +712,7 @@ def status(home: Path) -> dict:
     config = load_config(home)
     schedules = config.get("schedules") or {}
     tasks = schedules.get("tasks") or []
+    retired = schedules.get("retired_tasks") or []
     triggers = {item.get("task_id"): item for item in schedules.get("triggers") or []}
     rows = {}
     for task in tasks:
@@ -610,7 +726,8 @@ def status(home: Path) -> dict:
             "triggered_at": (triggers.get(task.get("id")) or {}).get("at"),
             "scheduled_runs": len(_scheduled_rows(home, task)),
         }
-    verified = [task_id for task_id in rows if rows[task_id]["triggered_at"]]
+    required = [task_id for task_id in rows if task_id not in SCHEDULED_RUN_EXEMPT]
+    verified = [task_id for task_id in required if rows[task_id]["triggered_at"]]
     return {
         "schema_version": 2,
         "timezone": config.get("timezone") or default_timezone(),
@@ -620,6 +737,9 @@ def status(home: Path) -> dict:
         "created": bool(tasks and all(task.get("host_task_id") for task in tasks)),
         "tasks": rows,
         "triggers": verified,
-        "scheduled_run_verified": bool(tasks) and len(verified) == len(tasks),
+        "scheduled_run_required": required,
+        "scheduled_run_verified": bool(tasks) and required == verified,
+        "retired_tasks": retired,
+        "host_action": _host_action(retired),
         "plan": plan(home) if not tasks else None,
     }
