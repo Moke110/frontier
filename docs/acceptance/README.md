@@ -2,6 +2,35 @@
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下按日期归并证据；规格 [#51](https://github.com/Moke110/frontier/issues/51) 的历史离线实现与本轮文档修订分开记录。历史阻塞须在目标宿主重新探测，不能直接当作当前结果。代码通过离线测试不等于产品通过真实验收。
 
+## 2026-10-29 监听进程方案（设计已定；代码与真实验收均未执行）
+
+用户要求：24 小时都能通过飞书操作 frontier，同时宿主定时任务只做瞬时运行、不长期挂着会话。决策见 [ADR 0008](../adr/0008-listener-process.md)。本轮**只改设计与文档/契约，未改代码**，未启动监听进程、未改动 DSH 现有调度、未写入飞书。
+
+| 项目 | 约定 |
+|---|---|
+| 定时任务 | 两个瞬时任务：`frontier-daily` 每日 08:00、`frontier-listener-check` 每日 09:00；取消每小时反馈任务（历史 `frontier-feedback` 记录保留为过去证据，不再是目标状态） |
+| 监听进程 | 用户手动启停的前台控制台进程（窗口标题 `frontier-listener`），bot 身份消费 `im.message.receive_v1`，只认 owner 单聊；命令白名单 `推一篇` / `处理反馈` / `状态` |
+| 反馈处理 | 监听进程每 5 分钟执行 `run --intent feedback`；租约被占跳过本轮；无变化保持安静 |
+| 派生运行 | 需要判断的工作以记录的 `dsh --profile headless` 绝对路径派生一次有界运行：单飞行、先取租约、≤20 分钟、失败不重试、写 `runs.jsonl` 标记 `derived`、飞书回执 |
+| 巡检 | 心跳新鲜度（≤10 分钟）+ 进程存活 + 最近成功事件时间；不在线时拉起一次并 30 秒复查；证据记 `listener_health`，不套用 `scheduled_run` 的 ±5 分钟到点容差 |
+
+验收门槛（任一缺失只能记 `untested`）：
+
+1. 监听进程连续运行 ≥24 小时，心跳覆盖全程，日志无崩溃重启；
+2. 至少一次真实飞书命令端到端（`状态` 立即回复；`推一篇` 成功派生或如实排队）；
+3. 巡检至少一次真实执行并正确判定"在线"；
+4. 人为杀掉监听进程后，巡检能发现并自动恢复一次；恢复不了就如实报告并停手；
+5. 反馈提交后 ≤10 分钟被处理至少一次。
+
+本轮已核实的现状（只读）：
+
+- 本机当前**没有**任何监听进程；旧 lark 事件总线已干净退出，启动项中没有 frontier 相关条目。
+- DSH 的两条调度为会话级提醒，挂在 `session-1f2834ce-…` 下；实测 13:05 投递、13:19 才执行，被运行日志的到点校验判为非到点运行。这说明"任务计划时间"与"实际执行时间"会分离，`scheduled_run` 证据要按启动时刻记录，且不能拿它衡量监听在线。
+- bot 身份 ready；user 身份当前受 DPoP 存储影响（沙箱内读取受限，可能误报）。因此监听进程只用 bot 身份，不用 user 身份。
+- `lark-cli event list` 确认 `im.message.receive_v1`（bot）可订阅；`event consume` 提供 `--max-events`、`--timeout` 与 `[event] ready event_key=…` 就绪标记，可作为单进程有界消费的基础。
+
+仍缺（全部 `untested`）：监听进程实现与启停脚本、`listener` CLI 与 `listener_health` 证据、新两个任务的真实到点触发、上述 5 条验收门槛。<br>需要同步修改的代码与文档字符串：`hostrun/listener.py`、`hostrun/cli.py`、`hostrun/schedules.py`（任务集与巡检 intent）、`hostrun/intents.py`、`hostrun/__init__.py` 中"no detached listeners"的说明，以及退役 `trigger.service.listen` / `publisher.service.listen` 的引用（文档已按退役处理）。
+
 ## 2026-10-29 真实端到端验收（DeepSeek Harness，用户授权 Full access；#53–#58 通过，#59 待到点触发）
 
 用户明确授权把本会话权限切到 **Full access**（DSH 设置），以提供飞书 CLI 凭据存储（含 HKCU 注册表 keychain）所需写入权限；该授权是本轮通过账号层前置条件的显式决定，不是 agent 自行绕过。**本轮为真实读写：创建了独立 Base、真实检索、真实推送、用户本人在飞书评分与采纳、真实清理与正式知识写入。**

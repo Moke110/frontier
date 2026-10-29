@@ -3,7 +3,7 @@
 frontier 不是后台服务，而是**由你正在用的宿主 agent 在本机按需执行**的一组命令。用户从仓库 [README.md](../../../README.md) 的安装 Prompt 启动；宿主加载 `skills/frontier-run/SKILL.md` 后按本参考执行。示例中的 `<workspace>`、`<home>`、`<repo>`、解释器与 CLI 路径都替换为安装时验证过的绝对路径。
 
 - 代码目录与数据根分开：工作区内代码子目录默认 `frontier`，数据根默认 `frontier-archive`。
-- 不需要 WSL、systemd、Windows 任务计划或常驻进程；不写持久环境变量、PATH 或注册表。
+- 不需要 WSL、systemd、Windows 任务计划或登录自启；不写持久环境变量、PATH 或注册表。唯一常驻组件是用户手动启停的 `frontier-listener` 监听进程（[ADR 0008](../../../docs/adr/0008-listener-process.md)）。
 - 单执行端：同一知识库同一时刻只由一个宿主驱动。
 - 判断标准只有 `python -m hostrun.cli install report` 的分项：`working` 才是通过，`blocked` 是缺能力，`untested` 是没测过。**离线测试、任务计划、手动调用都不代替真实交付/到点证据。**
 
@@ -13,10 +13,10 @@ frontier 不是后台服务，而是**由你正在用的宿主 agent 在本机�
 |---|---|---|
 | WorkBuddy（Windows 桌面端） | 本地会话 + 内置自动化 | 历史验证过项目访问、技能与本地命令；内置调度真实触发与无人值守权限仍待验收 |
 | ChatGPT（Windows 桌面端本地模式） | 本地会话 + 计划任务 | 未实测；不得把旧票据状态当作通过 |
-| DeepSeek Harness（Windows 本地会话） | 本地命令 + 技能 + 会话内定时 | 第三款运行宿主（见 [ADR 0006](../../../docs/adr/0006-deepseek-harness-as-a-host.md)）；真实安装闭环与两类定时触发仍待验收 |
+| DeepSeek Harness（Windows 本地会话） | 本地命令 + 技能 + 会话内定时 + 用户启停的监听进程 | 第三款运行宿主（见 [ADR 0006](../../../docs/adr/0006-deepseek-harness-as-a-host.md)）；真实安装闭环、定时触发与监听 24 小时在线仍待验收 |
 | Linux / macOS 终端 | 直接跑 CLI | 与宿主无关的命令行链路由离线测试覆盖 |
 
-每款宿主分别记录实际版本、权限与运行证据，不能互相替代。DeepSeek Harness 会话结束或宿主关闭后不承诺定时触发；必须在目标宿主中观察真实运行。
+每款宿主分别记录实际版本、权限与运行证据，不能互相替代。DeepSeek Harness 会话结束或宿主关闭后不承诺定时触发；监听进程独立于会话，但它由用户手动启动，宿主所在机器必须开机。必须在目标宿主中观察真实运行。
 
 ## 2. 前置条件
 
@@ -141,48 +141,65 @@ python -m hostrun.cli init apply   --home <home>
 - 重复执行幂等；中断后重跑只补未完成部分。已有库使用 `init adopt-existing` 导入现有卡片，不重建、不清空。
 - 就绪后执行一次标准知识卡片检索（`init retrieve`），不把安装测试关键词当作研究计划。
 
-### 3.7 两类宿主任务
+### 3.7 监听进程
+
+```bash
+python -m hostrun.cli listener install --home <home>       # 生成启停脚本，不启动进程
+python -m hostrun.cli listener status  --home <home>       # 心跳 / pid / 最近事件
+python -m hostrun.cli --home <home> run --intent listener-check   # 每日巡检（也可由任务调用）
+```
+
+- `listener install` 只生成 `<home>/bin/frontier-listener.cmd` 与 `frontier-listener-stop.cmd`，写入记录的仓库、数据根、解释器与 `dsh` 绝对路径；**不**创建服务、不登录自启、不写注册表。
+- 启动与停止都由用户完成：双击启动脚本得到标题为 `frontier-listener` 的控制台窗口；停止用停止脚本、`Ctrl+C` 或关闭该窗口。agent 可以指导，但不代为常驻。
+- 监听进程用 bot 身份消费 `im.message.receive_v1`，只接受已核实 owner 的单聊命令（`推一篇` / `处理反馈` / `状态`），群聊与他人消息忽略；每 5 分钟执行一次 `run --intent feedback`。
+- 收到需要判断的工作时，用记录的 `dsh --profile headless` 派生一次有界宿主运行：单飞行、先取执行端租约、≤20 分钟、失败不重试、写 `runs.jsonl` 并标记 `derived`、飞书回执；`install report` 有 `blocked` 项时拒绝派生。
+- 巡检判定不在线（心跳 >10 分钟或进程不存在）时，用记录的启动命令拉起一次并在 30 秒后复查；恢复成功报告一次，仍失败报告具体缺项并停手。巡检证据记为 `listener_health`，不套用 `scheduled_run` 的到点容差。
+
+### 3.8 两个瞬时宿主任务
 
 ```bash
 python -m hostrun.cli schedules plan    --home <home> --timezone Asia/Shanghai
 python -m hostrun.cli schedules confirm --home <home> --yes --host-created \
-  --task-id frontier-daily=<宿主任务ID> --task-id frontier-feedback=<宿主任务ID>
+  --task-id frontier-daily=<宿主任务ID> --task-id frontier-listener-check=<宿主任务ID>
 python -m hostrun.cli schedules trigger --home <home> --task frontier-daily
 python -m hostrun.cli schedules pause   --home <home> --yes
 python -m hostrun.cli schedules resume  --home <home> --yes
 ```
 
-- 只创建两个任务：用户时区每日 08:00 推送、每小时反馈检查（默认第 5 分钟）。维护并入每天首次小时检查，不建第三个任务。
+- 只创建两个任务：用户时区每日 08:00 推送、每日 09:00 监听巡检；取消每小时反馈检查，反馈由监听进程承担。不建第三个任务。
 - 每个任务保存 `frontier-run`、仓库、数据根、解释器与 CLI 的绝对路径；唤醒时先读 skill 再执行。
-- 小时检查只处理反馈/恢复/维护，**从不**创建检索请求；未答问题不阻塞维护。
+- 每次唤醒都是**一次有界运行**：执行任务命令、完成当前工作后退出，不挂会话、不派生后台作业。巡检本身几十秒内结束。
 - 正式知识未就绪不启用每日推送；允许确认后暂不启用。
-- 任务创建成功只写 `schedules`；真实到点触发才写 `scheduled_run`。运行时间必须与计划时区记录的实际 UTC 偏移一致，并在计划时间后 5 分钟内启动；手动运行、异时区时间、旧成功标记、云任务都不能替代。两类任务都至少真实触发一次后，`scheduled_run` 才为 `ok`。
+- 任务创建成功只写 `schedules`；真实到点触发才写 `scheduled_run`。运行时间必须与计划时区记录的实际 UTC 偏移一致，并在计划时间后 5 分钟内启动；手动运行、异时区时间、旧成功标记、云任务都不能替代。监听巡检不写 `scheduled_run`，其证据是 `listener_health`。
 - `schedules confirm` 为两个任务各生成一个 proof 并写入实际命令；`run --scheduled` 不带匹配 proof 时只当普通运行，不写入触发证据。确认后请使用 `schedules confirm` 返回的任务命令，不要手写不带 proof 的命令。
 - 暂停会停用配置并要求在宿主里停用实际任务；换机先停旧端，再 `executor handover`。
 
-### 3.8 报告
+### 3.9 报告
 
 ```bash
 python -m hostrun.cli --home <home> install report
 ```
 
-报告分步给出 `working / blocked / untested / pending`、路径、时区、任务与真实触发状态。最后按实际结果报告，不把“命令成功”冒充“安装通过”。
+报告分步给出 `working / blocked / untested / pending`、路径、时区、任务、监听进程与真实触发状态。最后按实际结果报告，不把“命令成功”冒充“安装通过”。
 
 ## 4. 日常运行
 
-| 意图 | 频率 | 做什么 | 不做 |
-|---|---|---|---|
-| `daily` | 每天 08:00 | 处理反馈/恢复 → 维护（若到期）→ 请求并开始一篇推送 | 不并发多篇 |
-| `feedback` | 每小时 | 处理已提交答案与未完成工作；当天首次做维护 | **不创建**检索请求 |
+| 意图 | 频率 | 由谁执行 | 做什么 | 不做 |
+|---|---|---|---|---|
+| `daily` | 每天 08:00 | 宿主定时任务（瞬时） | 处理反馈/恢复 → 维护（若到期）→ 请求并开始一篇推送 | 不并发多篇 |
+| `feedback` | 每 5 分钟 | 监听进程轮询 | 处理已提交答案与未完成工作；当天首次做维护 | **不创建**检索请求 |
+| `listener-check` | 每天 09:00 | 宿主定时任务（瞬时） | 读心跳与进程、必要时拉起一次监听并复查 | 不做推送、不写 `scheduled_run` |
 
 ```bash
 python -m hostrun.cli run --intent daily
 python -m hostrun.cli run --intent feedback
+python -m hostrun.cli run --intent listener-check
 python -m hostrun.cli run --intent daily --finish ok
 python -m hostrun.cli status
+python -m hostrun.cli listener status
 ```
 
-错过就错过：电脑或客户端关闭时该次不发生；错过的每日请求合并成一次。
+错过就错过：电脑或客户端关闭时该次不发生；错过的每日请求合并成一次。监听进程不在线时反馈会堆积，直到监听启动或下一次推送运行。
 
 ### 反馈闭环
 
@@ -209,15 +226,16 @@ python -m hostrun.cli feedback rebuild
 
 ## 5. 权限、在线条件与无人值守
 
-- 需要：跑本地命令、读写项目目录、调用飞书 CLI。不需要全局网络代理、管理员权限或开机自启。
+- 需要：跑本地命令、读写项目目录、调用飞书 CLI（含 bot 身份的事件长连接）。不需要全局网络代理、管理员权限或开机自启。
+- 24 小时在线由用户启动的监听进程提供；它不是服务，机器重启后要由用户重新启动（或由次日巡检发现并拉起一次）。
 - 自动运行只使用已授予范围；权限模型无法限制时报告 `blocked`，不要用“完全访问”绕过。
-- 电脑开机、客户端运行并登录；否则该次不发生（这是设计）。
+- 电脑开机、客户端运行并登录；否则定时该次不发生（这是设计）。
 - 状态文件与报告不含 token；`token/secret/password/cookie/key` 字段写 `***`。
 
 ## 6. 暂停、切换与清理
 
-- 暂停：在宿主停用两个任务（`schedules pause` 只改配置并要求宿主停用实际任务）。
-- 查看：`install report`、`status`。清理旧 WSL/systemd 安装只在确实装过时执行；删运行配置不等于删飞书知识库或唯一离线备份。
+- 暂停：由用户停止监听进程，并在宿主停用两个任务（`schedules pause` 只改配置并要求宿主停用实际任务）。
+- 查看：`install report`、`status`、`listener status`。清理旧 WSL/systemd 安装只在确实装过时执行；删运行配置不等于删飞书知识库或唯一离线备份。
 
 ## 7. 自检与验收
 
@@ -228,7 +246,8 @@ python -m hostrun.cli smoke status
 python -m hostrun.cli cleanup status
 python -m hostrun.cli init status
 python -m hostrun.cli schedules status
+python -m hostrun.cli listener status
 python -m hostrun.cli audit streak
 ```
 
-真实结论只看：宿主到点运行日志、飞书真实推送与反馈、清理读回、正式知识读回、两类任务实际触发。没测过写“未实测”，缺能力写“阻塞”。
+真实结论只看：宿主到点运行日志、飞书真实推送与反馈、清理读回、正式知识读回、两个任务实际触发、监听进程连续在线的 `listener_health` 证据。没测过写“未实测”，缺能力写“阻塞”。
