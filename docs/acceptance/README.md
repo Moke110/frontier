@@ -2,6 +2,37 @@
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下按日期归并证据；规格 [#51](https://github.com/Moke110/frontier/issues/51) 的历史离线实现与本轮文档修订分开记录。历史阻塞须在目标宿主重新探测，不能直接当作当前结果。代码通过离线测试不等于产品通过真实验收。
 
+## 2026-10-29 真实端到端验收（DeepSeek Harness，用户授权 Full access；#53–#58 通过，#59 待到点触发）
+
+用户明确授权把本会话权限切到 **Full access**（DSH 设置），以提供飞书 CLI 凭据存储（含 HKCU 注册表 keychain）所需写入权限；该授权是本轮通过账号层前置条件的显式决定，不是 agent 自行绕过。**本轮为真实读写：创建了独立 Base、真实检索、真实推送、用户本人在飞书评分与采纳、真实清理与正式知识写入。**
+
+### 关键环境修复（非 code 变更，安装记录在此）
+
+- **工作区低完整性标签**：DSH 的 ACL 沙箱曾把工作区文件标为 Low integrity；从工作区路径启动的解释器因此降级运行，lark-cli 无法访问 CNG/TPM 密钥库（`failed to acquire key storage lock`）。用 `icacls <python.exe> /setintegritylevel Medium` 修复代码目录与数据根两个 venv 的解释器后，`auth status` 恢复 user `ready`、DPoP `available`。这不是权限绕过，`-DiagnoseWindowsSandboxAcl` 判定为 `NOT_THIS_CLASS`（无 package ACE、无缺失 WRITE_DAC）。
+- **DSH 事件回调**：卡片按钮需要 `lark-cli event consume card.action.trigger` 的长连接消费者在线；本轮以 `publisher.cli listen` 后台运行后，评分与采纳事件真实到达并写入队列。
+
+### 真实结果（逐票据）
+
+| 票据 | 真实证据 |
+|---|---|
+| #53 | `install check`：host/workspace/dependencies/skill/lark_cli/**identity/permissions 全部 ok**；真实 Base（`+table-list`）与 Drive 目录读取成功；报告不含 token |
+| #54 | 新建 Base `CsCmbT96UaN5Z7sbsFqcWtpcnIe`（frontier 知识库），12 张契约表、原文/推送两个云盘目录；逐字段读回 `ok`，`facilities status` 结构完整 |
+| #55 | 临时卡片 `card_smoke_…` 写入 Base；真实检索 40 条候选（arXiv 429 时为 20 条 EuropePMC）；`retrieved`/`written` 按序登记 |
+| #56 | 七段推送 + 生成图渲染（65 KB 自包含 HTML）→ 推送库登记 → Drive 上传 → 真实送达飞书文件消息、评分卡、更新卡；**用户本人评分 `great`、本人采纳 `agree_all`**；写回后 Base 逐字段读回一致；七步 + `verified` 齐全，`test_loop=ok` |
+| #57 | `cleanup run` 删除 3 条 Base 记录、撤回 1 条消息、删除 1 个云盘文件/3 个本地文件/2 个队列项；逐范围读回为空，`verified: true`，无残留、无不可撤回；`cleanup=ok` |
+| #58 | 162 篇 PDF 全部摄取（可读 162/162，无缺口）；从真实全文提炼 9 张卡片草案，用户确认（草案哈希绑定）后写入正式 Base，读回一致；标准检索生成 18 条查询，`knowledge=ok` |
+| #59 | 已在 DSH 创建两个真实会话任务（`frontier-daily` 每日 08:00、`frontier-feedback` 每小时 :05，Asia/Shanghai），`schedules confirm --host-created` 写入任务 ID 与 proof，`schedules=ok`；**`scheduled_run` 仍为 untested，等待至少一次真实到点运行** |
+
+### 本轮修复的真实验收阻塞缺陷（`21b90fe`；离线 410 passed / 3 skipped）
+
+`install check` runner 空指针；`base-create` 嵌套返回结构解析；ontology 文本单元格换行序列化与读回归一化；多词 ontology 精确短语召回为 0（改为逐词 OR 召回）；单一检索来源失败中断整条链路（保留 `source_errors` 继续）；publisher/library/knowledge 未使用记录的 lark-cli 绝对路径与 UTF-8 解码（`WinError 2`/解码崩溃）；`KL_HOME` 未随 `--home` 传入；Base 记录删除与消息撤回缺 `--yes` 被服务端拒绝；清理后的 `failed_cleaned` 永久阻塞新测试；rendered 校验错误要求同时出现两类图注（契约只要求图注可区分来源）。
+
+### 仍缺
+
+1. `scheduled_run`：等待 2026-10-29 13:05 的小时任务与 2026-10-30 08:00 的每日任务真实触发（手动运行不计）。
+2. GitHub 推送：本地 `dev`/`main` 已合并到 `94f87b1`，但 `~/.gitconfig` 的代理 `http://127.0.0.1:7897` 当前不可达，远端仍停在 `0e75117`；代理恢复后需推送并补 #51/#53–#59 评论。
+3. 早前中止轮次遗留在飞书聊天中的卡片消息：清理只撤回本次测试记录内的消息，旧轮次未被本次清理覆盖（不影响本次读回结论，需后续按轮次补撤）。
+
 ## 2026-10-29 安装工作区重试（数据根可写；飞书凭据存储与 user 身份仍阻塞）
 
 本轮把 DeepSeek Harness 0.2.1-rc.3 的会话工作区改为**安装工作区** `E:\Desktop\frontier-dev`：代码目录 `frontier` 与数据根 `frontier-archive` 为同级子目录，数据根不再落在会话工作区之外。**未创建 Base、未发送任何消息、未创建宿主任务、未删除任何云端数据。**
