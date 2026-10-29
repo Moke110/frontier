@@ -2,6 +2,8 @@
 
 import json
 import os
+import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -477,6 +479,10 @@ def test_check_blocks_permissions_when_a_write_probe_is_denied(tmp_path):
         home,
         repo=Path(__file__).resolve().parents[1],
         host=_host(),
+        # Offline: never let the probe pick up a PATH ``lark-cli`` from the
+        # developer machine and run it for real. A stale explicit path is
+        # enough to exercise the write-probe branch under test.
+        lark_cli=str(tmp_path / "missing-lark-cli"),
         store_dir=store,
         writer=writer,
     )
@@ -860,3 +866,375 @@ def test_check_normalizes_a_missing_runner_for_the_resource_preflight(tmp_path, 
     assert captured["base_token"] == "bas_probe"
     assert captured["folders"] == ["fld_probe"]
     assert result["steps"]["permissions"] == "ok"
+
+
+# ------------------------------------------------------------- listener install
+def _dsh_file(tmp_path):
+    dsh = tmp_path / "tools" / ("dsh.cmd" if os.name == "nt" else "dsh")
+    dsh.parent.mkdir(parents=True, exist_ok=True)
+    dsh.write_text("", encoding="utf-8")
+    return dsh
+
+
+def _listener_scripts(home):
+    return (
+        home / "bin" / "frontier-listener.cmd",
+        home / "bin" / "frontier-listener-stop.cmd",
+    )
+
+
+def _write_heartbeat(home, *, updated_at, pid=4242, state="running"):
+    path = home / "listener" / "heartbeat.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "pid": pid,
+                "started_at": updated_at,
+                "updated_at": updated_at,
+                "state": state,
+                "last_event_at": None,
+                "last_success_at": None,
+                "consecutive_failures": 0,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _empty_runner(calls=None):
+    def runner(argv, **kwargs):
+        if calls is not None:
+            calls.append([str(item) for item in argv])
+        return _Proc(stdout="{}")
+
+    return runner
+
+
+def test_listener_steps_are_appended_after_scheduled_run():
+    steps = list(install.STEPS)
+
+    assert steps.index("scheduled_run") < steps.index("listener") < steps.index("listener_health")
+    assert "listener" in install.STEP_NOTES
+    assert "listener_health" in install.STEP_NOTES
+
+
+def test_listener_install_writes_scripts_and_records_the_step(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    dsh = _dsh_file(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = install.listener_install(home, dsh=str(dsh), python=sys.executable, repo=repo)
+
+    assert result["ok"] is True
+    assert result["status"] == "ok"
+    start, stop = _listener_scripts(home)
+    assert start.is_file() and stop.is_file()
+    start_text = start.read_text(encoding="utf-8")
+    assert start_text.splitlines()[0] == "title frontier-listener"
+    assert sys.executable in start_text
+    assert str(home.resolve()) in start_text
+    assert "--home" in start_text
+    assert str(repo.resolve()) in start_text
+    assert "listener serve" in start_text
+    assert "listener stop" in stop.read_text(encoding="utf-8")
+
+    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
+    assert config["paths"]["dsh"] == str(dsh)
+    assert config["listener"]["start_command"] == str(start)
+    assert config["listener"]["stop_command"] == str(stop)
+    entry = install.load_state(home)["steps"]["listener"]
+    assert entry["status"] == "ok"
+    assert entry["evidence"]["scripts"]["frontier-listener.cmd"]["present"] is True
+    assert entry["evidence"]["processes_started"] is False
+
+
+def test_listener_install_blocks_without_dsh_but_still_writes_scripts(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = install.listener_install(home, python=sys.executable, repo=repo)
+
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert "paths.dsh" in result["note"]
+    assert "listener install --dsh" in result["note"]
+    start, stop = _listener_scripts(home)
+    assert start.is_file() and stop.is_file()
+    entry = install.load_state(home)["steps"]["listener"]
+    assert entry["status"] == "blocked"
+    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
+    assert config["paths"]["dsh"] == ""
+    # The stop command is recorded even when dsh is missing: the scripts still
+    # have to be stoppable/replaceable once the user fixes paths.dsh.
+    assert config["listener"]["stop_command"] == str(stop)
+
+
+def test_listener_install_blocks_on_a_relative_or_missing_dsh(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    relative = install.listener_install(
+        home, dsh="tools/dsh.cmd", python=sys.executable, repo=repo
+    )
+    assert relative["ok"] is False
+    assert "不是绝对路径" in relative["note"]
+
+    missing = install.listener_install(
+        home, dsh=str(tmp_path / "tools" / "gone.cmd"), python=sys.executable, repo=repo
+    )
+    assert missing["ok"] is False
+    assert "不存在" in missing["note"]
+    assert "listener install --dsh" in missing["note"]
+
+
+def test_listener_install_reuses_the_recorded_dsh(tmp_path):
+    from hostrun.base import update_config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    dsh = _dsh_file(tmp_path)
+    update_config(home, paths={"dsh": str(dsh)})
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = install.listener_install(home, python=sys.executable, repo=repo)
+
+    assert result["ok"] is True
+    assert result["dsh"] == str(dsh)
+
+
+def test_cli_install_record_accepts_the_listener_steps(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+
+    assert (
+        cli.main(
+            [
+                "--home",
+                str(home),
+                "install",
+                "record",
+                "--step",
+                "listener",
+                "--status",
+                "ok",
+                "--note",
+                "脚本已生成",
+            ]
+        )
+        == 0
+    )
+    assert (
+        cli.main(
+            [
+                "--home",
+                str(home),
+                "install",
+                "record",
+                "--step",
+                "listener_health",
+                "--status",
+                "untested",
+                "--note",
+                "未巡检",
+            ]
+        )
+        == 0
+    )
+    steps = install.load_state(home)["steps"]
+    assert steps["listener"]["status"] == "ok"
+    assert steps["listener_health"]["status"] == "untested"
+
+
+def test_report_rules_name_the_user_started_listener(tmp_path):
+    rules = install.report(tmp_path)["rules"]
+
+    assert any("唯一常驻组件是用户手动启停的 listener" in rule for rule in rules)
+    assert not any("不创建服务、系统定时任务或常驻进程" in rule for rule in rules)
+
+
+# -------------------------------------------------------------- listener probe
+def test_probe_listener_blocks_missing_scripts_without_creating_them(tmp_path):
+    from hostrun.base import update_config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    dsh = _dsh_file(tmp_path)
+    update_config(home, paths={"dsh": str(dsh)})
+
+    result = install.probe_listener(home)
+
+    assert result["status"] == "blocked"
+    assert "frontier-listener.cmd" in result["note"]
+    assert not _listener_scripts(home)[0].exists()
+
+
+def test_probe_listener_reports_heartbeat_freshness(tmp_path):
+    from hostrun.base import update_config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    dsh = _dsh_file(tmp_path)
+    update_config(home, paths={"dsh": str(dsh)})
+    start, stop = _listener_scripts(home)
+    start.parent.mkdir(parents=True)
+    start.write_text("", encoding="utf-8")
+    stop.write_text("", encoding="utf-8")
+    fresh = datetime.now().astimezone()
+    _write_heartbeat(home, updated_at=fresh.isoformat())
+
+    result = install.probe_listener(home)
+
+    assert result["status"] == "ok"
+    heartbeat = result["evidence"]["heartbeat"]
+    assert heartbeat["state"] == "online"
+    assert heartbeat["pid"] == 4242
+    assert heartbeat["age_seconds"] <= 10
+    assert result["evidence"]["processes_started"] is False
+
+    _write_heartbeat(home, updated_at=(fresh - timedelta(hours=1)).isoformat())
+    stale = install.probe_listener(home)
+    assert stale["status"] == "ok"
+    assert stale["evidence"]["heartbeat"]["state"] == "stale"
+    assert stale["evidence"]["heartbeat"]["age_seconds"] >= 3600
+
+
+def test_probe_listener_blocks_an_unreadable_heartbeat(tmp_path):
+    from hostrun.base import update_config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    dsh = _dsh_file(tmp_path)
+    update_config(home, paths={"dsh": str(dsh)})
+    start, stop = _listener_scripts(home)
+    start.parent.mkdir(parents=True)
+    start.write_text("", encoding="utf-8")
+    stop.write_text("", encoding="utf-8")
+    heartbeat = home / "listener" / "heartbeat.json"
+    heartbeat.parent.mkdir(parents=True)
+    heartbeat.write_text("{not json", encoding="utf-8")
+
+    result = install.probe_listener(home)
+
+    assert result["status"] == "blocked"
+    assert "心跳" in result["note"]
+
+
+# ------------------------------------------------------- check wiring (no start)
+def _check_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+    home = tmp_path / "home"
+    home.mkdir()
+    return home
+
+
+def test_check_records_listener_ok_after_scripts_exist(tmp_path, monkeypatch):
+    home = _check_home(tmp_path, monkeypatch)
+    dsh = _dsh_file(tmp_path)
+    repo = Path(__file__).resolve().parents[1]
+    install.listener_install(home, dsh=str(dsh), python=sys.executable, repo=repo)
+
+    result = install.check(
+        home,
+        repo=repo,
+        host=_host(),
+        runner=_empty_runner(),
+        store_dir=tmp_path / "lark-cli-home",
+    )
+
+    assert result["steps"]["listener"] == "ok"
+    entry = install.load_state(home)["steps"]["listener"]
+    assert entry["evidence"]["dsh"] == str(dsh)
+    assert entry["evidence"]["scripts"]["frontier-listener-stop.cmd"]["present"] is True
+
+
+def test_check_records_listener_blocked_when_scripts_are_missing(tmp_path, monkeypatch):
+    from hostrun.base import update_config
+
+    home = _check_home(tmp_path, monkeypatch)
+    dsh = _dsh_file(tmp_path)
+    update_config(home, paths={"dsh": str(dsh)})
+
+    result = install.check(
+        home,
+        repo=Path(__file__).resolve().parents[1],
+        host=_host(),
+        runner=_empty_runner(),
+        store_dir=tmp_path / "lark-cli-home",
+    )
+
+    assert result["steps"]["listener"] == "blocked"
+    entry = install.load_state(home)["steps"]["listener"]
+    assert "frontier-listener.cmd" in entry["note"]
+    assert not _listener_scripts(home)[0].exists()
+
+
+def test_check_never_starts_the_listener(tmp_path, monkeypatch):
+    home = _check_home(tmp_path, monkeypatch)
+    dsh = _dsh_file(tmp_path)
+    repo = Path(__file__).resolve().parents[1]
+    install.listener_install(home, dsh=str(dsh), python=sys.executable, repo=repo)
+    binary = home / "bin" / "lark-cli"
+    binary.write_text("", encoding="utf-8")
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append([str(item) for item in argv])
+        if "auth" in argv:
+            return _Proc(stdout=json.dumps(_auth_payload()))
+        return _Proc(stdout="{}")
+
+    install.check(
+        home,
+        repo=repo,
+        host=_host(),
+        runner=runner,
+        store_dir=tmp_path / "lark-cli-home",
+    )
+
+    assert calls  # the lark/identity probes did run
+    assert not any(
+        "frontier-listener" in " ".join(call) or "listener serve" in " ".join(call)
+        for call in calls
+    )
+    # A started process would have written a heartbeat; check must not.
+    assert not (home / "listener" / "heartbeat.json").exists()
+
+
+def test_check_records_listener_health_untested_until_a_real_check(tmp_path, monkeypatch):
+    home = _check_home(tmp_path, monkeypatch)
+    repo = Path(__file__).resolve().parents[1]
+
+    install.check(
+        home,
+        repo=repo,
+        host=_host(),
+        runner=_empty_runner(),
+        store_dir=tmp_path / "lark-cli-home",
+    )
+    entry = install.load_state(home)["steps"]["listener_health"]
+    assert entry["status"] == "untested"
+    assert "巡检" in entry["note"]
+    report = install.report(home)
+    assert "listener_health" in [row["step"] for row in report["untested"]]
+
+    # A real listener-check result must never be downgraded by a later check.
+    install.record(home, "listener_health", "ok", note="巡检在线", recheck=True)
+    install.check(
+        home,
+        repo=repo,
+        host=_host(),
+        runner=_empty_runner(),
+        store_dir=tmp_path / "lark-cli-home",
+    )
+    assert install.load_state(home)["steps"]["listener_health"]["status"] == "ok"
