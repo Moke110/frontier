@@ -1,8 +1,8 @@
 # ADR 0008：监听进程承担 24 小时在线操作，宿主定时任务只做有界运行
 
 - 日期：2026-10-29
-- 状态：已接受（设计与文档）；代码实现与真实验收待办
-- 修订：[ADR 0005](0005-agent-owned-execution.md) 中"不创建独立常驻程序"的约束；[ADR 0005](0005-agent-owned-execution.md) 其余约束继续有效
+- 状态：已接受（设计与文档）；代码已由实施票据 #62–#68 实现（合入 `spec61-integration`）；真实验收待办
+- 修订：[ADR 0005](0005-agent-owned-execution.md) 中"不创建独立常驻程序"的约束，以及"每小时检查反馈"的默认调度；[ADR 0005](0005-agent-owned-execution.md) 其余约束继续有效
 - 相关：[ADR 0006](0006-deepseek-harness-as-a-host.md)（DeepSeek Harness 作为运行宿主）、[ADR 0007](0007-reuse-configured-lark-cli.md)（用已配置的 lark-cli）
 
 ## 背景
@@ -84,6 +84,16 @@
 - **证据语义变化**：`scheduled_run` 只覆盖两个瞬时任务；监听在线由 `listener_health` 单独记录。已知缺陷（DSH 投递到执行的延迟可能十几分钟，导致 `scheduled_run` 被判非到点）单独记录，不据此放宽巡检判定。
 - **不再被启动的旧路径**：`trigger.service.listen`（opencode 无头 agent）与 `publisher.service.listen`（卡片回调）保持退役；新监听进程是 `hostrun.cli listener`，复用 `publisher.feishu.consume_events`、统一问题队列与执行端租约。
 
-## 不在本决策范围
+## 实现状态
 
-代码实现由后续实施票据完成，包括：`hostrun/listener.py`、`hostrun.cli listener start|stop|status|serve`、`schedules` 的任务集与巡检 intent、退役旧监听路径、修正 `hostrun/__init__.py` 与 `hostrun/cli.py` 中"no detached listeners"的模块说明。本决策只确认设计、文档与验收标准。
+本决策最初只确认设计、文档与验收标准。实施票据 #62–#68 已完成代码：
+
+- `hostrun/listener.py`：单实例锁、心跳、滚动日志、有界事件消费、命令路由、5 分钟反馈轮询、派生运行护栏与退避；
+- `hostrun/cli.py`：`listener install|start|stop|status|serve|health`、`run --intent listener-check`，并修正"no detached listeners"的模块说明；
+- `hostrun/intents.py`：`listener-check`（只读健康判定、至多一次拉起、记录 `listener_health`，不写 `scheduled_run`）；
+- `hostrun/schedules.py`：任务集改为 `frontier-daily` + `frontier-listener-check`，旧 `frontier-feedback` 迁入 `retired_tasks`；
+- `hostrun/base.py`：`paths.dsh` 与 listener 配置项；`publisher/feishu.py`：可复用有界事件消费；
+- 安装流程：`listener install` 启停脚本、`install check`/`report` 的 `listener` 与 `listener_health` 步骤；
+- `tests/test_hostrun_listener.py` 等离线用例，不依赖真实飞书或真实 `dsh`。
+
+上述代码通过离线测试（#69：538 passed / 3 skipped），**不代表真实验收通过**；本文件"验收标准"的 5 项真实证据仍全部为 `untested`，见 `docs/acceptance/README.md`。

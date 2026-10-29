@@ -2,9 +2,9 @@
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下按日期归并证据；规格 [#51](https://github.com/Moke110/frontier/issues/51) 的历史离线实现与本轮文档修订分开记录。历史阻塞须在目标宿主重新探测，不能直接当作当前结果。代码通过离线测试不等于产品通过真实验收。
 
-## 2026-10-29 监听进程方案（设计已定；代码与真实验收均未执行）
+## 2026-10-29 监听进程方案（设计已定；当轮仅改文档）
 
-用户要求：24 小时都能通过飞书操作 frontier，同时宿主定时任务只做瞬时运行、不长期挂着会话。决策见 [ADR 0008](../adr/0008-listener-process.md)。本轮**只改设计与文档/契约，未改代码**，未启动监听进程、未改动 DSH 现有调度、未写入飞书。
+用户要求：24 小时都能通过飞书操作 frontier，同时宿主定时任务只做瞬时运行、不长期挂着会话。决策见 [ADR 0008](../adr/0008-listener-process.md)。当轮**只改设计与文档/契约，未改代码**，未启动监听进程、未改动 DSH 现有调度、未写入飞书。
 
 | 项目 | 约定 |
 |---|---|
@@ -29,7 +29,22 @@
 - bot 身份 ready；user 身份当前受 DPoP 存储影响（沙箱内读取受限，可能误报）。因此监听进程只用 bot 身份，不用 user 身份。
 - `lark-cli event list` 确认 `im.message.receive_v1`（bot）可订阅；`event consume` 提供 `--max-events`、`--timeout` 与 `[event] ready event_key=…` 就绪标记，可作为单进程有界消费的基础。
 
-仍缺（全部 `untested`）：监听进程实现与启停脚本、`listener` CLI 与 `listener_health` 证据、新两个任务的真实到点触发、上述 5 条验收门槛。<br>需要同步修改的代码与文档字符串：`hostrun/listener.py`、`hostrun/cli.py`、`hostrun/schedules.py`（任务集与巡检 intent）、`hostrun/intents.py`、`hostrun/__init__.py` 中"no detached listeners"的说明，以及退役 `trigger.service.listen` / `publisher.service.listen` 的引用（文档已按退役处理）。
+当轮仍缺（全部 `untested`，后由实施票据 #62–#68 实现，见下一节）：监听进程实现与启停脚本、`listener` CLI 与 `listener_health` 证据、新两个任务的真实到点触发、上述 5 条验收门槛。<br>当轮列出的待同步代码与文档字符串——`hostrun/listener.py`、`hostrun/cli.py`、`hostrun/schedules.py`（任务集与巡检 intent）、`hostrun/intents.py`、`hostrun/__init__.py` 中"no detached listeners"的说明，以及退役 `trigger.service.listen` / `publisher.service.listen` 的引用——已由 #62–#68 完成；文档按退役处理。
+
+## 2026-10-29 监听进程实现合入（离线回归通过；真实验收未执行）
+
+实施票据 #62–#68 已把监听进程代码合入 `spec61-integration`（tip `e6e8433`），#69 在 `spec61-69` 做全量离线回归与契约一致性核对。本节只记录实现与离线证据，**不**把任何真实验收项写成通过。
+
+| 项目 | 当前状态（2026-10-29，#69） |
+|---|---|
+| 代码 | `hostrun/listener.py`；`hostrun/cli.py`（`listener install|start|stop|status|serve|health`、`run --intent listener-check`）；`hostrun/intents.py`；`hostrun/schedules.py`（两个瞬时任务 + `retired_tasks` 迁移）；`hostrun/base.py`（`paths.dsh` 与 listener 配置）；`publisher/feishu.py`（有界事件消费）；安装流程的 `listener` / `listener_health` 步骤 |
+| 离线回归 | 全量 **538 passed, 3 skipped**（`#69` 工作树 `spec61-69`；本分支基线 411 passed / 3 skipped；真实验收未执行） |
+| 测试冲突修复 | `tests/test_hostrun_runtime.py` 中 #66 合并时重复定义的 5 个 schedule 测试已去重；`listener-check` 注册后删除过时的 fallback 分支 |
+| 契约/文档对齐 | `contracts/README.md` §12 分步列表补 `listener` / `listener_health`；ADR 0008 状态与实现清单；ADR 0005 修订指针；`skills/frontier-run/references/installation.md` §3.7 补 `--dsh`；`deploy/README.md` 更正"不装常驻监听" |
+| 产品代码缺陷 | 发现 1 项未修复：Windows `_pid_alive` 用 `OpenProcess(SYNCHRONIZE)` 判定，已终止但残留句柄的进程会被误报存活（影响杀进程恢复与 `listener stop`），建议改用 `WaitForSingleObject(...,0)==WAIT_TIMEOUT`；详见 #69 报告。产品代码未在 #69 修改 |
+| 真实证据 | 上述 5 项验收门槛仍全部 `untested`：需真实 24h 运行、真实飞书命令、真实巡检、杀进程恢复与真实反馈时延；离线测试只覆盖契约形状 |
+
+**不得**据本节宣称真实能力通过；真实证据补齐前 #61 的验收门槛维持 `untested`。
 
 ## 2026-10-29 真实端到端验收（DeepSeek Harness，用户授权 Full access；#53–#58 通过，#59 待到点触发）
 
