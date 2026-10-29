@@ -544,7 +544,9 @@ python -m hostrun.cli status
     │   │                         #   （artifacts.candidates/plan/paper_ids/push_html）、
     │   │                         #   verify 的 steps.verified.checks；清理后只留最小验收状态
     │   └── initial/              # 文献元数据、候选卡片、确认哈希、写入报告、标准检索计划
-    ├── listener/                 # listener.lock（单实例）/ heartbeat.json（每 60s 重写）/ listener.log
+    ├── listener/                 # listener.lock（单实例）/ heartbeat.json（每 60s 重写）/
+    │                             #   listener.log（满 1 MB 滚动到 listener.log.1）/ stop（停止哨兵）/
+    │                             #   derived.lock（派生运行单飞行）
     ├── executor/                 # lease.json + events.jsonl（时间租约，不是 pid）
     ├── hostrun/runs.jsonl        # 意图、动作、是否安静；scheduled/task 仅由宿主任务写入，
     │                             #   derived 标记监听进程派生的有界运行

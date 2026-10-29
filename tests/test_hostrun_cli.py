@@ -516,3 +516,71 @@ def test_package_docstring_drops_no_detached_listeners():
     assert "no detached listeners" not in doc
     assert "user-started listener" in doc
     assert "listener" in doc
+
+
+# ------------------------------------------- shared pid/process/heartbeat helpers
+def test_listener_stop_reports_not_running_when_the_fresh_heartbeat_pid_is_dead(
+    tmp_path, monkeypatch, capsys
+):
+    """#70 call point 2: a fresh heartbeat must not keep a dead pid "alive"."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _fresh_heartbeat(home, pid=4242)
+    monkeypatch.setattr(listener, "pid_alive", lambda pid: False)
+    monkeypatch.setattr(
+        cli, "_listener_sleep", lambda seconds: pytest.fail("a dead pid must not be waited for")
+    )
+
+    code = cli.main(["--home", str(home), "listener", "stop"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "not_running"
+    assert payload["heartbeat"]["pid_alive"] is False
+    assert listener.stop_requested(home) is False
+
+
+def test_listener_status_uses_the_shared_pid_judgement(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    _fresh_heartbeat(home, pid=4242)
+    monkeypatch.setattr(listener, "pid_alive", lambda pid: False)
+
+    code = cli.main(["--home", str(home), "listener", "status"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "offline"
+    assert payload["pid_alive"] is False
+
+
+def test_start_argv_and_detached_spawn_helpers_are_shared_with_the_listener(monkeypatch):
+    """#71 item 3: one canonical process helper, two thin delegating wrappers."""
+    argv_calls = []
+    spawn_calls = []
+    monkeypatch.setattr(
+        listener, "start_argv", lambda command: argv_calls.append(command) or ["shared-argv"]
+    )
+    monkeypatch.setattr(
+        listener,
+        "spawn_detached",
+        lambda argv, **kwargs: spawn_calls.append((argv, kwargs)) or "proc",
+    )
+
+    assert intents._listener_start_argv("cmd-1") == ["shared-argv"]
+    assert cli._listener_argv("cmd-2") == ["shared-argv"]
+    assert intents._default_spawn(["a"]) == "proc"
+    assert cli._spawn_detached(["b"]) == "proc"
+
+    assert argv_calls == ["cmd-1", "cmd-2"]
+    assert spawn_calls == [(["a"], {"new_console": True}), (["b"], {"new_console": True})]
+
+
+def test_listener_alive_judgement_is_shared(monkeypatch):
+    """#70 call point 2: cli stop reuses the same health predicate."""
+    monkeypatch.setattr(
+        intents, "listener_alive", lambda health: health.get("state") == "online"
+    )
+
+    assert cli._listener_alive({"state": "online", "evidence": {}}) is True
+    assert cli._listener_alive({"state": "stale", "evidence": {"pid_alive": True}}) is False
