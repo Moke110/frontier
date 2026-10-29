@@ -10,7 +10,8 @@ that "installed" means something checkable:
 - the report separates what works, what is blocked and what was not tested.
 
 Nothing here writes environment variables, PATH, the registry, services or OS
-scheduler entries.
+scheduler entries. The listener start/stop scripts are generated for the user to
+run by hand; installation never starts that process.
 """
 
 from __future__ import annotations
@@ -24,11 +25,14 @@ from pathlib import Path
 
 from common import ensure_dir, now, read_json, write_json
 from hostrun import lark as lark_mod
+from hostrun import listener as listener_mod
 from hostrun import workspace as workspace_mod
 from hostrun.base import (
     HostRunError,
+    dsh_bin,
     load_config,
     redact,
+    require_dsh,
     run_json,
     save_config,
     update_config,
@@ -49,6 +53,8 @@ STEPS = (
     "knowledge",
     "schedules",
     "scheduled_run",
+    "listener",
+    "listener_health",
 )
 STEP_NOTES = {
     "host": "宿主产品、版本、本机执行、内置调度与实际权限",
@@ -62,9 +68,14 @@ STEP_NOTES = {
     "test_loop": "关键词驱动的临时闭环（推送、评分、采纳、写入）",
     "cleanup": "本次测试副作用的删除与无残留验证",
     "knowledge": "文献库与用户要求确认后的正式知识卡片",
-    "schedules": "每日推送与每小时反馈两类宿主任务",
+    "schedules": "每日推送与每日监听巡检两类宿主任务",
     "scheduled_run": "至少一次真实到点的本地定时触发",
+    "listener": "监听进程启停脚本、记录的 dsh 路径与心跳可读性（不启动进程）",
+    "listener_health": "监听巡检：心跳新鲜度、进程存活与最近成功事件",
 }
+LISTENER_START_SCRIPT = "frontier-listener.cmd"
+LISTENER_STOP_SCRIPT = "frontier-listener-stop.cmd"
+LISTENER_WINDOW_TITLE = "frontier-listener"
 MIN_PYTHON = (3, 11)
 REQUIRED_PERMISSION_SCOPES = [
     scope for scopes in lark_mod.REQUIRED_SCOPES.values() for scope in scopes
@@ -353,6 +364,197 @@ def probe_lark_cli(home: Path, spec: str | None, *, names: list[str] | None = No
         "status": "ok",
         "note": f"已解析可执行文件（来源 {found['source']}）；登录状态由 identity 步骤单独验证",
         "evidence": {"path": found["path"], "source": found["source"]},
+    }
+
+
+# ------------------------------------------------------ listener (ADR 0008)
+def _listener_repair_command(home: Path) -> str:
+    """The command a user can copy to record a usable ``paths.dsh``."""
+    return (
+        f'python -m hostrun.cli --home "{home}" listener install '
+        f'--dsh "<dsh 的绝对路径>"'
+    )
+
+
+def _listener_script_text(
+    *, title: str, repo: Path, python: str, home: Path, action: str
+) -> str:
+    """A user-run cmd script: fixed window title, recorded repo/interpreter."""
+    return (
+        f"title {title}\n"
+        f'cd /d "{repo}"\n'
+        f'"{python}" -m hostrun.cli --home "{home}" listener {action}\n'
+    )
+
+
+def _write_listener_scripts(home: Path, repo: Path, python: str) -> dict:
+    bin_dir = ensure_dir(Path(home) / "bin")
+    start = bin_dir / LISTENER_START_SCRIPT
+    stop = bin_dir / LISTENER_STOP_SCRIPT
+    start.write_text(
+        _listener_script_text(
+            title=LISTENER_WINDOW_TITLE, repo=repo, python=python, home=home, action="serve"
+        ),
+        encoding="utf-8",
+    )
+    stop.write_text(
+        _listener_script_text(
+            title=LISTENER_WINDOW_TITLE, repo=repo, python=python, home=home, action="stop"
+        ),
+        encoding="utf-8",
+    )
+    return {"start": start, "stop": stop}
+
+
+def _heartbeat_facts(home: Path, *, stale_seconds: int) -> tuple[dict | None, str]:
+    """Read the heartbeat through the canonical listener helper; never starts.
+
+    ``listener.heartbeat_facts`` owns freshness and naive-UTC handling so this
+    probe cannot drift from the ``listener-check`` intent; only the reporting
+    shape (``None`` when unusable) is adapted here.
+    """
+    facts = listener_mod.heartbeat_facts(Path(home), stale_seconds=stale_seconds)
+    if facts["problem"]:
+        return None, facts["problem"]
+    if not facts["present"]:
+        return None, ""
+    return (
+        {
+            key: facts[key]
+            for key in (
+                "path",
+                "present",
+                "state",
+                "age_seconds",
+                "pid",
+                "updated_at",
+                "degraded",
+            )
+        },
+        "",
+    )
+
+
+def probe_listener(home: Path, *, dsh: str | None = None) -> dict:
+    """Read-only evidence for the ``listener`` install step.
+
+    Checks the two user-run scripts, the recorded absolute ``dsh`` and (when it
+    already exists) the heartbeat's readability and freshness. It never starts
+    the process, never creates scripts and never writes a heartbeat.
+    """
+    home = Path(home)
+    config = load_config(home)
+    stale_seconds = int(
+        (config.get("listener") or {}).get("heartbeat_stale_seconds") or 600
+    )
+    scripts = {}
+    problems: list[str] = []
+    for name in (LISTENER_START_SCRIPT, LISTENER_STOP_SCRIPT):
+        path = Path(home) / "bin" / name
+        present = path.is_file()
+        scripts[name] = {"path": str(path), "present": present}
+        if not present:
+            problems.append(f"启停脚本缺失：{path}")
+
+    recorded_dsh = ""
+    if dsh is not None:
+        candidate = Path(str(dsh)).expanduser()
+        if candidate.is_absolute() and candidate.is_file():
+            recorded_dsh = str(candidate)
+        else:
+            problems.append(f"dsh 不可用：{dsh}")
+    else:
+        recorded_dsh = dsh_bin(home)
+        if not recorded_dsh:
+            try:
+                require_dsh(home)
+            except HostRunError as exc:
+                problems.append(str(exc))
+
+    heartbeat, heartbeat_problem = _heartbeat_facts(home, stale_seconds=stale_seconds)
+    if heartbeat_problem:
+        problems.append(heartbeat_problem)
+    evidence = {
+        "scripts": scripts,
+        "dsh": recorded_dsh,
+        "heartbeat": heartbeat,
+        "processes_started": False,
+    }
+    if problems:
+        return {"status": "blocked", "note": "；".join(problems), "evidence": evidence}
+    note = "启停脚本已生成，记录的 dsh 可用；本步骤未启动进程"
+    if heartbeat is not None:
+        note += f"；心跳 {heartbeat['age_seconds']}s（{heartbeat['state']}）"
+    return {"status": "ok", "note": note, "evidence": evidence}
+
+
+def listener_install(
+    home: Path,
+    *,
+    dsh: str | None = None,
+    python: str | None = None,
+    repo: str | Path | None = None,
+) -> dict:
+    """Generate the user-run listener scripts and record the ``listener`` step.
+
+    The scripts still get written when ``dsh`` is missing or invalid, so the user
+    can start/stop (or regenerate) the listener after fixing ``paths.dsh``; the
+    step itself stays ``blocked`` with a copyable repair command. Never starts
+    the listener.
+    """
+    home = Path(home).expanduser()
+    home_path = home.resolve()
+    config = load_config(home)
+    repo_path = Path(repo or config["paths"].get("repo") or ".").expanduser().resolve()
+    python_path = str(python or config["paths"].get("python") or sys.executable)
+    repair = _listener_repair_command(home_path)
+
+    candidate = (
+        str(dsh).strip()
+        if dsh is not None
+        else str(config["paths"].get("dsh") or "").strip()
+    )
+    dsh_problem = ""
+    recorded_dsh = ""
+    if not candidate:
+        dsh_problem = "dsh 未记录：paths.dsh 为空"
+    else:
+        path = Path(candidate).expanduser()
+        if not path.is_absolute():
+            dsh_problem = f"paths.dsh 不是绝对路径：{candidate}"
+        elif not path.is_file():
+            dsh_problem = f"paths.dsh 指向的文件不存在：{path}"
+        else:
+            recorded_dsh = str(path)
+    if recorded_dsh:
+        update_config(home, paths={"dsh": recorded_dsh})
+
+    scripts = _write_listener_scripts(home_path, repo_path, python_path)
+    update_config(
+        home,
+        listener={
+            "start_command": str(scripts["start"]),
+            "stop_command": str(scripts["stop"]),
+        },
+    )
+
+    probe = probe_listener(home)
+    evidence = {**probe["evidence"], "repair": repair if dsh_problem else ""}
+    if dsh_problem:
+        status = "blocked"
+        note = f"{dsh_problem}；修复：{repair}"
+    else:
+        status = probe["status"]
+        note = probe["note"]
+    record(home, "listener", status, note=note, evidence=evidence, recheck=True)
+    return {
+        "ok": status == "ok",
+        "status": status,
+        "note": note,
+        "scripts": {"start": str(scripts["start"]), "stop": str(scripts["stop"])},
+        "dsh": recorded_dsh,
+        "repair": "" if status == "ok" else repair,
+        "evidence": evidence,
     }
 
 
@@ -751,6 +953,9 @@ def check(
             "messages": resources.get("messages"),
         },
     }
+    # ADR 0008: the listener is the only resident component, started by the
+    # user. The probe reads scripts/dsh/heartbeat only — it never starts it.
+    results["listener"] = probe_listener(home)
 
     for step in (
         "host",
@@ -760,6 +965,7 @@ def check(
         "lark_cli",
         "identity",
         "permissions",
+        "listener",
     ):
         result = results.get(step)
         if not result:
@@ -771,7 +977,17 @@ def check(
             note=result["note"],
             evidence=result["evidence"],
             recheck=step
-            in {"workspace", "dependencies", "skill", "identity", "permissions"},
+            in {"workspace", "dependencies", "skill", "identity", "permissions", "listener"},
+        )
+
+    # The health of a *running* listener is proven by a real listener-check run,
+    # not by install; before that it stays honestly untested.
+    if not (load_state(home)["steps"].get("listener_health") or {}).get("status"):
+        record(
+            home,
+            "listener_health",
+            "untested",
+            note="尚未执行真实巡检；证据由 run --intent listener-check 写入",
         )
 
     host_permissions = (
@@ -885,7 +1101,7 @@ def report(home: Path) -> dict:
         "next": result["next"],
         "rules": [
             "不修改持久环境变量、PATH 或注册表",
-            "不创建服务、系统定时任务或常驻进程",
+            "唯一常驻组件是用户手动启停的 listener（不是服务、不登录自启）",
             "凭据只保存在 CLI 自己的机制里，报告不包含任何 token",
         ],
     }

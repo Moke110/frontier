@@ -23,6 +23,7 @@ from common import read_json, write_json
 CONFIG_REL = Path("install") / "config.json"
 STATE_REL = Path("install") / "state.json"
 BASE_REL = Path("knowledge") / "base.json"
+LISTENER_REL = Path("listener")
 
 DEFAULT_HOST = "unknown"
 REDACT_KEYS = ("token", "secret", "password", "cookie", "code", "key")
@@ -43,10 +44,25 @@ def default_config(home: Path, *, repo: Path | None = None) -> dict:
             "home": str(home),
             "python": sys.executable,
             "lark_cli": "",
+            "dsh": "",
         },
         "timezone": "",
         "schedules": {"enabled": False, "confirmed_at": None, "tasks": []},
         "permissions": {"scope": [], "granted_at": None},
+        # ADR 0008: the listener is the only resident component. Its whole
+        # behaviour is recorded here so nothing is guessed at run time.
+        "listener": {
+            "window_title": "frontier-listener",
+            "heartbeat_seconds": 60,
+            "feedback_poll_seconds": 300,
+            "feedback_lease_minutes": 45,
+            "derived_timeout_seconds": 1200,
+            "heartbeat_stale_seconds": 600,
+            "event_stale_seconds": 3600,
+            "recovery_recheck_seconds": 30,
+            "start_command": "",
+            "stop_command": "",
+        },
     }
 
 
@@ -59,6 +75,7 @@ def load_config(home: Path, *, repo: Path | None = None) -> dict:
     merged["host"] = {**base["host"], **(cfg.get("host") or {})}
     merged["schedules"] = {**base["schedules"], **(cfg.get("schedules") or {})}
     merged["permissions"] = {**base["permissions"], **(cfg.get("permissions") or {})}
+    merged["listener"] = {**base["listener"], **(cfg.get("listener") or {})}
     return merged
 
 
@@ -78,6 +95,11 @@ def update_config(home: Path, **sections) -> dict:
             cfg[key] = value
     save_config(home, cfg)
     return cfg
+
+
+def listener_dir(home: Path) -> Path:
+    """The listener's private directory: lock, heartbeat and log live here."""
+    return Path(home) / LISTENER_REL
 
 
 def redact(obj):
@@ -113,6 +135,48 @@ def lark_bin(home: Path) -> str:
     home = Path(home)
     cfg = read_json(home / CONFIG_REL) or {}
     return str((cfg.get("paths") or {}).get("lark_cli") or "lark-cli")
+
+
+def dsh_bin(home: Path) -> str:
+    """The recorded absolute ``dsh`` path, or ``""``.
+
+    ADR 0008 requires the listener to drive ``dsh --profile headless`` from an
+    explicitly recorded absolute path — ``dsh`` is not on PATH, so there is no
+    fallback here: unrecorded, relative or missing all mean "not usable".
+    """
+    home = Path(home)
+    cfg = read_json(home / CONFIG_REL) or {}
+    recorded = str((cfg.get("paths") or {}).get("dsh") or "").strip()
+    if not recorded:
+        return ""
+    path = Path(recorded).expanduser()
+    if not path.is_absolute() or not path.is_file():
+        return ""
+    return str(path)
+
+
+def require_dsh(home: Path) -> str:
+    """Return the recorded ``dsh`` path or raise with an actionable repair.
+
+    The repair hint points at the recorded config file, so the user can fix it
+    by hand or re-run ``listener install --dsh``.
+    """
+    home = Path(home)
+    config_path = home / CONFIG_REL
+    repair = (
+        f"在 {config_path} 的 paths.dsh 写入 dsh 的绝对路径"
+        "（或运行 hostrun.cli listener install --dsh <绝对路径>）"
+    )
+    cfg = read_json(config_path) or {}
+    recorded = str((cfg.get("paths") or {}).get("dsh") or "").strip()
+    if not recorded:
+        raise HostRunError(f"missing recorded dsh: paths.dsh 未记录；{repair}")
+    path = Path(recorded).expanduser()
+    if not path.is_absolute():
+        raise HostRunError(f"invalid recorded dsh: paths.dsh 不是绝对路径 ({recorded!r})；{repair}")
+    if not path.is_file():
+        raise HostRunError(f"invalid recorded dsh: paths.dsh 指向的文件不存在 ({path})；{repair}")
+    return str(path)
 
 
 def base_client(

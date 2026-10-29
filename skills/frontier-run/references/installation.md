@@ -144,12 +144,13 @@ python -m hostrun.cli init apply   --home <home>
 ### 3.7 监听进程
 
 ```bash
-python -m hostrun.cli listener install --home <home>       # 生成启停脚本，不启动进程
+python -m hostrun.cli listener install --home <home> --dsh "<dsh 绝对路径>"   # 生成启停脚本，不启动进程
 python -m hostrun.cli listener status  --home <home>       # 心跳 / pid / 最近事件
 python -m hostrun.cli --home <home> run --intent listener-check   # 每日巡检（也可由任务调用）
 ```
 
-- `listener install` 只生成 `<home>/bin/frontier-listener.cmd` 与 `frontier-listener-stop.cmd`，写入记录的仓库、数据根、解释器与 `dsh` 绝对路径；**不**创建服务、不登录自启、不写注册表。
+- `listener install` 只生成 `<home>/bin/frontier-listener.cmd` 与 `frontier-listener-stop.cmd`，写入记录的仓库、数据根、解释器与 `dsh` 绝对路径；**不**创建服务、不登录自启、不写注册表。`dsh` 必须显式记录：未给 `--dsh` 且 `paths.dsh` 为空或失效时，脚本仍会生成，但 `listener` 步骤记 `blocked` 并给出可照做的修复命令，派生运行也会拒绝启动。
+- `listener start|stop|serve|health` 同样可用：`serve` 是启停脚本调用的前台进程，`start` 只做一次分离启动，`health` 只读判定、不拉起进程。
 - 启动与停止都由用户完成：双击启动脚本得到标题为 `frontier-listener` 的控制台窗口；停止用停止脚本、`Ctrl+C` 或关闭该窗口。agent 可以指导，但不代为常驻。
 - 监听进程用 bot 身份消费 `im.message.receive_v1`，只接受已核实 owner 的单聊命令（`推一篇` / `处理反馈` / `状态`），群聊与他人消息忽略；每 5 分钟执行一次 `run --intent feedback`。
 - 收到需要判断的工作时，用记录的 `dsh --profile headless` 派生一次有界宿主运行：单飞行、先取执行端租约、≤20 分钟、失败不重试、写 `runs.jsonl` 并标记 `derived`、飞书回执；`install report` 有 `blocked` 项时拒绝派生。
