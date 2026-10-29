@@ -8,7 +8,7 @@
 
 1. 已按 [安装参考](installation.md) 验证本地宿主、解释器、飞书 CLI 和知识库；定时运行还须验证宿主内置调度。
 2. `lark-cli` 装在私有目录并已登录；登录状态由 `hostrun install` 的 `identity` 步骤验证，不靠 `command -v` 猜。
-3. 运行方式是「宿主唤醒 → 一次有界运行 → 退出」；不装常驻监听、不装 systemd、不写持久环境变量。
+3. 定时唤醒是「宿主唤醒 → 一次有界运行 → 退出」，不挂会话；常驻的只有用户手动启停的 `frontier-listener`（[ADR 0008](../../../docs/adr/0008-listener-process.md)），反馈由它每 5 分钟轮询处理。不装 systemd、不写持久环境变量。
 
 所有命令在**本仓库根**执行，数据根用 `--home` 显式给出（安装默认记录为工作区的 `frontier-archive/`；未配置时回退 `~/knowledge-loop`）：
 
@@ -168,9 +168,8 @@ python -m hostrun.cli --home <home> feedback sync
 ### 3.8 综述题
 
 - 第 10 条证据被采纳 → 队列追加 `proposition_review` 题（`ready=false`），占住闸门。
-- 监听器拉起 `trigger.cli review-request --item <id>`，agent 执行：
-  `writer.cli review-task` → 写 review JSON → `review-check` → `review-render` →
-  `question_queue.cli review-ready` → `publisher.cli deliver`。
+- 监听进程在派生的有界运行中处理该题：`writer.cli review-task` → 写 review JSON → `review-check` → `review-render` →
+  `question_queue.cli review-ready` → `publisher.cli deliver`。派生的护栏见 [ADR 0008](../../../docs/adr/0008-listener-process.md)。
 - 综述 HTML + 确认卡推送；`采纳此版` 写入并清零计数，`保持上一版` 保留计数。
 - 综述题不占每篇推送的 2 个实体名额。
 
@@ -287,7 +286,7 @@ python -m hostrun.cli --home <home> feedback sync
 
 | 现象 | 处理 |
 |---|---|
-| 评分未推进 | 检查持久反馈是否提交，再通过宿主有界运行处理；现行流程不启动事件监听 |
+| 评分未推进 | 检查持久反馈是否提交，再看监听进程是否在线（`hostrun.cli listener status`）；监听不在线时启动它，或等下一次有界运行 | 
 | 发卡报 `missing scope` | 按 `missing_scope` 重新授权 |
 | 卡片只显示 header | 客户端 < 7.20，升级飞书 |
 | `lark-cli --file` 报 `unsafe file path` | 只传当前工作目录下的相对路径 |

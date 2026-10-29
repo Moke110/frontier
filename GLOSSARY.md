@@ -74,6 +74,22 @@ _Avoid_: machine, runtime, bot
 A schedule owned by the host rather than the operating system that starts one frontier run at the planned time; creating it is not evidence that it fired.
 _Avoid_: cron job, service, daemon
 
+**Listener（监听进程）**:
+The single foreground process on the host machine that consumes Feishu events from the owner and runs bounded frontier actions, so the system answers without an open agent session. It is started and stopped by the user, not by the operating system.
+_Avoid_: service, daemon, bot, background job
+
+**Heartbeat（心跳）**:
+The listener's periodic liveness record, rewritten while the listener runs; the evidence used to tell "listening" from "process exists".
+_Avoid_: pid file, ping
+
+**Listener health check（监听巡检）**:
+The host agent's bounded daily run that reads the heartbeat, restarts the listener at most once, and reports what it found.
+_Avoid_: watchdog, monitor, uptime check
+
+**Derived host run（派生运行）**:
+A bounded host-agent run the listener starts for work that needs judgement, such as sorting and writing one push; it holds the same single-executor lease and is not a second executor.
+_Avoid_: headless agent, child session, bot run
+
 **Code directory（代码目录）**:
 The frontier repository checkout, kept separate from research data.
 _Avoid_: workspace, install directory, app folder

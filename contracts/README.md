@@ -486,7 +486,7 @@ python -m question_queue.cli try-start
 
 ## 12. 宿主运行（hostrun）
 
-由宿主 agent 驱动的安装、租约与有界运行。**不写持久环境变量、不创建服务/系统定时任务/常驻进程**；数据根优先用 `--home` 显式给出（`KL_HOME` 仅在未给时生效）。代码目录与数据根分开：工作区默认 `frontier/` 与 `frontier-archive/`。uv 管理的私有环境与解释器属于**数据根**（`<home>/.venv`），代码目录只保留代码；uv 优先从工作区外解析，缺失时才装到 `<home>/bin`。
+由宿主 agent 驱动的安装、租约与有界运行。**不写持久环境变量、不创建服务或系统定时任务**；唯一允许的常驻组件是用户手动启停的监听进程（[ADR 0008](../docs/adr/0008-listener-process.md)），它不是一个 Windows 服务、不登录自启、也不替代执行端租约。数据根优先用 `--home` 显式给出（`KL_HOME` 仅在未给时生效）。代码目录与数据根分开：工作区默认 `frontier/` 与 `frontier-archive/`。uv 管理的私有环境与解释器属于**数据根**（`<home>/.venv`），代码目录只保留代码；uv 优先从工作区外解析，缺失时才装到 `<home>/bin`。
 
 ```bash
 # 工作区、数据根私有 uv/解释器、frontier-run 入口指针
@@ -509,8 +509,12 @@ python -m hostrun.cli smoke start|plan|brief|status|record|verify|fail
 python -m hostrun.cli cleanup plan|run|status
 python -m hostrun.cli init intake|propose|review|confirm|apply|adopt-existing|retrieve|status
 
-# 两类宿主任务与真实触发
+# 两个瞬时宿主任务与真实触发
 python -m hostrun.cli schedules plan|confirm|status|pause|resume|trigger
+
+# 监听进程：用户手动启停；巡检与在线状态
+python -m hostrun.cli listener start|stop|status|serve|install|health
+python -m hostrun.cli run --intent listener-check
 
 # 运行、反馈与恢复
 python -m hostrun.cli feedback setup|sync|status|process|rebuild|submit|correct
@@ -525,7 +529,8 @@ python -m hostrun.cli status
 ├── .frontier/install.json        # 代码 / 数据根 / uv / 私有环境 / 解释器 / 技能绝对路径（技能移动后仍可定位）
 ├── frontier/                     # 代码副本（检查来源与改动，不覆盖；不放私有环境）
 └── frontier-archive/             # 数据根
-    ├── bin/                      # 缺失时的私有 uv（优先从工作区外解析；不改 PATH）
+    ├── bin/                      # 缺失时的私有 uv（优先从工作区外解析；不改 PATH）；
+    │                             #   frontier-listener.cmd / frontier-listener-stop.cmd（用户手动启停）
     ├── .venv/                    # uv 管理的私有环境与解释器（绝对路径同时写入指针记录与安装配置）
     ├── install/
     │   ├── config.json           # 宿主、私有路径、时区、权限与任务（凭据字段一律 ***）
@@ -538,8 +543,10 @@ python -m hostrun.cli status
     │   │                         #   （artifacts.candidates/plan/paper_ids/push_html）、
     │   │                         #   verify 的 steps.verified.checks；清理后只留最小验收状态
     │   └── initial/              # 文献元数据、候选卡片、确认哈希、写入报告、标准检索计划
+    ├── listener/                 # listener.lock（单实例）/ heartbeat.json（每 60s 重写）/ listener.log
     ├── executor/                 # lease.json + events.jsonl（时间租约，不是 pid）
-    ├── hostrun/runs.jsonl        # 意图、动作、是否安静；scheduled/task 仅由宿主任务写入
+    ├── hostrun/runs.jsonl        # 意图、动作、是否安静；scheduled/task 仅由宿主任务写入，
+    │                             #   derived 标记监听进程派生的有界运行
     └── library/                  # maintenance/<date>.json、audit/<date>.json
 ```
 
@@ -552,7 +559,11 @@ python -m hostrun.cli status
 - 临时闭环：临时卡片 ID 与推送/消息/文件/问题/论文 ID 全部归属测试。`frontier.cli validate --include-temporary` 用于在清理前校验临时卡片；普通 `validate`/`plan` 仍排除 `card_smoke_*`。`retrieved` 必须指向真实的 `--plan` 计划/候选文件并由文件得出候选数（可选 `--candidates` 必须一致）；`written` 至少一个 `--paper`；`rendered` 必须带 `--push` 与 `--html`，并按 `writer/render.py` 契约校验七段与 `原文图`/`生成图` 图注；`sent` 带推送、消息、问题 ID，且该消息必须在 `publisher/messages.jsonl` 中登记为本次推送的 `push_file`、`target` 等于测试记录中已核实的收件人（缺失为 `message_recipient_unverified`，不匹配为 `message_mismatch`，均不推进步骤）；`applied` 用 `--target`（被采纳目标 ID）与 `--applied-field`（每个被采纳字段）登记写入意图，省略时按临时卡片、只要求至少一个读回检查。`verify` 的逐字段读回累计在 `steps.verified.checks`，且必须覆盖每个已登记目标与字段才完整；覆盖不足返回 `verification_incomplete` 并保持 `test_loop` 未通过，字段不一致照常失败。成功必须包含完整读回核对，失败不开放正式初始化。
 - 清理：只按测试 ID 与记录中的卡片/推送/问题/文件/消息/选中论文 ID 删除并逐范围读回确认；消息撤回后必须按记录的消息 ID 重新读取，仍可读或读取结果无法判定都算残留/失败，保持 `cleanup=blocked`，正式初始化闸门关闭。撤回/读回与云盘删除/核对只使用记录或显式给出的**绝对且存在的** `lark-cli`；没有可用绝对路径时该项记 `failed`，绝不回退到 PATH 的 `lark-cli`。结果在 `removed`（逐表明细）之外给出 `counts`：Base 记录、消息、云盘文件、本地文件、队列条目，并写入 `install` 的清理证据。
 - 正式知识：**新建路径**仅在“测试通过 + 清理读回通过”后开放；`init propose` 需要可读 intake（可读输入、可读全文与用户要求），并快照既有卡片 ID（快照读取失败即拒绝，不写草案）；卡片须用户确认且确认绑定草稿哈希；`init apply` 拒绝更新草案前已存在的卡片 ID（没有覆盖开关），同步后归一化比较字段读回，不一致即 `base_readback_mismatch`。**已有库**由用户显式确认后走 `init adopt-existing` 导入现有卡片，不经过新建测试闸门、不重建也不清空；两条路径完成后都做一次标准检索，测试关键词不复用。
-- `run` 的固定顺序：反馈 → 恢复未完成 → 维护（到期才做）→ 检索闸门。`feedback` 意图**从不**创建检索请求；维护并入当天首次小时检查，未答问题不阻止维护；错过的每日请求合并为一次。
-- 只创建两个宿主任务：`frontier-daily`（用户时区 08:00）与 `frontier-feedback`（每小时，默认第 5 分钟）。正式知识未就绪时 `confirm` 拒绝创建（包括暂停），不写 `schedules` 任务；就绪后 `confirm` 为每个任务生成 proof 并写入命令。运行日志中的 `scheduled=true`、`task=<id>`、`proof` 匹配、运行时间的 UTC 偏移与计划时区记录的 `utc_offset_seconds` 一致，且落在计划时间内（±5 分钟启动容差）的记录才能写 `scheduled_run`，手动运行、非到点运行、异时区时间与伪造时间不计；两类任务都至少一次后才为 `ok`。
+- `run` 的固定顺序：反馈 → 恢复未完成 → 维护（到期才做）→ 检索闸门。`feedback` 意图**从不**创建检索请求；维护在同一天第一次反馈轮询（或第一次运行）时执行，未答问题不阻止维护；错过的每日请求合并为一次。
+- 只创建两个宿主任务：`frontier-daily`（用户时区 08:00，推送）与 `frontier-listener-check`（每日 09:00，监听巡检）。正式知识未就绪时 `confirm` 拒绝创建（包括暂停），不写 `schedules` 任务；就绪后 `confirm` 为每个任务生成 proof 并写入命令。运行日志中的 `scheduled=true`、`task=<id>`、`proof` 匹配、运行时间的 UTC 偏移与计划时区记录的 `utc_offset_seconds` 一致，且落在计划时间内（±5 分钟启动容差）的记录才能写 `scheduled_run`，手动运行、非到点运行、异时区时间与伪造时间不计。**监听巡检不写 `scheduled_run`**，它的证据是 `listener_health`（见下）。
+- 监听进程：单一前台进程、用户手动启停，不装服务、不登录自启、不写注册表。事件面用 bot 身份消费 `im.message.receive_v1`，只接受已核实 owner 的单聊消息；命令白名单为 `推一篇` / `处理反馈` / `状态`，未知文本只回用法提示，群聊与他人消息忽略并记日志。
+- 反馈轮询：监听进程每 5 分钟执行一次 `run --intent feedback`（机械、无模型）；执行端租约被占用时跳过本轮，不抢、不重试；无变化保持安静。
+- 派生运行：监听进程用记录的 `dsh` 绝对路径执行 `dsh --profile headless` 拉起一次有界宿主运行。护栏：单飞行锁、派生前先取执行端租约、单次上限 20 分钟、失败不自动重试、写入 `runs.jsonl` 并标记 `derived`、在飞书回执；`install report` 有 `blocked` 项时拒绝派生并如实回复。
+- 监听巡检：读取心跳新鲜度（≤10 分钟）、进程存活与最近一次成功事件时间；判定不在线时用记录的启动命令拉起一次并在 30 秒后复查，恢复成功报告一次，仍失败报告具体缺项并停手。证据写入独立的 `listener_health` 步骤；到点容差（±5 分钟）只用于证明"调度器真实触发"，不用于巡检。
 - 同一时刻只有一个执行端：另一宿主持有有效租约时返回 `executor_busy`；过期租约可被接管并在 `events.jsonl` 记 `taken_over`；换机必须 `handover`（旧端仍活跃时需 `--force` 并说明）。
 - `feedback rebuild` 从「问题」表重建本地队列，已处理的决定不会被再次应用。
