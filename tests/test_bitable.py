@@ -219,3 +219,27 @@ def test_sync_links_reports_to_the_matching_source_row(kl_home):
     sources = {row["fields"]["原文 ID"]: row["record_id"] for row in client.list("sources")}
     for row in client.list("papers"):
         assert row["fields"]["原文"] == [{"id": sources[row["fields"]["paper_id"]]}]
+
+def test_card_row_joins_ontology_for_the_text_cell():
+    from knowledge.bitable import card_row
+
+    row = card_row(
+        {
+            "id": "card_x",
+            "label": "X",
+            "ontology": ["a", " b ", "c"],
+            "annotation": "note",
+            "created_at": "2026-10-29T12:00:00+08:00",
+            "updated_at": "2026-10-29T12:00:00+08:00",
+        }
+    )
+
+    assert row["ontology"] == "a\nb\nc"
+
+
+def test_select_splits_a_text_cell_back_into_terms():
+    from knowledge.bitable import _select
+
+    assert _select("a\nb\n c ") == ["a", "b", "c"]
+    assert _select(["a", "b"]) == ["a", "b"]
+    assert _select("") == []

@@ -72,15 +72,34 @@ def _quote(term: str) -> str:
     return '"' + term.replace('"', '\\"') + '"'
 
 
+def _term_clause(prefix: str, term: str) -> str:
+    """One ontology term as a query clause.
+
+    A multi-word term is a recall cue, not a literal phrase: requiring the
+    exact phrase (``abs:"single-cell perturbation prediction benchmark"``)
+    returned zero hits on both sources even though the component words matched
+    hundreds of papers.  Keep the quoted phrase for a single word and OR the
+    words for a multi-word concept; precision is the editor/ranking layer's job.
+    """
+    words = [word for word in str(term or "").split() if word]
+    if not words:
+        return ""
+    if len(words) == 1:
+        return f"{prefix}:{_quote(words[0])}"
+    return "(" + " OR ".join(f"{prefix}:{_quote(word)}" for word in words) + ")"
+
+
 def _arxiv_query(terms: list[str], start: str, end: str) -> str:
-    body = " OR ".join(f"abs:{_quote(t)}" for t in terms)
+    clauses = [_term_clause("abs", term) for term in terms]
+    body = " OR ".join(clause for clause in clauses if clause)
     s = start.replace("-", "")
     e = end.replace("-", "")
     return f"({body}) AND submittedDate:[{s}0000 TO {e}2359]"
 
 
 def _epmc_query(terms: list[str], start: str, end: str) -> str:
-    body = " OR ".join(f"TITLE_ABS:{_quote(t)}" for t in terms)
+    clauses = [_term_clause("TITLE_ABS", term) for term in terms]
+    body = " OR ".join(clause for clause in clauses if clause)
     return f"({body}) AND (FIRST_PDATE:[{start} TO {end}])"
 
 

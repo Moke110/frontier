@@ -219,11 +219,13 @@ def _validate_initial_card(card: dict, seen: set[str]) -> list[str]:
 
 def _normalize_ontology(value) -> list[str]:
     if isinstance(value, str):
-        value = [
-            part.strip()
-            for part in value.replace("，", ",").split(",")
-            if part.strip()
-        ]
+        # Text cells store the term list newline-separated; older rows may be
+        # comma-separated. Split both so a read-back compares as a term set.
+        text = value.replace("，", ",").replace("\r\n", "\n")
+        parts = []
+        for line in text.splitlines() or [text]:
+            parts.extend(part.strip() for part in line.split(","))
+        value = [part for part in parts if part]
     if not isinstance(value, list):
         return []
     return [str(part) for part in value if str(part).strip()]

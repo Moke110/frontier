@@ -31,7 +31,11 @@ class LarkDrive:
 
     def __init__(self, *, identity: str = "user", bin: str = "lark-cli"):
         self.identity = identity
-        self.bin = bin
+        # The recorded absolute path is authoritative (ADR 0007); the bare name
+        # is only a last-resort fallback for an uninstalled host.
+        from common import recorded_lark_cli
+
+        self.bin = bin if bin != "lark-cli" else (recorded_lark_cli() or bin)
         self._listing: dict[str, list[dict]] = {}
 
     def _folder_args(self, folder_token: str) -> list[str]:
@@ -41,7 +45,14 @@ class LarkDrive:
         cmd = [self.bin, *args, "--as", self.identity, "--format", "json"]
         if yes:
             cmd.append("--yes")
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+        )
         try:
             payload = json.loads(proc.stdout or "{}")
         except json.JSONDecodeError:

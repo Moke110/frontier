@@ -17,7 +17,14 @@ def run(
     fixtures: Path,
     checkpoint: str | None = None,
     check_window: bool = True,
+    errors: list[dict] | None = None,
 ) -> list[dict]:
+    """Fetch every planned query; one source failure must not hide the others.
+
+    A rate-limited or unreachable source is recorded in ``errors`` and the loop
+    continues, so a real retrieval can still return candidates from the
+    remaining sources.  Callers decide whether partial evidence is acceptable.
+    """
     start = (plan.get("window") or {}).get("start")
     end = (plan.get("window") or {}).get("end")
     seen: set[tuple[str, str]] = set()
@@ -25,7 +32,19 @@ def run(
     for query in plan.get("queries", []):
         if checkpoint and query.get("checkpoint_id") != checkpoint:
             continue
-        for rank, paper in enumerate(fetch(query, mode, fixtures), start=1):
+        try:
+            fetched = fetch(query, mode, fixtures)
+        except RetrieverError as exc:
+            if errors is not None:
+                errors.append(
+                    {
+                        "query_id": query.get("query_id"),
+                        "source": query.get("source"),
+                        "error": str(exc),
+                    }
+                )
+            continue
+        for rank, paper in enumerate(fetched, start=1):
             key = (paper.get("source", ""), paper.get("source_id", ""))
             if key in seen:
                 continue
@@ -69,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     if not plan:
         print(json.dumps({"ok": False, "error": f"no plan at {args.plan}"}), file=sys.stderr)
         return 1
+    errors: list[dict] = []
     try:
         rows = run(
             plan,
@@ -76,12 +96,19 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.fixtures),
             args.checkpoint,
             check_window=not args.no_window,
+            errors=errors,
         )
     except RetrieverError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 3
     if not rows:
-        print(json.dumps({"ok": False, "reason": "no candidates"}), file=sys.stderr)
+        print(
+            json.dumps(
+                {"ok": False, "reason": "no candidates", "source_errors": errors},
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
         return 2
     write_jsonl(Path(args.out), rows)
     emit(
@@ -89,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             "ok": True,
             "out": args.out,
             "count": len(rows),
+            "source_errors": errors,
             "by_checkpoint": {
                 cp: sum(1 for r in rows if r["checkpoint_id"] == cp)
                 for cp in sorted({r["checkpoint_id"] for r in rows})

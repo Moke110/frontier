@@ -174,9 +174,23 @@ def delete_message(
     """
     command = [str(executable)] if executable else _cli_command()
     proc = subprocess.run(
-        [*command, "im", "messages", "delete", "--message-id", message_id, "--as", identity],
+        [
+            *command,
+            "im",
+            "messages",
+            "delete",
+            "--message-id",
+            message_id,
+            "--as",
+            identity,
+            # Recall is a high-risk write: without --yes lark-cli refuses with
+            # confirmation_required and cleanup cannot prove the recall.
+            "--yes",
+        ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
     text = (proc.stdout or "").strip()

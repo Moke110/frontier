@@ -247,7 +247,17 @@ def _run_cli(home: Path, module: str, *args: str, timeout: int = 600) -> dict:
     cmd = [sys.executable, "-m", module, "--home", str(home), *args]
     env = {**os.environ, "KL_HOME": str(home)}
     proc = subprocess.run(
-        cmd, cwd=str(repo), env=env, capture_output=True, text=True, timeout=timeout,
+        cmd,
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        # The sibling CLIs always emit UTF-8 (Chinese JSON).  Windows would
+        # otherwise decode with the locale code page and crash the reader
+        # thread, hiding a successful push-library upload behind a false error.
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
     )
     try:
         result = json.loads(proc.stdout or "{}")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from common import emit, home
@@ -31,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = home(args.home)
+    os.environ["KL_HOME"] = str(root)
     try:
         if args.cmd == "sync":
             emit(bitable.sync(root, dry_run=args.dry_run))

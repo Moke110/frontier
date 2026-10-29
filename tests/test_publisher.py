@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 
 import pytest
@@ -11,8 +11,8 @@ PUSH = {
     "push_id": "2026-10-20_hmbs_01",
     "date": "2026-10-20",
     "checkpoint_id": "hmbs",
-    "title": "HMBS锛歵est",
-    "body_md": "### HMBS\n\n**鍙戠幇** something",
+    "title": "HMBS：test",
+    "body_md": "### HMBS\n\n**发现** something",
     "proposals": [
         {
             "proposal_id": "p1",
@@ -42,9 +42,9 @@ PUSH_PDF = {
     "push_id": "2026-10-20_hmbs_02",
     "date": "2026-10-20",
     "checkpoint_id": "hmbs",
-    "title": "HMBS锛氶暱鏂?PDF",
+    "title": "HMBS：长文 PDF",
     "paper_ids": ["europepmc_42900001"],
-    "sections": {"takeaway": "涓€鍙ヨ瘽缁撹锛欻MBS 缂哄け褰卞搷琛€绾㈢礌鍚堟垚銆?},
+    "sections": {"takeaway": "一句话结论：HMBS 缺失影响血红素合成。"},
 }
 
 
@@ -61,23 +61,23 @@ def test_rating_card_has_three_submit_buttons_and_comment():
     assert form["elements"][0]["tag"] == "input"
     buttons = _buttons(card)
     assert [b["text"]["content"] for b in buttons] == [
-        "璐ㄩ噺宸?涓嶅湪鍏虫敞棰嗗煙",
-        "璐ㄩ噺涓€鑸?,
-        "璐ㄩ噺浼樼",
+        "质量差/不在关注领域",
+        "质量一般",
+        "质量优秀",
     ]
     assert [b["name"] for b in buttons] == ["score_low", "score_mid", "score_high"]
     assert all(b["form_action_type"] == "submit" for b in buttons)
-    # 姣忚涓€涓寜閽細鎸夐挳鐩存帴鎺掑湪 form 鐨勭旱鍚戞祦閲岋紝涓嶅啀鐢?column_set 骞舵帓
+    # 每行一个按钮：按钮直接排在 form 的纵向流里，不再用 column_set 并排
     assert [e["tag"] for e in form["elements"][1:]] == ["button", "button", "button"]
 
 
 def test_confirmation_and_approval_cards():
-    confirm = build_confirmation_card(PUSH, "great", "濂界湅")
-    assert confirm["header"]["title"]["content"] == "鍙嶉宸茶褰?
+    confirm = build_confirmation_card(PUSH, "great", "好看")
+    assert confirm["header"]["title"]["content"] == "反馈已记录"
     approval = build_approval_card(PUSH, PUSH["proposals"])
     text = approval["body"]["elements"][0]["content"]
-    assert "琛ヤ竴鏉¤瘉鎹? in text
-    assert "澧炲姞鍒悕" in text
+    assert "补一条证据" in text
+    assert "增加别名" in text
     buttons = approval["body"]["elements"][1]["columns"]
     assert buttons[0]["elements"][0]["behaviors"][0]["value"]["decision"] == "approve"
 
@@ -85,8 +85,8 @@ def test_confirmation_and_approval_cards():
 def test_pdf_rating_card_uses_takeaway():
     card = build_rating_card(PUSH_PDF)
     body = card["body"]["elements"][0]["content"]
-    assert "涓€鍙ヨ瘽缁撹" in body
-    assert "闀挎枃 PDF 宸插崟鐙彂閫? in body
+    assert "一句话结论" in body
+    assert "长文 PDF 已单独发送" in body
 
 
 def test_send_pdf_dry_run_sends_file_then_rating(kl_home, tmp_path):
@@ -128,7 +128,7 @@ def test_dry_run_then_rating_without_approval(kl_home, tmp_path):
         {
             "message_id": sent["message_id"],
             "action_name": "score_high",
-            "form_value": json.dumps({"comment": "寰堝ソ"}, ensure_ascii=False),
+            "form_value": json.dumps({"comment": "很好"}, ensure_ascii=False),
             "operator_id": "ou_demo",
             "token": "",
         },
@@ -137,7 +137,7 @@ def test_dry_run_then_rating_without_approval(kl_home, tmp_path):
     assert rating["verdict"] == "great"
     assert "approval_message_id" not in rating
     ratings = (kl_home / "ratings.jsonl").read_text().strip().splitlines()
-    assert json.loads(ratings[0])["comment"] == "寰堝ソ"
+    assert json.loads(ratings[0])["comment"] == "很好"
     assert not list((kl_home / "publisher" / "pending").glob("*.json"))
 
 
@@ -220,7 +220,7 @@ def test_library_alerts_are_delivered_as_copyable_text(kl_home):
         "limit_bytes": 5 * 1024**3,
         "percent": 80.0,
         "candidates": {"count": 3, "bytes": 200 * 1024**2},
-        "instruction": "娓呯悊 frontier 鍘熸枃搴擄細鎶?3 绡囦笅杞藉埌 ~/frontier-offline/2026-10-26/銆?,
+        "instruction": "清理 frontier 原文库：把 3 篇下载到 ~/frontier-offline/2026-10-26/。",
     }
     write_json(kl_home / "library" / "alerts" / "a1.json", alert)
 
@@ -234,7 +234,7 @@ def test_library_alerts_are_delivered_as_copyable_text(kl_home):
     text = read_json(outbox[0])["text"]
     assert "80.0%" in text
     assert "4.00 GB / 5.00 GB" in text
-    assert "娓呯悊 frontier 鍘熸枃搴? in text
+    assert "清理 frontier 原文库" in text
 
 
 def test_put_push_is_skipped_without_library_config(kl_home, tmp_path):
@@ -503,7 +503,7 @@ def test_feishu_refuses_a_stale_recorded_cli_path(monkeypatch, tmp_path):
         feishu.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not spawn")
     )
 
-    with pytest.raises(feishu.FeishuError, match="宸插け鏁?):
+    with pytest.raises(feishu.FeishuError, match="已失效"):
         feishu.send_text("ou_x", "hello")
 
 
@@ -516,6 +516,7 @@ def test_publisher_cli_exposes_deliver():
     assert args.to == "ou_x"
     assert args.dry_run is True
     assert args.identity == "bot"
+
 
 # ----------------------------------------- data-root wiring for the CLI record
 def test_cli_home_reaches_the_recorded_cli_lookup(monkeypatch, tmp_path):
@@ -594,3 +595,52 @@ def test_available_reports_a_stale_recorded_path_as_unavailable(monkeypatch, tmp
     monkeypatch.setattr(feishu.shutil, "which", lambda name: "C:/somewhere/lark-cli.exe")
 
     assert feishu.available() is False
+
+
+def test_run_cli_decodes_utf8_under_a_non_utf8_locale(monkeypatch, tmp_path):
+    """Sibling CLIs emit UTF-8 JSON; the locale code page must not corrupt it."""
+    from publisher import service
+
+    payload = '{"ok": true, "push": "push-name"}'
+
+    class Proc:
+        returncode = 0
+        stdout = payload
+        stderr = ""
+
+    captured = {}
+
+    def run(cmd, **kwargs):
+        captured.update(kwargs)
+        return Proc()
+
+    monkeypatch.setattr(service.subprocess, "run", run)
+
+    result = service._run_cli(tmp_path, "library.cli", "put-push")
+
+    assert result["ok"] is True
+    assert result["push"] == "push-name"
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+
+def test_delete_message_confirms_the_high_risk_recall(monkeypatch):
+    from publisher import feishu
+
+    calls = []
+
+    class Proc:
+        returncode = 0
+        stdout = json.dumps({"ok": True})
+        stderr = ""
+
+    def run(argv, **kwargs):
+        calls.append([str(item) for item in argv])
+        return Proc()
+
+    monkeypatch.setattr(feishu.subprocess, "run", run)
+
+    result = feishu.delete_message("om_x", executable="C:/bin/lark-cli")
+
+    assert result["ok"] is True
+    assert "--yes" in calls[0]
+    assert calls[0][0] == "C:/bin/lark-cli"

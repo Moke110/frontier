@@ -36,14 +36,21 @@ class LarkBitableClient:
     def __init__(self, config: dict, *, identity: str = "user"):
         self.config = config
         self.identity = identity
+        from common import recorded_lark_cli
+
+        # Recorded absolute path is authoritative (ADR 0007); bare lark-cli is
+        # a PATH guess that CreateProcess cannot resolve to the .cmd shim.
+        self.bin = recorded_lark_cli() or "lark-cli"
         self.base = config["base_token"]
 
     def _run(self, *args: str) -> dict:
         proc = subprocess.run(
-            ["lark-cli", *args, "--as", self.identity, "--base-token", self.base,
+            [self.bin, *args, "--as", self.identity, "--base-token", self.base,
              "--format", "json"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         payload = json.loads(proc.stdout or "{}")
         if not payload.get("ok"):
@@ -125,9 +132,17 @@ def _date_eq(left, right) -> bool:
 
 
 def _select(value) -> list[str]:
+    """Normalize a Base cell into a list of terms.
+
+    The ``ontology`` field is a text cell: writes join the local term list with
+    newlines (a list value is rejected by the real Base API), and reads split
+    it back.  Lists are still accepted for select cells and test fixtures.
+    """
     if isinstance(value, list):
         return [str(v) for v in value]
-    return [str(value)] if value not in (None, "") else []
+    if value in (None, ""):
+        return []
+    return [part.strip() for part in str(value).splitlines() if part.strip()]
 
 
 def _links(record_ids: list[str]) -> list[dict]:
@@ -151,7 +166,11 @@ def card_row(card: dict) -> dict:
     return {
         "卡片 ID": card["id"],
         "label": card.get("label", ""),
-        "ontology": card.get("ontology", []),
+        # Text cell: a list is invalid in a real Base write.  Newline-joined
+        # keeps every term readable and round-trips through ``_select``.
+        "ontology": "\n".join(
+            str(term).strip() for term in (card.get("ontology") or []) if str(term).strip()
+        ),
         "annotation": card.get("annotation", ""),
         "created_at": _dt(card.get("created_at")),
         "updated_at": _dt(card.get("updated_at")),
