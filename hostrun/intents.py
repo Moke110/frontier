@@ -6,16 +6,26 @@ Every run does the same fixed order, per ADR 0005:
     feedback → resume unfinished work → maintenance (if due) → retrieval gate
 
 Intents:
-  daily        每日 08:00：处理反馈、恢复、再请求并（闸门允许时）开始一篇推送
-  feedback     每小时：只处理反馈与恢复；**不创建**检索请求
-  maintenance  每天至多一次：原文/推送库对账与配额；不删除、不创建检索请求
+  daily           每日 08:00：处理反馈、恢复、再请求并（闸门允许时）开始一篇推送
+  feedback        每小时：只处理反馈与恢复；**不创建**检索请求
+  maintenance     每天至多一次：原文/推送库对账与配额；不删除、不创建检索请求
+  listener-check  每日 09:00：只读判定监听进程健康；离线时至多拉起一次；不推送
 
 No daemon, no detached child, no OS scheduler write. If the host is off, the
 run simply does not happen; missed daily requests coalesce into one.
+
+``listener-check`` is special: it is a mechanical health probe, so it never
+takes the executor lease (a running 08:00 push must not hide the 09:00 check),
+never writes a ``scheduled_run`` row and never folds in feedback/maintenance.
+Its evidence is the ``listener_health`` install step.
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from common import append_jsonl, ensure_dir, now, read_json, today, write_json
@@ -23,9 +33,12 @@ from hostrun import executor, feedback as feedback_mod
 from hostrun.base import HostRunError, load_config
 from question_queue.store import QueueStore, REVIEW_KIND, CORRECTION_KIND
 
-INTENTS = ("daily", "feedback", "maintenance")
+INTENT_LISTENER_CHECK = "listener-check"
+INTENTS = ("daily", "feedback", "maintenance", INTENT_LISTENER_CHECK)
 MAINTENANCE_REL = Path("library") / "maintenance"
 RUNS_REL = Path("hostrun") / "runs.jsonl"
+HEARTBEAT_REL = Path("listener") / "heartbeat.json"
+DEFAULT_HEARTBEAT_STALE_SECONDS = 600
 
 PIPELINE_BRIEF = """frontier 有界运行（{intent}）：请在**当前会话**中完成一篇论文推送，只处理一篇。
 
@@ -104,6 +117,250 @@ def _brief(
         extra=extra,
         finish=FINISH_HINT.format(intent=intent),
     ).strip()
+
+
+# ------------------------------------------------------ listener health check
+# Injectable seams: tests replace these module symbols instead of touching the
+# real process table, clock or spawner.
+def _clock_now() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _default_sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _pid_alive(pid) -> bool:
+    """Whether the heartbeat's pid still names a live process."""
+    try:
+        value = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        PROCESS_SYNCHRONIZE = 0x00100000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_SYNCHRONIZE, False, value)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(value, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _age_seconds(updated_at, moment: datetime) -> int | None:
+    try:
+        updated = datetime.fromisoformat(str(updated_at))
+    except (TypeError, ValueError):
+        return None
+    if updated.tzinfo is None:
+        # The listener writes offset-aware timestamps; a naive one is read as
+        # UTC, matching install.probe_listener's convention.
+        updated = updated.replace(tzinfo=timezone.utc)
+    return max(0, int((moment - updated).total_seconds()))
+
+
+def _read_heartbeat(path: Path) -> tuple[dict | None, str]:
+    if not path.exists():
+        return None, ""
+    try:
+        payload = read_json(path)
+    except (OSError, ValueError) as exc:
+        return None, f"心跳文件不可读：{path}（{type(exc).__name__}）"
+    if not isinstance(payload, dict):
+        return None, f"心跳文件格式不正确：{path}"
+    return payload, ""
+
+
+def listener_health(
+    home: Path, *, clock=None, pid_check=None
+) -> dict:
+    """Read-only judgement: heartbeat freshness, pid liveness, last event.
+
+    No lease, no spawn, no writes.  ``online`` requires a heartbeat no older
+    than ``listener.heartbeat_stale_seconds`` (default 10 minutes) **and** a
+    live pid; anything else is ``stale``/``offline`` with named problems.
+    """
+    home = Path(home)
+    moment = (clock or _clock_now)()
+    config = load_config(home)
+    listener_config = config.get("listener") or {}
+    stale_seconds = int(
+        listener_config.get("heartbeat_stale_seconds") or DEFAULT_HEARTBEAT_STALE_SECONDS
+    )
+    path = home / HEARTBEAT_REL
+    payload, read_problem = _read_heartbeat(path)
+    problems: list[str] = []
+    evidence = {
+        "checked_at": moment.isoformat(timespec="seconds"),
+        "heartbeat_path": str(path),
+        "heartbeat_at": None,
+        "age_seconds": None,
+        "pid": None,
+        "pid_alive": False,
+        "last_event_at": None,
+        "last_success_at": None,
+        "state": "offline",
+        "action": "none",
+    }
+    if read_problem:
+        problems.append(read_problem)
+    elif payload is None:
+        problems.append(f"心跳文件不存在：{path}")
+    else:
+        updated_at = payload.get("updated_at")
+        pid = payload.get("pid")
+        age = _age_seconds(updated_at, moment)
+        alive = bool(pid_check(pid)) if pid_check is not None else _pid_alive(pid)
+        evidence.update(
+            {
+                "heartbeat_at": updated_at,
+                "age_seconds": age,
+                "pid": pid,
+                "pid_alive": alive,
+                "last_event_at": payload.get("last_event_at"),
+                "last_success_at": payload.get("last_success_at"),
+            }
+        )
+        if age is None:
+            problems.append(f"心跳时间不可解析：{updated_at!r}")
+        elif age > stale_seconds:
+            problems.append(f"心跳已过期：{age}s > {stale_seconds}s")
+            evidence["state"] = "stale"
+        elif not alive:
+            problems.append(f"心跳进程不在：pid {pid}")
+        else:
+            evidence["state"] = "online"
+    evidence["problems"] = list(problems)
+    return {
+        "ok": evidence["state"] == "online",
+        "state": evidence["state"],
+        "problems": problems,
+        "evidence": evidence,
+    }
+
+
+def _listener_start_argv(command: str) -> list[str]:
+    """Spawn argv for the recorded start script (batch files need cmd.exe)."""
+    text = str(command)
+    if os.name == "nt" and Path(text).suffix.lower() in (".cmd", ".bat"):
+        return [os.environ.get("COMSPEC") or "cmd.exe", "/c", text]
+    return [text]
+
+
+def _default_spawn(argv: list[str]):
+    """Start the recorded command detached: no inherited console, no blocking."""
+    kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    else:
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(argv, **kwargs)
+
+
+def _listener_health_note(result: dict) -> str:
+    evidence = result["evidence"]
+    if result["action"] == "restart_ok":
+        return (
+            "监听进程原本不在线；已用记录的启动命令拉起一次，"
+            f"复查在线：心跳 {evidence['age_seconds']}s，pid {evidence['pid']} 存活"
+        )
+    if result["ok"]:
+        return (
+            f"监听进程在线：心跳 {evidence['age_seconds']}s，"
+            f"pid {evidence['pid']} 存活"
+        )
+    return "监听进程不在线：" + "；".join(result["problems"])
+
+
+def _record_listener_health(home: Path, result: dict) -> None:
+    from hostrun import install
+
+    result["evidence"]["action"] = result["action"]
+    result["evidence"]["problems"] = list(result["problems"])
+    install.record(
+        home,
+        "listener_health",
+        "ok" if result["ok"] else "blocked",
+        note=_listener_health_note(result),
+        evidence=result["evidence"],
+        recheck=True,
+    )
+
+
+def run_listener_check(
+    home: Path, *, spawn=None, clock=None, sleep=None, pid_check=None
+) -> dict:
+    """One mechanical listener health check; at most one restart attempt.
+
+    Offline with a recorded ``listener.start_command``: spawn it detached once,
+    wait ``listener.recovery_recheck_seconds`` and re-check.  No retry loop, no
+    executor lease; evidence goes to the ``listener_health`` install step.
+    """
+    home = Path(home)
+    health = listener_health(home, clock=clock, pid_check=pid_check)
+    result = {
+        "ok": health["ok"],
+        "state": health["state"],
+        "problems": list(health["problems"]),
+        "action": "none",
+        "evidence": health["evidence"],
+    }
+    if result["ok"]:
+        _record_listener_health(home, result)
+        return result
+    listener_config = load_config(home).get("listener") or {}
+    start_command = str(listener_config.get("start_command") or "").strip()
+    if not start_command:
+        result["action"] = "listener_start_command_missing"
+        result["problems"].append(
+            "listener_start_command_missing：config.listener.start_command 未记录；"
+            "先运行 hostrun.cli listener install 生成启停脚本"
+        )
+        _record_listener_health(home, result)
+        return result
+    recheck_seconds = int(listener_config.get("recovery_recheck_seconds") or 30)
+    try:
+        (spawn or _default_spawn)(_listener_start_argv(start_command))
+    except Exception as exc:  # noqa: BLE001 - report it, never crash the check
+        result["action"] = "restart_failed"
+        result["problems"].append(f"启动命令执行失败：{exc}")
+        _record_listener_health(home, result)
+        return result
+    (sleep or _default_sleep)(recheck_seconds)
+    again = listener_health(home, clock=clock, pid_check=pid_check)
+    result["state"] = again["state"]
+    result["evidence"] = again["evidence"]
+    if again["ok"]:
+        result["ok"] = True
+        result["problems"] = []
+        result["action"] = "restart_ok"
+    else:
+        result["ok"] = False
+        merged: list[str] = []
+        for problem in [
+            *result["problems"],
+            *again["problems"],
+            f"重启后复查仍不在线（state={again['state']}）",
+        ]:
+            if problem not in merged:
+                merged.append(problem)
+        result["problems"] = merged
+        result["action"] = "restart_failed"
+    _record_listener_health(home, result)
+    return result
 
 
 # ------------------------------------------------------------- maintenance
@@ -234,6 +491,12 @@ def run(
     config = load_config(home, repo=Path(repo) if repo else None)
     repo_path = Path(repo or config["paths"]["repo"])
     room = host or (config.get("host") or {}).get("product") or "host"
+
+    if intent == INTENT_LISTENER_CHECK:
+        # Mechanical, read-only health probe: never takes the executor lease
+        # (a running daily push must not hide the check), never writes a
+        # ``scheduled_run`` row; its evidence is the ``listener_health`` step.
+        return run_listener_check(home)
 
     scheduled_ok = False
     if scheduled and task:
