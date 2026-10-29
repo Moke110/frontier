@@ -8,6 +8,10 @@ argv/envelope/exit-code meanings stay ``untested`` against a real host.
 from __future__ import annotations
 
 import json
+import os
+import sys
+import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -24,6 +28,18 @@ def _home(tmp_path: Path) -> Path:
     home = tmp_path / "home"
     (home / "install").mkdir(parents=True)
     (home / "listener").mkdir(parents=True)
+    (home / "install" / "recipient.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "owner": OWNER, "verified_at": "2026-10-29T08:00:00+08:00"}
+        ),
+        encoding="utf-8",
+    )
+    return home
+
+
+def _unverified_home(tmp_path: Path) -> Path:
+    """A home whose recipient record exists but was never verified (#72 item 5)."""
+    home = _home(tmp_path)
     (home / "install" / "recipient.json").write_text(
         json.dumps({"schema_version": 1, "owner": OWNER}), encoding="utf-8"
     )
@@ -241,6 +257,46 @@ def test_unknown_text_is_usage_and_group_or_other_sender_is_ignored(tmp_path):
     assert group["target"] is None and other["target"] is None
 
 
+def test_a_dm_from_an_unverified_recipient_is_ignored_without_reply_or_action(tmp_path):
+    """#72 item 5: only a recipient recorded with verified_at may command."""
+    home = _unverified_home(tmp_path)
+    sent = []
+    runs = []
+
+    for event in (
+        listener.parse_message_event(_wrapped(_event("状态"))),
+        listener.parse_message_event(_wrapped(_event("推一篇"))),
+    ):
+        decision = listener.classify_message(home, event)
+        result = listener.dispatch_message(
+            home,
+            event,
+            send=lambda target, text: sent.append((target, text)),
+            run=lambda *a, **k: runs.append("run"),
+        )
+        assert decision["action"] == "ignored"
+        assert decision["reason"] == "not_owner"
+        assert result["action"] == "ignored"
+        assert result["replied"] is False
+
+    assert sent == [] and runs == []
+
+
+def test_a_missing_recipient_record_ignores_every_dm(tmp_path):
+    home = _home(tmp_path)
+    (home / "install" / "recipient.json").unlink()
+    sent = []
+
+    result = listener.dispatch_message(
+        home,
+        listener.parse_message_event(_wrapped(_event("推一篇"))),
+        send=lambda target, text: sent.append((target, text)),
+    )
+
+    assert result["action"] == "ignored"
+    assert sent == []
+
+
 # -------------------------------------------------------------------- dispatch
 def test_dispatch_unknown_text_sends_the_fixed_usage_hint(tmp_path):
     home = _home(tmp_path)
@@ -313,28 +369,96 @@ def test_dispatch_feedback_runs_a_mechanical_poll_and_replies(tmp_path):
 
     assert result["action"] == "feedback"
     assert result["replied"] is True
-    assert runs == [("feedback", HOST, 5)]
+    assert runs == [("feedback", HOST, executor.DEFAULT_MINUTES)]
     assert sent and sent[0][0] == OWNER
 
 
-def test_dispatch_push_command_goes_through_the_derived_run(monkeypatch, tmp_path):
+def test_dispatch_push_command_starts_the_derived_run_in_the_background(monkeypatch, tmp_path):
+    """#72 item 2: the event loop replies immediately and never waits."""
     home = _home(tmp_path)
     calls = []
+    sent = []
+    pending = []
 
-    def fake_derived(home, intent, **kwargs):
+    def fake_derived(home_path, intent, **kwargs):
         calls.append((intent, kwargs.get("target")))
-        return {"ok": True, "reason": "ok", "reply_text": "ok"}
+        return {"ok": True, "reason": "ok", "reply_text": "完成回执"}
 
     monkeypatch.setattr(listener, "run_derived", fake_derived)
 
     result = listener.dispatch_message(
         home,
         listener.parse_message_event(_event("推一篇")),
-        send=lambda target, text: None,
+        send=lambda target, text: sent.append((target, text)),
+        start_worker=pending.append,
     )
 
     assert result["action"] == "daily"
+    assert result["status"] == "started"
+    assert result["replied"] is True
+    assert sent and "已开始" in sent[0][1]
+    assert calls == []  # the derived run did not execute on the event-loop thread
+    assert len(pending) == 1
+
+    pending[0]()  # the daemon worker finishes the run
     assert calls == [("daily", OWNER)]
+
+
+def test_a_second_push_while_in_flight_gets_an_immediate_busy_reply(monkeypatch, tmp_path):
+    home = _home(tmp_path)
+    inflight = {}
+    pending = []
+    sent = []
+    calls = []
+
+    def fake_derived(*args, **kwargs):
+        calls.append("run")
+        return {"ok": True, "reply_text": "完成回执"}
+
+    monkeypatch.setattr(listener, "run_derived", fake_derived)
+
+    def dispatch():
+        return listener.dispatch_message(
+            home,
+            listener.parse_message_event(_event("推一篇")),
+            send=lambda target, text: sent.append((target, text)),
+            start_worker=pending.append,
+            inflight=inflight,
+        )
+
+    first = dispatch()
+    second = dispatch()
+
+    assert first["status"] == "started"
+    assert second["status"] == "busy"
+    assert "正在运行" in sent[-1][1]
+    assert len(pending) == 1 and calls == []
+
+    pending[0]()  # completion clears the in-flight flag
+    assert inflight == {}
+
+    third = dispatch()
+    assert third["status"] == "started"
+    assert len(pending) == 2
+
+
+def test_a_status_command_answers_immediately_while_a_derived_run_is_in_flight(tmp_path):
+    home = _home(tmp_path)
+    inflight = {"derived": True}
+    sent = []
+
+    result = listener.dispatch_message(
+        home,
+        listener.parse_message_event(_event("状态")),
+        send=lambda target, text: sent.append((target, text)),
+        status=lambda home_path: _status_snapshot(),
+        inflight=inflight,
+    )
+
+    assert result["action"] == "status"
+    assert result["replied"] is True
+    assert "监听" in sent[0][1]
+    assert inflight == {"derived": True}  # answering status does not disturb the run
 
 
 # -------------------------------------------------------------- status receipt
@@ -522,6 +646,76 @@ def test_serve_routes_an_owner_command_and_updates_the_event_time(tmp_path):
     assert result["heartbeat"]["last_event_at"]
 
 
+def test_serve_answers_status_and_heartbeats_while_a_derived_run_blocks(tmp_path, monkeypatch):
+    """#72 item 2: an in-flight derived run must not stall the loop."""
+    home = _home(tmp_path)
+    _config(home, listener_config={"heartbeat_seconds": 1, "feedback_poll_seconds": 1})
+    clock = FakeClock()
+    sent = []
+    feedback_runs = []
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def blocking_derived(home_path, intent, **kwargs):
+        started.set()
+        release.wait(timeout=5)
+        kwargs["send"](kwargs.get("target") or OWNER, "完成回执")
+        finished.set()
+        return {"ok": True, "reply_text": "完成回执"}
+
+    def feedback_run(home_path, intent, *, host, minutes):
+        feedback_runs.append((intent, minutes))
+        return {"ok": True, "quiet": True, "actions": []}
+
+    monkeypatch.setattr(listener, "run_derived", blocking_derived)
+    writes = []
+    original = listener.write_heartbeat
+
+    def recording(home_path, **beat):
+        writes.append(dict(beat))
+        return original(home_path, **beat)
+
+    monkeypatch.setattr(listener, "write_heartbeat", recording)
+
+    lines = {
+        0: [json.dumps(_wrapped(_event("推一篇")), ensure_ascii=False)],
+        1: [json.dumps(_wrapped(_event("状态")), ensure_ascii=False)],
+        2: [json.dumps(_wrapped(_event("推一篇")), ensure_ascii=False)],
+    }
+    consume, _calls = _starter_consumer(
+        [_ok_chunk()],
+        lines_by_call=lines,
+        on_call=lambda index, kwargs: listener.request_stop(home) if index >= 2 else None,
+    )
+
+    result = listener.serve(
+        home,
+        consume=consume,
+        run=feedback_run,
+        send=lambda target, text: sent.append((target, text)),
+        status=lambda home_path: _status_snapshot(),
+        clock=clock.clock,
+        sleep=clock.sleep,
+    )
+
+    try:
+        assert result["ok"] is True
+        assert started.wait(timeout=5) is True
+        assert finished.is_set() is False  # still in flight while status replied
+        assert len(writes) >= 2  # heartbeat kept flowing during the run
+        assert any(intent == "feedback" for intent, _minutes in feedback_runs)
+        texts = [text for _target, text in sent]
+        assert any("已开始" in text for text in texts)
+        assert any("监听" in text for text in texts)  # 状态 answered immediately
+        assert any("正在运行" in text for text in texts)  # second push got the busy reply
+    finally:
+        release.set()
+        assert finished.wait(timeout=5) is True
+
+    assert sent[-1][1] == "完成回执"
+
+
 # ------------------------------------------------------------------- backoff
 def test_transient_failures_back_off_5_15_30_60_and_cap(tmp_path, monkeypatch):
     home = _home(tmp_path)
@@ -592,6 +786,58 @@ def test_feedback_poll_skips_when_the_lease_is_held(tmp_path):
     assert executor.read_lease(home)["host"] == "other-host"
 
 
+def test_feedback_poll_leases_the_whole_run_not_just_the_poll_interval(tmp_path):
+    """#72 item 1: ``minutes`` is the lease duration, not the poll interval."""
+    home = _home(tmp_path)
+    _config(home)
+    seen = []
+
+    def run(home_path, intent, *, host, minutes):
+        seen.append(minutes)
+        return {"ok": True, "quiet": True, "actions": []}
+
+    listener.poll_feedback(home, host=HOST, run=run)
+
+    assert seen and seen[0] >= 45
+
+
+def test_feedback_poll_lease_is_configurable(tmp_path):
+    home = _home(tmp_path)
+    _config(home, listener_config={"feedback_lease_minutes": 90})
+    seen = []
+
+    listener.poll_feedback(
+        home,
+        host=HOST,
+        run=lambda home_path, intent, *, host, minutes: seen.append(minutes)
+        or {"ok": True, "quiet": True},
+    )
+
+    assert seen == [90]
+
+
+def test_a_run_older_than_the_poll_interval_still_holds_the_lease(tmp_path):
+    """A 13-minute feedback run must not let the next 5-minute tick overlap it."""
+    home = _home(tmp_path)
+    _config(home)
+    calls = []
+    started = datetime.now().astimezone() - timedelta(minutes=5)
+
+    def run(home_path, intent, *, host, minutes):
+        calls.append(minutes)
+        # A real run keeps its lease for the whole duration; this run started
+        # five minutes ago (one full poll interval) and is still going.
+        executor.acquire(home_path, host=host, minutes=minutes, at=started)
+        return {"ok": True, "quiet": True, "actions": []}
+
+    first = listener.poll_feedback(home, host=HOST, run=run)
+    second = listener.poll_feedback(home, host=HOST, run=run)
+
+    assert first["skipped"] is None
+    assert second["skipped"] == "executor_busy"
+    assert len(calls) == 1
+
+
 def test_serve_polls_feedback_on_the_configured_interval_and_stays_quiet(tmp_path):
     home = _home(tmp_path)
     _config(home, listener_config={"feedback_poll_seconds": 10})
@@ -619,7 +865,7 @@ def test_serve_polls_feedback_on_the_configured_interval_and_stays_quiet(tmp_pat
     )
 
     assert result["ok"] is True
-    assert ("feedback", HOST, 5) in runs
+    assert ("feedback", HOST, executor.DEFAULT_MINUTES) in runs
     assert sent == []
 
 
@@ -632,6 +878,23 @@ def test_derived_argv_is_the_documented_dsh_contract():
         "--prompt",
         "do the push",
     ]
+
+
+def test_derived_brief_names_the_repo_home_interpreter_and_skill():
+    """#72 item 4: ADR 0008 §5's environment/skill contract is in the prompt."""
+    text = listener.derived_brief(
+        Path("D:/frontier-archive"),
+        "ORIGINAL BRIEF",
+        repo="D:/frontier",
+        python="D:/frontier-archive/.venv/Scripts/python.exe",
+    )
+
+    assert "frontier-run" in text
+    assert "D:/frontier" in text
+    assert "D:/frontier-archive" in text
+    assert "D:/frontier-archive/.venv/Scripts/python.exe" in text
+    assert "KL_HOME" in text
+    assert text.rstrip().endswith("ORIGINAL BRIEF")
 
 
 def test_record_derived_run_matches_the_runs_jsonl_schema(tmp_path):
@@ -731,6 +994,71 @@ def test_derived_run_refuses_when_the_executor_lease_is_held(tmp_path):
     assert sent
 
 
+def test_derived_run_acquires_the_lease_before_preparing_and_spawning(tmp_path):
+    """#72 item 3: prepare + spawn happen under one continuous lease."""
+    home = _home(tmp_path)
+    dsh = tmp_path / "dsh.cmd"
+    dsh.write_text("", encoding="utf-8")
+    _config(home, dsh=str(dsh))
+    clock = FakeClock()
+    seen = {}
+
+    def run(home_path, intent, *, host, minutes, lease=True):
+        seen["run_lease"] = lease
+        seen["run_state"] = executor.status(home_path)["state"]
+        return {"ok": True, "brief": "BRIEF-TEXT", "next": "finish", "actions": []}
+
+    def spawn(argv, **kwargs):
+        seen["spawn_state"] = executor.status(home)["state"]
+        return FakeProc(clock, exit_after=5.0, returncode=0)
+
+    result = listener.run_derived(
+        home,
+        "daily",
+        send=lambda target, text: None,
+        run=run,
+        spawn=spawn,
+        report=_report(),
+        clock=clock.clock,
+        sleep=clock.sleep,
+        timeout_seconds=30,
+    )
+
+    assert result["ok"] is True
+    # The inner bounded run must not take/release the listener's lease itself.
+    assert seen["run_lease"] is False
+    assert seen["run_state"] == "held"
+    assert seen["spawn_state"] == "held"
+    assert executor.status(home)["state"] == "free"
+
+
+def test_a_failed_lease_acquire_never_prepares_or_spawns(tmp_path, monkeypatch):
+    """#72 item 3: no request_push/try_start side effect without a lease."""
+    home = _home(tmp_path)
+    dsh = tmp_path / "dsh.cmd"
+    dsh.write_text("", encoding="utf-8")
+    _config(home, dsh=str(dsh))
+    prepared = []
+    monkeypatch.setattr(
+        listener.executor,
+        "acquire",
+        lambda home_path, **kwargs: {"ok": False, "reason": "executor_busy"},
+    )
+
+    result = listener.run_derived(
+        home,
+        "daily",
+        send=lambda target, text: None,
+        run=lambda home_path, intent, **kwargs: prepared.append(intent),
+        spawn=lambda *a, **k: pytest.fail("must not spawn without a lease"),
+        report=_report(),
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "executor_busy"
+    assert prepared == []
+
+
 def test_derived_daily_run_spawns_dsh_and_records_a_derived_row(tmp_path):
     home = _home(tmp_path)
     dsh = tmp_path / "dsh.cmd"
@@ -761,7 +1089,8 @@ def test_derived_daily_run_spawns_dsh_and_records_a_derived_row(tmp_path):
 
     assert result["ok"] is True
     argv, kwargs = spawns[0]
-    assert argv == list(listener.derived_argv(str(dsh), "BRIEF-TEXT"))
+    assert argv[:4] == [str(dsh), "--profile", "headless", "--prompt"]
+    assert "BRIEF-TEXT" in argv[-1] and "frontier-run" in argv[-1]
     assert kwargs["stdin"] is not None
     assert sent and "派生" in sent[0][1]
     rows = [
@@ -865,6 +1194,48 @@ def test_derived_daily_run_without_a_brief_does_not_spawn(tmp_path):
     assert result["reason"] == "no_brief"
     assert spawns == []
     assert sent and "queue busy" in sent[0][1]
+
+
+def test_derived_spawn_uses_the_repo_cwd_and_the_kl_home_environment(tmp_path, monkeypatch):
+    """#72 item 4: same repo/data-root/interpreter as the scheduled task."""
+    home = _home(tmp_path)
+    dsh = tmp_path / "dsh.cmd"
+    dsh.write_text("", encoding="utf-8")
+    _config(home, dsh=str(dsh))
+    monkeypatch.setenv("FRONTIER_TEST_MARKER", "kept")
+    clock = FakeClock()
+    spawns = []
+
+    def spawn(argv, **kwargs):
+        spawns.append((argv, kwargs))
+        return FakeProc(clock, exit_after=5.0, returncode=0)
+
+    result = listener.run_derived(
+        home,
+        "daily",
+        send=lambda target, text: None,
+        run=lambda home_path, intent, **kwargs: {
+            "ok": True,
+            "brief": "BRIEF-TEXT",
+            "next": "finish",
+            "actions": [],
+        },
+        spawn=spawn,
+        report=_report(),
+        clock=clock.clock,
+        sleep=clock.sleep,
+        timeout_seconds=30,
+    )
+
+    assert result["ok"] is True
+    argv, kwargs = spawns[0]
+    prompt = argv[-1]
+    assert "frontier-run" in prompt
+    assert str(home) in prompt
+    assert str(sys.executable) in prompt
+    assert kwargs["cwd"] == str(home)  # _config records repo == home
+    assert kwargs["env"]["KL_HOME"] == str(home)
+    assert kwargs["env"]["FRONTIER_TEST_MARKER"] == "kept"  # the rest of the env is kept
 
 
 def test_derived_feedback_run_is_mechanical_and_replies(tmp_path):

@@ -1179,7 +1179,9 @@ def _listener_status(root: Path) -> dict:
         "heartbeat_at": evidence.get("heartbeat_at"),
         "age_seconds": evidence.get("age_seconds"),
         "last_event_at": evidence.get("last_event_at"),
+        "last_event_age_seconds": evidence.get("last_event_age_seconds"),
         "last_success_at": evidence.get("last_success_at"),
+        "last_success_age_seconds": evidence.get("last_success_age_seconds"),
         "consecutive_failures": beat.get("consecutive_failures", 0),
         "heartbeat_path": evidence.get("heartbeat_path")
         or str(listener.heartbeat_path(root)),
