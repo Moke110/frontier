@@ -5,13 +5,33 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
+from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from common import home as data_home
 from common import read_json
 
 BIN = "lark-cli"
+
+# ``lark-cli event consume`` contract (docs/acceptance/README.md:30): stderr
+# carries one readiness line before events.  Only the tail of stderr is kept,
+# and no argv is echoed, so credentials never end up in an error message.
+READY_MARKER = "[event] ready"
+READY_KEY_MARKER = "ready event_key="
+STDERR_TAIL_LINES = 20
+STDERR_TAIL_CHARS = 400
+
+# Exit-code meanings observed on a real host (docs/acceptance/README.md:115).
+# ADR 0008 / decision D9: 3 is fatal, 4 and 5 are transient.
+EXIT_APP_SCOPE_NOT_APPLIED = 3
+EXIT_TRANSIENT = (4, 5)
+_EXIT_KINDS = {
+    EXIT_APP_SCOPE_NOT_APPLIED: "app_scope_not_applied",
+    4: "transient",
+    5: "token_storage_lock",
+}
 
 # A read-back proves a message is gone only through a documented not-found or
 # recalled answer.  Anything else is unverifiable and must not be reported as
@@ -27,7 +47,32 @@ _GONE_MARKERS = (
 
 
 class FeishuError(RuntimeError):
-    pass
+    """A lark-cli failure.
+
+    ``returncode`` carries the child exit code when there was one (``None`` for
+    local failures such as a stale recorded CLI path), so callers can classify
+    a consume failure instead of treating every error as fatal.
+    """
+
+    def __init__(self, message: str, *, returncode: int | None = None):
+        super().__init__(message)
+        self.returncode = returncode
+
+
+def classify_exit(returncode: int | None) -> dict:
+    """Classify one ``event consume`` exit code (ADR 0008 decision D9).
+
+    ``3`` = app/permission scope not applied: fatal, a human must fix grants.
+    ``4``/``5`` = transient (5 is the token storage lock): retry with backoff.
+    Any other non-zero code is unclassified: report it and do not invent a retry.
+    The live exit-code meanings themselves are documented, not exercised here.
+    """
+    code = 0 if returncode is None else int(returncode)
+    if code == 0:
+        return {"returncode": 0, "kind": "ok", "fatal": False, "retryable": False}
+    kind = _EXIT_KINDS.get(code, "unknown")
+    retryable = code in EXIT_TRANSIENT
+    return {"returncode": code, "kind": kind, "fatal": not retryable, "retryable": retryable}
 
 
 def _recorded_executable() -> str:
@@ -272,39 +317,290 @@ def get_message(
     return {"message_id": message_id, "present": True, "payload": payload}
 
 
+def _consume_argv(
+    event_key: str, identity: str, max_events: int, timeout: str
+) -> list[str]:
+    args = [*_cli_command(), "event", "consume", event_key, "--as", identity]
+    if max_events:
+        args += ["--max-events", str(max_events)]
+    if timeout and timeout != "0":
+        args += ["--timeout", timeout]
+    return args
+
+
+def _new_consume_state() -> dict:
+    return {
+        "pid": None,
+        "returncode": None,
+        "events": 0,
+        "ready": False,
+        "ready_event_key": None,
+        "timed_out": False,
+        "stopped": False,
+        "stderr_tail_lines": deque(maxlen=STDERR_TAIL_LINES),
+        "stderr_error": "",
+    }
+
+
+def _ready_event_key(line: str) -> str | None:
+    """The event key of a readiness line, ``""`` for a bare marker, else None."""
+    index = line.find(READY_KEY_MARKER)
+    if index >= 0:
+        return line[index + len(READY_KEY_MARKER) :].strip().split(" ", 1)[0]
+    return "" if READY_MARKER in line else None
+
+
+def _drain_stderr(
+    stderr: Any,
+    tail: deque,
+    state: dict,
+    event_key: str,
+    on_stderr: Callable[[str], Any] | None,
+    on_ready: Callable[[str], Any] | None,
+) -> None:
+    """Drain stderr for the whole run so a full pipe can never deadlock.
+
+    Runs on its own thread: stdout events keep flowing while stderr is read.
+    Only a bounded tail is retained; a callback never decides the exit result.
+    """
+    try:
+        for raw in stderr:
+            line = str(raw).rstrip("\r\n")
+            if not line:
+                continue
+            tail.append(line)
+            if on_stderr is not None:
+                on_stderr(line)
+            key = _ready_event_key(line)
+            if key is None or state["ready"]:
+                continue
+            if key and event_key and key != event_key:
+                # A marker for a different subscription is not our readiness.
+                continue
+            state["ready"] = True
+            state["ready_event_key"] = key
+            if on_ready is not None:
+                on_ready(key)
+    except Exception as exc:  # noqa: BLE001 - a dead reader must not kill consume
+        state["stderr_error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        _close(stderr)
+
+
+def _close(stream: Any) -> None:
+    if stream is None:
+        return
+    try:
+        stream.close()
+    except Exception:  # noqa: BLE001 - a closed pipe is already closed
+        pass
+
+
+def _terminate(proc: Any, *, force: bool = False) -> None:
+    try:
+        if force or proc.poll() is None:
+            proc.terminate()
+    except Exception:  # noqa: BLE001 - terminating a dead child must not hide it
+        pass
+
+
+def _wait(proc: Any, seconds: float = 5) -> None:
+    try:
+        proc.wait(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        _terminate(proc)
+        try:
+            proc.wait(timeout=seconds)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _consume_lines(
+    args: list[str],
+    *,
+    event_key: str,
+    state: dict,
+    on_ready: Callable[[str], Any] | None = None,
+    on_stderr: Callable[[str], Any] | None = None,
+    deadline_seconds: float | None = None,
+    popen: Callable[..., Any] | None = None,
+) -> Iterator[str]:
+    """Yield stripped NDJSON stdout lines while draining stderr concurrently.
+
+    ``state`` is mutated so the caller can build a result once the iterator is
+    exhausted (or closed early).  ``--max-events``/``--timeout`` bound the child
+    itself; ``deadline_seconds`` additionally kills a hung child from this side.
+    """
+    spawn = subprocess.Popen if popen is None else popen
+    # lark-cli treats stdin EOF as "shutdown"; keep the pipe open for the
+    # lifetime of the bounded chunk.
+    proc = spawn(
+        args,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    state["pid"] = getattr(proc, "pid", None)
+    if proc.stdout is None or proc.stderr is None:
+        raise FeishuError("lark-cli event consume 未提供 stdout/stderr 管道")
+
+    drain = threading.Thread(
+        target=_drain_stderr,
+        args=(
+            proc.stderr,
+            state["stderr_tail_lines"],
+            state,
+            event_key,
+            on_stderr,
+            on_ready,
+        ),
+        name="feishu-stderr",
+        daemon=True,
+    )
+    drain.start()
+
+    timer = None
+    if deadline_seconds is not None and deadline_seconds > 0:
+
+        def _expire() -> None:
+            state["timed_out"] = True
+            _terminate(proc)
+
+        timer = threading.Timer(float(deadline_seconds), _expire)
+        timer.daemon = True
+        timer.start()
+
+    try:
+        for raw in proc.stdout:
+            line = str(raw).strip()
+            if not line:
+                continue
+            state["events"] += 1
+            yield line
+    finally:
+        if timer is not None:
+            timer.cancel()
+        _close(proc.stdin)
+        if state["stopped"]:
+            # The caller walked away mid-stream; the child is still running.
+            _terminate(proc, force=True)
+        elif state["timed_out"]:
+            _terminate(proc)
+        _wait(proc)
+        state["returncode"] = proc.returncode
+        # Join after the child is done: the marker may be the last stderr line.
+        drain.join(timeout=2.0)
+        _close(proc.stdout)
+
+
+def _consume_result(state: dict) -> dict:
+    returncode = state["returncode"]
+    if state["timed_out"]:
+        ok, kind, fatal, retryable = False, "timeout", False, True
+    elif state["stopped"]:
+        ok, kind, fatal, retryable = True, "stopped", False, False
+    else:
+        classification = classify_exit(returncode)
+        kind = classification["kind"]
+        ok = kind == "ok"
+        fatal = classification["fatal"]
+        retryable = classification["retryable"]
+    tail = "\n".join(state["stderr_tail_lines"])[-STDERR_TAIL_CHARS:]
+    return {
+        "ok": ok,
+        "reason": kind,
+        "kind": kind,
+        "returncode": returncode,
+        "fatal": fatal,
+        "retryable": retryable,
+        "ready": state["ready"],
+        "ready_event_key": state["ready_event_key"],
+        "events": state["events"],
+        "stderr_tail": tail.strip(),
+        "stderr_error": state["stderr_error"],
+        "timed_out": state["timed_out"],
+        "stopped": state["stopped"],
+        "pid": state["pid"],
+    }
+
+
+def listen_events(
+    identity: str = "bot",
+    event_key: str = "im.message.receive_v1",
+    max_events: int = 0,
+    timeout: str = "30s",
+    *,
+    on_line: Callable[[str], Any] | None = None,
+    on_ready: Callable[[str], Any] | None = None,
+    on_stderr: Callable[[str], Any] | None = None,
+    deadline_seconds: float | None = None,
+    popen: Callable[..., Any] | None = None,
+) -> dict:
+    """Consume one bounded ``lark-cli event consume`` chunk (issue #63).
+
+    Reusable by the listener: ``event_key`` is configurable, ``--max-events`` /
+    ``--timeout`` bound the chunk, stderr is drained for the whole run, and the
+    ``[event] ready event_key=...`` marker is exposed as ``ready`` /
+    ``ready_event_key`` (plus ``on_ready``).  ``on_line`` receives each stripped
+    stdout line and may return ``False`` to stop early; ``deadline_seconds``
+    kills a hung child.
+
+    Never raises for a non-zero child exit; returns
+    ``{"ok", "reason", "kind", "returncode", "fatal", "retryable", "ready",
+    "ready_event_key", "events", "stderr_tail", "stderr_error", "timed_out",
+    "stopped", "pid"}`` where ``kind`` comes from :func:`classify_exit`.
+    Live lark-cli argv/marker/exit meanings are documented but ``untested``
+    here: tests inject ``popen``.
+    """
+    state = _new_consume_state()
+    args = _consume_argv(event_key, identity, max_events, timeout)
+    lines = _consume_lines(
+        args,
+        event_key=event_key,
+        state=state,
+        on_ready=on_ready,
+        on_stderr=on_stderr,
+        deadline_seconds=deadline_seconds,
+        popen=popen,
+    )
+    try:
+        for line in lines:
+            if on_line is not None and on_line(line) is False:
+                state["stopped"] = True
+                break
+    finally:
+        lines.close()
+    return _consume_result(state)
+
+
 def consume_events(
     identity: str = "bot",
     max_events: int = 0,
     timeout: str = "0",
     event_key: str = "card.action.trigger",
 ):
-    """Blocking consume, yielded as raw NDJSON lines (for `listen`)."""
-    args = [*_cli_command(), "event", "consume", event_key, "--as", identity]
-    if max_events:
-        args += ["--max-events", str(max_events)]
-    if timeout and timeout != "0":
-        args += ["--timeout", timeout]
-    # lark-cli treats stdin EOF as "shutdown"; keep the pipe open for the
-    # lifetime of the listener (systemd starts services with stdin closed).
-    proc = subprocess.Popen(
-        args,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    assert proc.stdout is not None
+    """Blocking consume, yielded as raw NDJSON lines (for `listen`).
+
+    Legacy positional contract kept for ``publisher.service.listen`` and
+    ``trigger.service.listen``.  stderr is now drained concurrently (the old
+    implementation could deadlock on a full stderr pipe) and a non-zero exit
+    raises :class:`FeishuError` with ``returncode`` attached.
+    """
+    state = _new_consume_state()
+    args = _consume_argv(event_key, identity, max_events, timeout)
+    lines = _consume_lines(args, event_key=event_key, state=state)
     try:
-        for line in proc.stdout:
-            line = line.strip()
-            if line:
-                yield line
+        yield from lines
     finally:
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-            proc.wait(timeout=5)
-    if proc.returncode not in (0, None):
-        err = (proc.stderr.read() if proc.stderr else "") or ""
-        raise FeishuError(f"event consume exited {proc.returncode}: {err.strip()[:400]}")
+        lines.close()
+    if state["returncode"] not in (0, None) and not state["stopped"]:
+        if state["timed_out"]:
+            raise FeishuError("event consume deadline exceeded", returncode=state["returncode"])
+        tail = "\n".join(state["stderr_tail_lines"])[-STDERR_TAIL_CHARS:]
+        raise FeishuError(
+            f"event consume exited {state['returncode']}: {tail.strip()}",
+            returncode=state["returncode"],
+        )
