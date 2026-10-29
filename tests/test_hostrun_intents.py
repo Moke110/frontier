@@ -27,7 +27,7 @@ def _home(tmp_path) -> Path:
     return home
 
 
-def _heartbeat(home, *, updated_at, pid=4242, last_event_at=None):
+def _heartbeat(home, *, updated_at, pid=4242, last_event_at=None, last_success_at=None):
     path = Path(home) / "listener" / "heartbeat.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -39,7 +39,7 @@ def _heartbeat(home, *, updated_at, pid=4242, last_event_at=None):
                 "updated_at": updated_at,
                 "state": "running",
                 "last_event_at": last_event_at,
-                "last_success_at": None,
+                "last_success_at": last_success_at,
                 "consecutive_failures": 0,
             },
             ensure_ascii=False,
@@ -123,6 +123,66 @@ def test_a_stale_heartbeat_is_reported_stale(tmp_path):
     assert health["state"] == "stale"
     assert health["evidence"]["age_seconds"] == 3600
     assert any("心跳" in problem or "stale" in problem for problem in health["problems"])
+
+
+def test_a_fresh_heartbeat_with_an_old_success_event_keeps_online_and_hints(tmp_path):
+    """#72 item 6: event recency is a diagnostic input, not an online rule."""
+    home = _home(tmp_path)
+    old = (CHECK_AT - timedelta(hours=2)).isoformat()
+    _heartbeat(
+        home,
+        updated_at=(CHECK_AT - timedelta(seconds=10)).isoformat(),
+        pid=4242,
+        last_event_at=old,
+        last_success_at=old,
+    )
+
+    health = intents.listener_health(
+        home, clock=lambda: CHECK_AT, pid_check=lambda pid: True
+    )
+
+    assert health["ok"] is True
+    assert health["state"] == "online"
+    assert health["evidence"]["last_event_age_seconds"] == 7200
+    assert health["evidence"]["last_success_age_seconds"] == 7200
+    assert any("久无成功事件" in problem for problem in health["problems"])
+
+
+def test_a_recent_success_event_adds_no_staleness_hint(tmp_path):
+    home = _home(tmp_path)
+    _heartbeat(
+        home,
+        updated_at=(CHECK_AT - timedelta(seconds=10)).isoformat(),
+        pid=4242,
+        last_event_at=(CHECK_AT - timedelta(minutes=1)).isoformat(),
+        last_success_at=(CHECK_AT - timedelta(seconds=20)).isoformat(),
+    )
+
+    health = intents.listener_health(
+        home, clock=lambda: CHECK_AT, pid_check=lambda pid: True
+    )
+
+    assert health["ok"] is True
+    assert health["evidence"]["last_success_age_seconds"] == 20
+    assert not any("久无成功事件" in problem for problem in health["problems"])
+
+
+def test_the_event_staleness_hint_threshold_is_configurable(tmp_path):
+    home = _home(tmp_path)
+    update_config(home, listener={"event_stale_seconds": 60})
+    _heartbeat(
+        home,
+        updated_at=(CHECK_AT - timedelta(seconds=10)).isoformat(),
+        pid=4242,
+        last_success_at=(CHECK_AT - timedelta(seconds=120)).isoformat(),
+    )
+
+    health = intents.listener_health(
+        home, clock=lambda: CHECK_AT, pid_check=lambda pid: True
+    )
+
+    assert health["state"] == "online"
+    assert any("久无成功事件" in problem for problem in health["problems"])
 
 
 def test_an_unreadable_heartbeat_is_not_online(tmp_path):
@@ -477,4 +537,50 @@ def test_heartbeat_facts_read_a_naive_timestamp_as_utc(tmp_path):
     assert facts["present"] is True
     assert facts["age_seconds"] == 60
     assert facts["state"] == "online"
+
+
+# ------------------------------------------------------------- verified owner
+def _recipient(home, payload):
+    path = Path(home) / "install" / "recipient.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def test_verified_owner_accepts_a_verified_recipient_record(tmp_path):
+    home = _home(tmp_path)
+    _recipient(
+        home,
+        {
+            "schema_version": 1,
+            "owner": "ou_ok",
+            "verified_at": "2026-10-29T08:00:00+08:00",
+            "source": "smoke.start",
+        },
+    )
+
+    assert intents.verified_owner(home) == "ou_ok"
+
+
+def test_verified_owner_rejects_unverified_or_malformed_records(tmp_path):
+    home = _home(tmp_path)
+    for payload in (
+        {"schema_version": 1, "owner": "ou_ok"},  # no verified_at
+        {"owner": "ou_ok", "verified_at": "2026-10-29T08:00:00+08:00"},  # no schema
+        {"schema_version": 0, "owner": "ou_ok", "verified_at": "2026-10-29T08:00:00+08:00"},
+        {"schema_version": 1, "owner": "", "verified_at": "2026-10-29T08:00:00+08:00"},
+        {"schema_version": 1, "owner": "ou_ok", "verified_at": ""},
+    ):
+        _recipient(home, payload)
+        assert intents.verified_owner(home) == ""
+
+
+def test_verified_owner_never_falls_back_to_the_unverified_config(tmp_path):
+    """#72 item 5: the unverified config owner is not an acceptable recipient."""
+    home = _home(tmp_path)
+    update_config(home, permissions={"owner": "ou_unverified"})
+
+    assert intents.verified_owner(home) == ""
+    # The legacy helper keeps its old fallback for existing callers.
+    assert intents._owner(home) == "ou_unverified"
+
 

@@ -76,12 +76,16 @@ def _runlog(home: Path, row: dict) -> None:
 
 
 def owner(home: Path) -> str:
-    """The verified recipient, kept out of the install report/config.
+    """The recipient the legacy callers resolve, kept out of the install report.
 
     ``install/recipient.json`` is the current source (written by ``smoke start``).
     The config fallback is read-only for pre-existing installs; it is never
     copied into a report. Public so the listener can route replies and apply the
     DM allow-list without a private bridge.
+
+    This helper does **not** prove verification; the listener's DM allow-list
+    uses :func:`verified_owner` (ADR 0008 §3), while existing callers keep the
+    old behaviour.
     """
     recipient = read_json(Path(home) / "install" / "recipient.json") or {}
     owner_id = str(recipient.get("owner") or "")
@@ -93,6 +97,31 @@ def owner(home: Path) -> str:
 
 #: Backwards-compatible private alias (existing callers and tests use it).
 _owner = owner
+
+
+def verified_owner(home: Path) -> str:
+    """The owner recorded by a real verification, or ``""`` (ADR 0008 §3).
+
+    Only ``install/recipient.json`` counts, and it must carry a positive
+    ``schema_version``, a non-empty ``owner`` and a non-empty ``verified_at``
+    (the shape ``smoke start`` writes).  There is deliberately no fallback to
+    ``config.permissions.owner``: an unverified recipient may not command the
+    listener, and a missing record means log-and-ignore.
+    """
+    payload = read_json(Path(home) / "install" / "recipient.json") or {}
+    if not isinstance(payload, dict):
+        return ""
+    try:
+        schema_version = int(payload.get("schema_version"))
+    except (TypeError, ValueError):
+        return ""
+    if schema_version < 1:
+        return ""
+    owner_id = str(payload.get("owner") or "").strip()
+    verified_at = str(payload.get("verified_at") or "").strip()
+    if not owner_id or not verified_at:
+        return ""
+    return owner_id
 
 
 def _brief(
@@ -166,6 +195,13 @@ def listener_health(
     anything else is ``stale``/``offline`` with named problems.  Freshness and
     pid liveness come from ``listener.heartbeat_facts``/``listener.pid_alive``,
     the same helpers the install probe and ``listener stop`` use.
+
+    ADR 0008 §6 also names "最近一次成功事件时间": it is reported as
+    ``last_event_age_seconds``/``last_success_age_seconds`` and, when the
+    heartbeat is fresh but no successful event has been seen for
+    ``listener.event_stale_seconds`` (default 1 h), adds a diagnostic problem
+    hint.  The online rule and the recovery behaviour stay exactly
+    "fresh heartbeat + live pid".
     """
     from hostrun import listener
 
@@ -177,6 +213,9 @@ def listener_health(
         listener_config.get("heartbeat_stale_seconds")
         or listener.DEFAULT_HEARTBEAT_STALE_SECONDS
     )
+    event_stale_seconds = int(
+        listener_config.get("event_stale_seconds") or listener.DEFAULT_EVENT_STALE_SECONDS
+    )
     facts = listener.heartbeat_facts(home, moment=moment, stale_seconds=stale_seconds)
     problems: list[str] = []
     evidence = {
@@ -187,7 +226,9 @@ def listener_health(
         "pid": None,
         "pid_alive": False,
         "last_event_at": None,
+        "last_event_age_seconds": None,
         "last_success_at": None,
+        "last_success_age_seconds": None,
         "state": "offline",
         "action": "none",
     }
@@ -201,6 +242,8 @@ def listener_health(
         pid = facts["pid"]
         age = facts["age_seconds"]
         alive = bool(pid_check(pid)) if pid_check is not None else _pid_alive(pid)
+        last_event_age = listener._age_seconds(payload.get("last_event_at"), moment)
+        last_success_age = listener._age_seconds(payload.get("last_success_at"), moment)
         evidence.update(
             {
                 "heartbeat_at": updated_at,
@@ -208,7 +251,9 @@ def listener_health(
                 "pid": pid,
                 "pid_alive": alive,
                 "last_event_at": payload.get("last_event_at"),
+                "last_event_age_seconds": last_event_age,
                 "last_success_at": payload.get("last_success_at"),
+                "last_success_age_seconds": last_success_age,
             }
         )
         if age is None:
@@ -220,6 +265,17 @@ def listener_health(
             problems.append(f"心跳进程不在：pid {pid}")
         else:
             evidence["state"] = "online"
+            # Diagnostic only: the heartbeat is fresh and the pid is alive, so
+            # this does not affect `ok`/recovery (ADR 0008 §6 interpretation).
+            recent_success_age = (
+                last_success_age if last_success_age is not None else last_event_age
+            )
+            if recent_success_age is not None and recent_success_age > event_stale_seconds:
+                problems.append(
+                    "心跳新鲜但久无成功事件："
+                    f"最近一次成功事件 {recent_success_age}s 前"
+                    f"（阈值 {event_stale_seconds}s）"
+                )
     evidence["problems"] = list(problems)
     return {
         "ok": evidence["state"] == "online",
@@ -452,6 +508,7 @@ def run(
     scheduled: bool = False,
     task: str | None = None,
     proof: str | None = None,
+    lease: bool = True,
 ) -> dict:
     """Entry point of ``python -m hostrun.cli run --intent ...``.
 
@@ -459,6 +516,12 @@ def run(
     command.  The proof must match the task recorded by ``schedules confirm``;
     a hand-written run without it is logged as an ordinary run and can never
     feed ``scheduled_run`` acceptance.
+
+    ``lease=False`` means the caller already holds the executor lease for the
+    whole operation (the listener's derived run): this call neither acquires nor
+    releases, so the preparation and the derived child share one continuous
+    lease (ADR 0008 §5/§8).  The default keeps a standalone ``run`` owning its
+    own lease exactly as before.
     """
     if intent not in INTENTS:
         raise HostRunError(f"unknown intent: {intent}")
@@ -490,11 +553,19 @@ def run(
     if finish:
         return finish_run(home, intent, finish, host=room)
 
-    lease = executor.acquire(home, host=room, minutes=minutes)
-    if not lease.get("ok"):
-        row = {"intent": intent, "host": room, "ok": False, "reason": lease["reason"], "quiet": True}
-        _runlog(home, row)
-        return {**row, "executor": lease}
+    owns_lease = bool(lease)
+    if owns_lease:
+        acquired = executor.acquire(home, host=room, minutes=minutes)
+        if not acquired.get("ok"):
+            row = {
+                "intent": intent,
+                "host": room,
+                "ok": False,
+                "reason": acquired["reason"],
+                "quiet": True,
+            }
+            _runlog(home, row)
+            return {**row, "executor": acquired}
 
     result = {
         "schema_version": 1,
@@ -601,7 +672,8 @@ def run(
             }
             result["actions"].append("retrieval:skipped")
     finally:
-        executor.release(home, host=room, ok=result["ok"], reason=result.get("notify") or "")
+        if owns_lease:
+            executor.release(home, host=room, ok=result["ok"], reason=result.get("notify") or "")
 
     _runlog(
         home,

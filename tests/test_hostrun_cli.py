@@ -375,6 +375,24 @@ def test_listener_status_reports_a_live_pid(tmp_path, capsys):
     assert payload["age_seconds"] is not None
 
 
+def test_listener_status_reports_event_recency_and_the_no_success_hint(tmp_path, capsys):
+    """#72 item 6: ``listener status`` surfaces the successful-event age."""
+    home = tmp_path / "home"
+    home.mkdir()
+    old = (datetime.now().astimezone() - timedelta(hours=2)).isoformat()
+    listener.write_heartbeat(
+        home, pid=os.getpid(), last_event_at=old, last_success_at=old
+    )
+
+    code = cli.main(["--home", str(home), "listener", "status"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "online"  # the online rule is unchanged
+    assert payload["last_event_age_seconds"] >= 7000
+    assert any("久无成功事件" in problem for problem in payload["problems"])
+
+
 def test_listener_health_is_read_only_and_exits_by_online_state(tmp_path, monkeypatch, capsys):
     home = tmp_path / "home"
     home.mkdir()

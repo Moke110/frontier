@@ -177,6 +177,40 @@ def test_second_run_on_another_host_says_the_executor_is_busy(configured_home, o
     assert result["reason"] == "executor_busy"
 
 
+def test_run_owns_its_lease_by_default(configured_home, offline_base):
+    """#72 item 3: a standalone bounded run still acquires and releases."""
+    home = _home(configured_home, offline_base, [])
+
+    result = intents.run(home, "feedback", host="workbuddy", client=offline_base, offline=True)
+
+    assert result["ok"] is True
+    assert executor.status(home)["state"] == "free"
+
+
+def test_run_with_a_caller_held_lease_does_not_acquire_or_release(
+    configured_home, offline_base, monkeypatch
+):
+    """#72 item 3: the listener's lease survives the inner bounded run."""
+    home = _home(configured_home, offline_base, [])
+    executor.acquire(home, host="workbuddy", minutes=45)
+    calls = []
+    monkeypatch.setattr(intents.executor, "acquire", lambda *a, **k: calls.append("acquire"))
+    monkeypatch.setattr(intents.executor, "release", lambda *a, **k: calls.append("release"))
+
+    result = intents.run(
+        home,
+        "feedback",
+        host="workbuddy",
+        client=offline_base,
+        offline=True,
+        lease=False,
+    )
+
+    assert result["ok"] is True
+    assert calls == []
+    assert executor.status(home)["state"] == "held"
+
+
 # -------------------------------------------------------------------- audit
 class FakeDrive:
     """One Drive with per-folder listings, so source and push sizes stay distinct."""

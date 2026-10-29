@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +48,7 @@ DERIVED_LOCK_NAME = "derived.lock"
 
 HEARTBEAT_SCHEMA_VERSION = 1
 DEFAULT_HEARTBEAT_STALE_SECONDS = 600
+DEFAULT_EVENT_STALE_SECONDS = 3600
 # Win32 constants for the pid-liveness check (#70): a usable OpenProcess handle
 # is not proof of life; the wait result is.
 PROCESS_SYNCHRONIZE = 0x00100000
@@ -62,6 +64,9 @@ BACKOFF_SECONDS = (5, 15, 30, 60)
 COMMANDS = {"推一篇": "daily", "处理反馈": "feedback", "状态": "status"}
 USAGE_HINT = "可用命令：推一篇 / 处理反馈 / 状态"
 MESSAGE_EVENT_TYPE = "im.message.receive_v1"
+#: Immediate receipts for the background derived run (ADR 0008 §5, #72 item 2).
+DERIVED_STARTED_TEXT = "已开始派生的有界运行，完成后会再回执。"
+DERIVED_BUSY_TEXT = "正在运行一次派生任务，稍后再试。"
 
 
 # ------------------------------------------------------------------- paths
@@ -423,10 +428,14 @@ def parse_message_event(raw: object) -> dict | None:
 def classify_message(home: Path, event: dict | None, *, owner: str | None = None) -> dict:
     """Decide the action for one parsed message; pure apart from the owner read.
 
-    Only the verified owner's direct message (``chat_type == "p2p"``) is
-    actionable. Everything else is ``ignored`` with no reply and no action.
+    Only the **verified** owner's direct message (``chat_type == "p2p"``) is
+    actionable (ADR 0008 §3).  ``intents.verified_owner`` returns ``""`` for a
+    missing/unverified record, so everything is ``ignored`` with no reply and no
+    action rather than falling back to the unverified config owner.
     """
-    resolved_owner = str(owner if owner is not None else intents.owner(home)).strip()
+    resolved_owner = str(
+        owner if owner is not None else intents.verified_owner(home)
+    ).strip()
     decision = {
         "ok": True,
         "action": "ignored",
@@ -520,17 +529,27 @@ def _reply(send, target: str, text: str) -> dict:
 def poll_feedback(home: Path, *, host: str | None = None, run=None) -> dict:
     """One mechanical feedback poll; skip while another executor holds the lease.
 
+    ``minutes`` is the executor lease **duration**, not the poll interval: the
+    lease must cover a whole maintenance-shaped feedback run (observed up to
+    ~13 minutes) or the next 5-minute tick would see a free lease and start a
+    second concurrent run (ADR 0008 §8).  ``listener.feedback_lease_minutes``
+    (default 45, the bounded-run default) sizes it.
+
     Never sends a message: the listener stays quiet unless nothing changed
     (decisions D11). The explicit ``处理反馈`` command adds a receipt on top.
     """
     home = Path(home)
     run = run or intents.run
+    config = load_config(home)
     if executor.status(home).get("state") == "held":
         return {"ok": True, "skipped": "executor_busy", "quiet": True}
     if not host:
-        config = load_config(home)
         host = str((config.get("host") or {}).get("product") or "host")
-    result = run(home, "feedback", host=host, minutes=5)
+    listener_config = config.get("listener") or {}
+    lease_minutes = int(
+        listener_config.get("feedback_lease_minutes") or executor.DEFAULT_MINUTES
+    )
+    result = run(home, "feedback", host=host, minutes=lease_minutes)
     if not result.get("ok") and result.get("reason") == "executor_busy":
         return {"ok": True, "skipped": "executor_busy", "quiet": True, "run": result}
     return {
@@ -560,6 +579,27 @@ def derived_argv(dsh: str, brief: str) -> list[str]:
     return [str(dsh), "--profile", "headless", "--prompt", str(brief)]
 
 
+def derived_brief(home: Path, brief: str, *, repo: str, python: str = "") -> str:
+    """Prefix a pipeline brief with ADR 0008 §5's environment/skill contract.
+
+    A derived run must use the same repository, data root, interpreter and
+    ``frontier-run`` skill as the scheduled task.  The live
+    ``dsh --profile headless`` prompt/skill-loading behaviour is **untested**
+    against a real host; tests inject the spawner and one real derived run must
+    still be recorded before this is claimed as working.
+    """
+    lines = [
+        "frontier 派生运行（ADR 0008 §5）：必须加载 frontier-run 技能，"
+        "按其正向链路执行，只处理一篇；数据根使用环境变量 KL_HOME。",
+        f"- 仓库：{repo}",
+        f"- 数据根：{home}（KL_HOME）",
+    ]
+    if python:
+        lines.append(f"- 记录的解释器：{python}")
+    lines.extend(["", str(brief)])
+    return "\n".join(lines)
+
+
 def record_derived_run(home: Path, row: dict) -> dict:
     """Append a derived-run row to ``hostrun/runs.jsonl`` (decisions D4).
 
@@ -584,6 +624,18 @@ def _install_report(home: Path) -> dict:
 def _spawn(argv: list[str], **kwargs):
     """Derived-run spawner: canonical contract, listener's session retained."""
     return spawn_detached(argv, new_session=False, **kwargs)
+
+
+def start_daemon(target) -> threading.Thread:
+    """Run one derived run off the event loop (daemon: exit ends it).
+
+    The worker owns the single-flight ``derived.lock`` and its own receipts; the
+    main loop keeps consuming events, writing the heartbeat and polling
+    feedback meanwhile (ADR 0008 §5, #72 item 2).
+    """
+    thread = threading.Thread(target=target, name="frontier-derived", daemon=True)
+    thread.start()
+    return thread
 
 
 def _kill_child(proc) -> None:
@@ -628,6 +680,9 @@ def run_derived(
     home = Path(home)
     config = load_config(home)
     listener_config = config.get("listener") or {}
+    paths = config.get("paths") or {}
+    repo_dir = str(paths.get("repo") or home)
+    interpreter = str(paths.get("python") or "")
     host = str(host or (config.get("host") or {}).get("product") or "host")
     send = send or feishu.send_text
     run = run or intents.run
@@ -640,7 +695,7 @@ def run_derived(
         if timeout_seconds is not None
         else (listener_config.get("derived_timeout_seconds") or 1200)
     )
-    reply_target = str(target or intents.owner(home))
+    reply_target = str(target or intents.verified_owner(home))
     state: dict = {
         "ok": False,
         "reason": "",
@@ -683,55 +738,67 @@ def run_derived(
                 error=str(exc),
             )
 
-        if executor.status(home).get("state") == "held":
+        # ADR 0008 §5/§8: take the executor lease *before* preparing the run, so
+        # request_push/try_start and the spawned child share one continuous
+        # lease, and a failed acquire leaves the queue/cards untouched.  It is
+        # released in the finally below for every outcome; the inner bounded run
+        # is told `lease=False` so it never releases the listener's lease.
+        acquired = executor.acquire(home, host=host, minutes=20)
+        if not acquired.get("ok"):
             return finish("executor_busy", "执行端正忙，本次请求未启动；稍后再试。", False)
 
-        try:
-            result = run(home, intent, host=host, minutes=20)
-        except HostRunError as exc:
-            return finish("run_failed", "有界运行未能启动，请查看日志。", False, error=str(exc))
-        if not result.get("ok"):
-            reason = str(result.get("reason") or "run_failed")
-            return finish(reason, f"有界运行未成功（{reason}）。", False, run=result)
-
-        if intent != "daily" or not result.get("brief"):
-            if intent == "daily":
-                hint = str(result.get("next") or "")
-                text = "本次没有可派生的推送；" + (f"下一步：{hint}" if hint else "队列暂无新题。")
-                reason = "no_brief"
-            else:
-                text = _run_receipt(result)
-                reason = "no_derived_session"
-            record_derived_run(
-                home,
-                {
-                    "intent": intent,
-                    "host": host,
-                    "ok": True,
-                    "quiet": True,
-                    "spawned": False,
-                    "reason": reason,
-                },
-            )
-            return finish(reason, text, intent != "daily", run=result)
-
-        argv = derived_argv(dsh_path, str(result["brief"]))
-        lease = executor.acquire(home, host=host, minutes=20)
-        if not lease.get("ok"):
-            return finish("executor_busy", "执行端正忙，本次请求未启动；稍后再试。", False)
-
-        proc = None
         timed_out = False
         stopped = False
         spawn_error = ""
         returncode: int | None = None
         try:
             try:
+                result = run(home, intent, host=host, minutes=20, lease=False)
+            except HostRunError as exc:
+                return finish(
+                    "run_failed", "有界运行未能启动，请查看日志。", False, error=str(exc)
+                )
+            if not result.get("ok"):
+                reason = str(result.get("reason") or "run_failed")
+                return finish(reason, f"有界运行未成功（{reason}）。", False, run=result)
+
+            if intent != "daily" or not result.get("brief"):
+                if intent == "daily":
+                    hint = str(result.get("next") or "")
+                    text = "本次没有可派生的推送；" + (
+                        f"下一步：{hint}" if hint else "队列暂无新题。"
+                    )
+                    reason = "no_brief"
+                else:
+                    text = _run_receipt(result)
+                    reason = "no_derived_session"
+                record_derived_run(
+                    home,
+                    {
+                        "intent": intent,
+                        "host": host,
+                        "ok": True,
+                        "quiet": True,
+                        "spawned": False,
+                        "reason": reason,
+                    },
+                )
+                return finish(reason, text, intent != "daily", run=result)
+
+            argv = derived_argv(
+                dsh_path,
+                derived_brief(home, str(result["brief"]), repo=repo_dir, python=interpreter),
+            )
+            env = {**os.environ, "KL_HOME": str(home)}
+            proc = None
+            try:
                 proc = spawn(
                     argv,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    cwd=repo_dir,
+                    env=env,
                 )
             except OSError as exc:
                 spawn_error = f"{type(exc).__name__}: {exc}"
@@ -810,15 +877,21 @@ def dispatch_message(
     sleep=None,
     on_wait=None,
     should_stop=None,
+    inflight: dict | None = None,
+    start_worker=None,
 ) -> dict:
     """Execute the action chosen by :func:`classify_message`.
 
     Ignored messages do nothing (only a log line). Explicit commands reply to
-    the owner. ``推一篇`` delegates to :func:`run_derived`, which sends its own
-    receipts so the wait never blocks the event loop twice.
+    the owner. ``推一篇`` replies immediately with "已开始", then starts
+    :func:`run_derived` on a daemon worker (``start_worker`` is injectable); the
+    worker sends the completion/failure receipt itself, so the event loop never
+    waits for the child.  ``inflight`` is the loop-shared single-flight marker:
+    a second ``推一篇`` while one is running gets an immediate "正在运行" reply.
     """
     home = Path(home)
     send = send or feishu.send_text
+    start_worker = start_worker or start_daemon
     decision = classify_message(home, event)
     outcome = {**decision, "replied": False, "reply": None, "reply_text": None}
     action = decision["action"]
@@ -827,27 +900,66 @@ def dispatch_message(
         return outcome
     reply_target = str(target or decision.get("target") or "")
     if action == "daily":
-        derived = run_derived(
-            home,
-            "daily",
-            target=reply_target,
-            send=send,
-            run=run,
-            spawn=spawn,
-            report=report,
-            dsh=dsh,
-            host=host,
-            clock=clock,
-            sleep=sleep,
-            on_wait=on_wait,
-            should_stop=should_stop,
-        )
+        if inflight is not None and inflight.get("derived"):
+            log_line(home, "derived command ignored: a derived run is already in flight")
+            outcome.update(
+                status="busy",
+                replied=True,
+                reply=_reply(send, reply_target, DERIVED_BUSY_TEXT),
+                reply_text=DERIVED_BUSY_TEXT,
+            )
+            return outcome
+
+        def worker() -> None:
+            try:
+                run_derived(
+                    home,
+                    "daily",
+                    target=reply_target,
+                    send=send,
+                    run=run,
+                    spawn=spawn,
+                    report=report,
+                    dsh=dsh,
+                    host=host,
+                    clock=clock,
+                    sleep=sleep,
+                    on_wait=on_wait,
+                    should_stop=should_stop,
+                )
+            except Exception as exc:  # noqa: BLE001 - a worker must report, not crash the loop
+                log_line(home, f"derived run crashed: {type(exc).__name__}: {exc}")
+                _reply(
+                    send,
+                    reply_target,
+                    f"派生运行失败（{type(exc).__name__}），不会自动重试。",
+                )
+            finally:
+                if inflight is not None:
+                    inflight.pop("derived", None)
+
+        if inflight is not None:
+            inflight["derived"] = True
+        try:
+            start_worker(worker)
+        except Exception as exc:  # noqa: BLE001 - report a worker start failure
+            if inflight is not None:
+                inflight.pop("derived", None)
+            text = f"派生运行启动失败（{type(exc).__name__}），不会自动重试。"
+            log_line(home, f"derived worker start failed: {type(exc).__name__}: {exc}")
+            outcome.update(
+                status="start_failed",
+                replied=True,
+                reply=_reply(send, reply_target, text),
+                reply_text=text,
+            )
+            return outcome
         outcome.update(
-            status="derived",
-            derived=derived,
-            replied=bool(derived.get("reply_text")),
-            reply=derived.get("reply"),
-            reply_text=derived.get("reply_text"),
+            status="started",
+            background=True,
+            replied=True,
+            reply=_reply(send, reply_target, DERIVED_STARTED_TEXT),
+            reply_text=DERIVED_STARTED_TEXT,
         )
         return outcome
     if action == "status":
@@ -949,6 +1061,9 @@ def serve(
         events = 0
         ticks = 0
         failures = 0
+        # One in-flight derived run max (ADR 0008 §5).  The main loop keeps
+        # consuming events/heartbeating/polling while the worker runs.
+        inflight: dict = {}
 
         def maybe_heartbeat() -> None:
             nonlocal last_heartbeat
@@ -984,8 +1099,11 @@ def serve(
                 host=host,
                 clock=clock,
                 sleep=sleep,
-                on_wait=maybe_heartbeat,
+                # The worker runs off this thread; the loop itself keeps the
+                # heartbeat flowing, so no on_wait callback is needed here.
+                on_wait=None,
                 should_stop=lambda: stop_requested(home),
+                inflight=inflight,
             )
 
         try:
