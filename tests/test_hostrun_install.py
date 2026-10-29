@@ -479,6 +479,10 @@ def test_check_blocks_permissions_when_a_write_probe_is_denied(tmp_path):
         home,
         repo=Path(__file__).resolve().parents[1],
         host=_host(),
+        # Offline: never let the probe pick up a PATH ``lark-cli`` from the
+        # developer machine and run it for real. A stale explicit path is
+        # enough to exercise the write-probe branch under test.
+        lark_cli=str(tmp_path / "missing-lark-cli"),
         store_dir=store,
         writer=writer,
     )
