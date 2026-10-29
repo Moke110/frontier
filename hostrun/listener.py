@@ -67,6 +67,13 @@ MESSAGE_EVENT_TYPE = "im.message.receive_v1"
 #: Immediate receipts for the background derived run (ADR 0008 §5, #72 item 2).
 DERIVED_STARTED_TEXT = "已开始派生的有界运行，完成后会再回执。"
 DERIVED_BUSY_TEXT = "正在运行一次派生任务，稍后再试。"
+#: Lease for one derived run (prepare + child wait); renewed while the child runs.
+DERIVED_LEASE_MINUTES = 20
+#: Immediate receipts for the background feedback poll (#73).
+FEEDBACK_STARTED_TEXT = "已开始处理反馈，完成后会再回执。"
+FEEDBACK_BUSY_TEXT = "正在处理反馈，稍后再试。"
+#: Worker appends and the loop's own appends must never interleave (#73).
+LOG_LOCK = threading.Lock()
 
 
 # ------------------------------------------------------------------- paths
@@ -92,24 +99,26 @@ def derived_lock_path(home: Path) -> Path:
 
 # ----------------------------------------------------------------- logging
 def log_line(home: Path, message: str, *, at: str | None = None) -> str:
-    """Append one rolling log line; logging never takes the listener down."""
+    """Append one rolling log line; logging never takes the listener down.
+
+    ``LOG_LOCK`` serialises rotation + the single append, so a worker thread and
+    the main loop cannot interleave or truncate each other's lines (#73).
+    """
     home = Path(home)
     path = log_path(home)
     ensure_dir(path.parent)
-    try:
-        if path.exists() and path.stat().st_size >= LOG_MAX_BYTES:
-            backup = listener_dir(home) / LOG_BACKUP_NAME
-            try:
-                backup.unlink()
-            except FileNotFoundError:
-                pass
-            path.replace(backup)
-    except OSError:
-        pass
     line = f"{at or now()} {str(message).rstrip()}\n"
     try:
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(line)
+        with LOG_LOCK:
+            if path.exists() and path.stat().st_size >= LOG_MAX_BYTES:
+                backup = listener_dir(home) / LOG_BACKUP_NAME
+                try:
+                    backup.unlink()
+                except FileNotFoundError:
+                    pass
+                path.replace(backup)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
     except OSError:
         pass
     return line
@@ -569,6 +578,22 @@ def _feedback_receipt(polled: dict) -> str:
     return f"反馈已处理（{detail}）。"
 
 
+def _feedback_result_text(polled: dict) -> str | None:
+    """Result receipt for an explicit ``处理反馈`` worker (#73).
+
+    ``None`` means "nothing changed": the listener stays quiet, matching the
+    automatic poll (decision D11).  Skips and failures are always reported.
+    """
+    if polled.get("skipped"):
+        return "执行端正忙，本轮反馈轮询已跳过。"
+    result = polled.get("run") or {}
+    if not polled.get("ok", True):
+        return f"反馈处理失败（{result.get('reason') or 'failed'}）。"
+    if polled.get("quiet"):
+        return None
+    return _feedback_receipt(polled)
+
+
 # ------------------------------------------------------------ derived runs
 def derived_argv(dsh: str, brief: str) -> list[str]:
     """The recorded-``dsh`` argv for one bounded host run (decisions D5).
@@ -651,6 +676,20 @@ def _run_receipt(result: dict) -> str:
     if actions:
         return "有界运行已完成（" + "，".join(actions) + "）。"
     return "有界运行已完成。"
+
+
+def _renew_derived_lease(home: Path, *, host: str) -> None:
+    """Extend the derived run's executor lease (#73 follow-up).
+
+    The initial ``DERIVED_LEASE_MINUTES`` window must cover the *prepare* step
+    (feedback/maintenance/retrieval can take minutes) plus the child wait (up to
+    ``derived_timeout_seconds``).  Renewing before the spawn and on every wait
+    tick keeps the same host as the lease holder, so no other host can take over
+    mid-run.  A failed renewal is logged, never raised.
+    """
+    outcome = executor.heartbeat(home, host=host, minutes=DERIVED_LEASE_MINUTES)
+    if not outcome.get("ok"):
+        log_line(home, f"derived lease renewal failed: {outcome.get('reason')}")
 
 
 def run_derived(
@@ -743,7 +782,7 @@ def run_derived(
         # lease, and a failed acquire leaves the queue/cards untouched.  It is
         # released in the finally below for every outcome; the inner bounded run
         # is told `lease=False` so it never releases the listener's lease.
-        acquired = executor.acquire(home, host=host, minutes=20)
+        acquired = executor.acquire(home, host=host, minutes=DERIVED_LEASE_MINUTES)
         if not acquired.get("ok"):
             return finish("executor_busy", "执行端正忙，本次请求未启动；稍后再试。", False)
 
@@ -790,6 +829,10 @@ def run_derived(
                 derived_brief(home, str(result["brief"]), repo=repo_dir, python=interpreter),
             )
             env = {**os.environ, "KL_HOME": str(home)}
+            # The prepare step above may itself have consumed minutes; renew the
+            # lease before the child starts, then on every wait tick so the
+            # 20-minute window never expires mid-run (#73 follow-up).
+            _renew_derived_lease(home, host=host)
             proc = None
             try:
                 proc = spawn(
@@ -814,6 +857,7 @@ def run_derived(
                         _kill_child(proc)
                         break
                     sleep(POLL_INTERVAL_SECONDS)
+                    _renew_derived_lease(home, host=host)
                     if on_wait is not None:
                         on_wait()
                 returncode = proc.poll()
@@ -940,6 +984,7 @@ def dispatch_message(
 
         if inflight is not None:
             inflight["derived"] = True
+        started = _reply(send, reply_target, DERIVED_STARTED_TEXT)
         try:
             start_worker(worker)
         except Exception as exc:  # noqa: BLE001 - report a worker start failure
@@ -958,14 +1003,68 @@ def dispatch_message(
             status="started",
             background=True,
             replied=True,
-            reply=_reply(send, reply_target, DERIVED_STARTED_TEXT),
+            reply=started,
             reply_text=DERIVED_STARTED_TEXT,
+        )
+        return outcome
+    if action == "feedback":
+        # #73: the mechanical poll runs ~13 minutes on a bad day, so it must not
+        # run on the event loop.  Reply "已开始", then let the worker send the
+        # result receipt (changes/failure/skip only; silent when nothing changed).
+        if inflight is not None and inflight.get("feedback"):
+            log_line(home, "feedback command ignored: a poll is already in flight")
+            outcome.update(
+                status="busy",
+                replied=True,
+                reply=_reply(send, reply_target, FEEDBACK_BUSY_TEXT),
+                reply_text=FEEDBACK_BUSY_TEXT,
+            )
+            return outcome
+
+        def feedback_worker() -> None:
+            try:
+                polled = poll_feedback(home, host=host, run=run)
+                text = _feedback_result_text(polled)
+                if text:
+                    _reply(send, reply_target, text)
+            except Exception as exc:  # noqa: BLE001 - a worker must report, not crash the loop
+                log_line(home, f"feedback poll crashed: {type(exc).__name__}: {exc}")
+                _reply(
+                    send,
+                    reply_target,
+                    f"反馈处理失败（{type(exc).__name__}），稍后再试。",
+                )
+            finally:
+                if inflight is not None:
+                    inflight.pop("feedback", None)
+
+        if inflight is not None:
+            inflight["feedback"] = True
+        started = _reply(send, reply_target, FEEDBACK_STARTED_TEXT)
+        try:
+            start_worker(feedback_worker)
+        except Exception as exc:  # noqa: BLE001 - report a worker start failure
+            if inflight is not None:
+                inflight.pop("feedback", None)
+            text = f"反馈处理启动失败（{type(exc).__name__}），稍后再试。"
+            log_line(home, f"feedback worker start failed: {type(exc).__name__}: {exc}")
+            outcome.update(
+                status="start_failed",
+                replied=True,
+                reply=_reply(send, reply_target, text),
+                reply_text=text,
+            )
+            return outcome
+        outcome.update(
+            status="started",
+            background=True,
+            replied=True,
+            reply=started,
+            reply_text=FEEDBACK_STARTED_TEXT,
         )
         return outcome
     if action == "status":
         text = status_text(status_snapshot(home, status=status))
-    elif action == "feedback":
-        text = _feedback_receipt(poll_feedback(home, host=host, run=run))
     else:
         text = USAGE_HINT
     reply = _reply(send, reply_target, text)
@@ -1009,12 +1108,16 @@ def serve(
     clock=None,
     sleep=None,
     set_title=None,
+    start_worker=None,
 ) -> dict:
     """Run the foreground listener loop until stop sentinel / fatal failure.
 
-    Every dependency is injectable for offline tests. Returns a summary dict;
-    ``ok=False`` from exit code 3 (permission scope) or another fatal consume
-    failure, and ``{"reason": "already_running"}`` when the lock is held.
+    Every dependency is injectable for offline tests.  Derived runs and feedback
+    polls execute on daemon workers (``start_worker``) so the loop keeps
+    consuming events, heartbeating and answering ``状态`` (ADR 0008 §4/§5, #73).
+    Returns a summary dict; ``ok=False`` from exit code 3 (permission scope) or
+    another fatal consume failure, and ``{"reason": "already_running"}`` when the
+    lock is held.
     """
     home = Path(home)
     config = load_config(home)
@@ -1031,6 +1134,7 @@ def serve(
     clock = clock or time.monotonic
     sleep = sleep or time.sleep
     title_setter = set_title or set_console_title
+    start_worker = start_worker or start_daemon
 
     ensure_dir(listener_dir(home))
     with file_lock(lock_path(home), blocking=False) as acquired:
@@ -1104,6 +1208,7 @@ def serve(
                 on_wait=None,
                 should_stop=lambda: stop_requested(home),
                 inflight=inflight,
+                start_worker=start_worker,
             )
 
         try:
@@ -1179,10 +1284,38 @@ def serve(
                     write_beat()
                     last_heartbeat = clock()
                 if clock() - last_feedback >= feedback_seconds:
-                    polled = poll_feedback(home, host=host, run=run)
                     last_feedback = clock()
-                    if polled.get("skipped"):
-                        log_line(home, f"feedback poll skipped ({polled['skipped']})")
+                    if inflight.get("feedback"):
+                        log_line(home, "feedback poll skipped (already in flight)")
+                    else:
+                        # #73: schedule the poll on a worker; the loop keeps
+                        # consuming events, beating the heartbeat and answering.
+                        inflight["feedback"] = True
+
+                        def automatic_feedback_poll() -> None:
+                            try:
+                                polled = poll_feedback(home, host=host, run=run)
+                                if polled.get("skipped"):
+                                    log_line(
+                                        home,
+                                        f"feedback poll skipped ({polled['skipped']})",
+                                    )
+                            except Exception as exc:  # noqa: BLE001 - never raise into serve
+                                log_line(
+                                    home,
+                                    f"feedback poll crashed: {type(exc).__name__}: {exc}",
+                                )
+                            finally:
+                                inflight.pop("feedback", None)
+
+                        try:
+                            start_worker(automatic_feedback_poll)
+                        except Exception as exc:  # noqa: BLE001 - report, keep looping
+                            inflight.pop("feedback", None)
+                            log_line(
+                                home,
+                                f"feedback worker start failed: {type(exc).__name__}: {exc}",
+                            )
                 sleep(TICK_PAUSE_SECONDS)
         finally:
             log_line(home, "listener stopped")

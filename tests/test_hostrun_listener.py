@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -350,27 +351,112 @@ def test_dispatch_status_sends_a_summary_receipt(tmp_path):
     assert "监听" in text and "执行端" in text and "队列" in text and "知识" in text
 
 
-def test_dispatch_feedback_runs_a_mechanical_poll_and_replies(tmp_path):
+def test_dispatch_feedback_starts_a_background_poll_and_replies_immediately(monkeypatch, tmp_path):
+    """#73: explicit 处理反馈 replies at once, then runs off the event loop."""
     home = _home(tmp_path)
     _config(home)
     sent = []
-    runs = []
+    pending = []
+    polled = []
 
-    def run(home, intent, *, host, minutes):
-        runs.append((intent, host, minutes))
-        return {"ok": True, "quiet": True, "actions": []}
+    def fake_poll(home_path, *, host=None, run=None):
+        polled.append("poll")
+        return {
+            "ok": True,
+            "skipped": None,
+            "quiet": False,
+            "run": {"ok": True, "quiet": False, "actions": ["feedback:2 processed"]},
+        }
+
+    monkeypatch.setattr(listener, "poll_feedback", fake_poll)
 
     result = listener.dispatch_message(
         home,
         listener.parse_message_event(_event("处理反馈")),
         send=lambda target, text: sent.append((target, text)),
-        run=run,
+        start_worker=pending.append,
     )
 
     assert result["action"] == "feedback"
+    assert result["status"] == "started"
     assert result["replied"] is True
-    assert runs == [("feedback", HOST, executor.DEFAULT_MINUTES)]
-    assert sent and sent[0][0] == OWNER
+    assert sent and sent[0][0] == OWNER and "已开始处理反馈" in sent[0][1]
+    assert polled == [] and len(pending) == 1  # not executed on the loop thread
+
+    pending[0]()
+    assert polled == ["poll"]
+    assert len(sent) == 2 and "反馈已处理" in sent[1][1]
+
+
+def test_dispatch_feedback_stays_silent_after_a_no_change_poll(monkeypatch, tmp_path):
+    home = _home(tmp_path)
+    _config(home)
+    sent = []
+
+    monkeypatch.setattr(
+        listener,
+        "poll_feedback",
+        lambda home_path, *, host=None, run=None: {
+            "ok": True,
+            "skipped": None,
+            "quiet": True,
+            "run": {"ok": True, "quiet": True, "actions": []},
+        },
+    )
+
+    listener.dispatch_message(
+        home,
+        listener.parse_message_event(_event("处理反馈")),
+        send=lambda target, text: sent.append((target, text)),
+        start_worker=lambda target: target(),
+    )
+
+    assert len(sent) == 1 and "已开始处理反馈" in sent[0][1]
+
+
+def test_a_second_feedback_command_while_poll_in_flight_replies_busy(tmp_path):
+    home = _home(tmp_path)
+    _config(home)
+    inflight = {"feedback": True}
+    sent = []
+    pending = []
+
+    result = listener.dispatch_message(
+        home,
+        listener.parse_message_event(_event("处理反馈")),
+        send=lambda target, text: sent.append((target, text)),
+        start_worker=pending.append,
+        inflight=inflight,
+    )
+
+    assert result["status"] == "busy"
+    assert "正在处理反馈" in sent[0][1]
+    assert pending == []
+    assert inflight == {"feedback": True}
+
+
+def test_a_feedback_worker_exception_is_reported_not_raised(monkeypatch, tmp_path):
+    home = _home(tmp_path)
+    _config(home)
+    sent = []
+
+    def exploding_poll(home_path, *, host=None, run=None):
+        raise RuntimeError("poll exploded")
+
+    monkeypatch.setattr(listener, "poll_feedback", exploding_poll)
+
+    result = listener.dispatch_message(
+        home,
+        listener.parse_message_event(_event("处理反馈")),
+        send=lambda target, text: sent.append((target, text)),
+        start_worker=lambda target: target(),
+        inflight={},
+    )
+
+    assert result["status"] == "started"
+    assert "反馈处理失败" in sent[-1][1]
+    log = (home / "listener" / "listener.log").read_text(encoding="utf-8")
+    assert "poll exploded" in log
 
 
 def test_dispatch_push_command_starts_the_derived_run_in_the_background(monkeypatch, tmp_path):
@@ -525,6 +611,28 @@ def test_log_rotates_when_it_exceeds_the_limit(tmp_path, monkeypatch):
     backup = (home / "listener" / "listener.log.1").read_text(encoding="utf-8")
     assert first in backup
     assert "second line" not in backup
+
+
+def test_log_line_is_safe_when_workers_write_concurrently(tmp_path):
+    """#73: worker log appends and the main loop's appends never interleave."""
+    home = _home(tmp_path)
+    writers = [
+        threading.Thread(
+            target=lambda tag=tag: [listener.log_line(home, f"{tag}-{index}") for index in range(25)]
+        )
+        for tag in ("t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7")
+    ]
+
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join()
+
+    lines = (home / "listener" / "listener.log").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 200
+    bodies = [line.split(" ", 1)[1] for line in lines]
+    assert all(re.fullmatch(r"t[0-7]-\d+", body) for body in bodies)
+    assert len(set(bodies)) == 200
 
 
 # ------------------------------------------------------------------ serve/lock
@@ -862,11 +970,105 @@ def test_serve_polls_feedback_on_the_configured_interval_and_stays_quiet(tmp_pat
         send=lambda target, text: sent.append((target, text)),
         clock=clock.clock,
         sleep=sleep,
+        # Run workers inline so the test observes the poll deterministically;
+        # the non-blocking behaviour has its own test below.
+        start_worker=lambda target: target(),
     )
 
     assert result["ok"] is True
     assert ("feedback", HOST, executor.DEFAULT_MINUTES) in runs
     assert sent == []
+
+
+def test_serve_answers_status_while_the_automatic_feedback_poll_blocks(tmp_path, monkeypatch):
+    """#73: the 5-min poll runs on a worker; the loop keeps serving 状态."""
+    home = _home(tmp_path)
+    _config(home, listener_config={"heartbeat_seconds": 1, "feedback_poll_seconds": 1})
+    clock = FakeClock()
+    sent = []
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    poll_calls = []
+
+    def blocking_poll(home_path, *, host=None, run=None):
+        poll_calls.append(home_path)
+        started.set()
+        release.wait(timeout=5)
+        finished.set()
+        return {"ok": True, "skipped": None, "quiet": True, "run": {}}
+
+    monkeypatch.setattr(listener, "poll_feedback", blocking_poll)
+    writes = []
+    original = listener.write_heartbeat
+
+    def recording(home_path, **beat):
+        writes.append(dict(beat))
+        return original(home_path, **beat)
+
+    monkeypatch.setattr(listener, "write_heartbeat", recording)
+
+    lines = {
+        0: [json.dumps(_wrapped(_event("状态")), ensure_ascii=False)],
+        2: [json.dumps(_wrapped(_event("处理反馈")), ensure_ascii=False)],
+    }
+    consume, _calls = _starter_consumer(
+        [_ok_chunk()],
+        lines_by_call=lines,
+        on_call=lambda index, kwargs: listener.request_stop(home) if index >= 3 else None,
+    )
+
+    result = listener.serve(
+        home,
+        consume=consume,
+        send=lambda target, text: sent.append((target, text)),
+        status=lambda home_path: _status_snapshot(),
+        clock=clock.clock,
+        sleep=clock.sleep,
+    )
+
+    try:
+        assert result["ok"] is True
+        assert started.wait(timeout=5) is True
+        assert finished.is_set() is False  # the poll is still in flight
+        assert len(poll_calls) == 1  # further intervals skip while in flight
+        assert len(writes) >= 2  # heartbeat kept flowing
+        texts = [text for _target, text in sent]
+        assert any("监听" in text for text in texts)  # 状态 answered immediately
+        assert any("正在处理反馈" in text for text in texts)  # busy reply for 处理反馈
+    finally:
+        release.set()
+        assert finished.wait(timeout=5) is True
+
+
+def test_automatic_feedback_worker_exception_does_not_kill_serve(tmp_path, monkeypatch):
+    """#73: an automatic-poll crash is logged and the loop keeps running."""
+    home = _home(tmp_path)
+    _config(home, listener_config={"feedback_poll_seconds": 1})
+    clock = FakeClock()
+
+    def exploding_poll(home_path, *, host=None, run=None):
+        raise RuntimeError("auto poll exploded")
+
+    monkeypatch.setattr(listener, "poll_feedback", exploding_poll)
+    consume, _calls = _starter_consumer([_ok_chunk()])
+    clock.on_sleep = lambda fake: listener.request_stop(home) if len(fake.sleeps) >= 3 else None
+
+    def sleep(seconds):
+        clock.sleep(5.0)
+
+    result = listener.serve(
+        home,
+        consume=consume,
+        clock=clock.clock,
+        sleep=sleep,
+        start_worker=lambda target: target(),
+    )
+
+    assert result["ok"] is True
+    assert result["reason"] == "stopped"
+    log = (home / "listener" / "listener.log").read_text(encoding="utf-8")
+    assert "auto poll exploded" in log
 
 
 # ------------------------------------------------------------- derived-run guards
@@ -1057,6 +1259,68 @@ def test_a_failed_lease_acquire_never_prepares_or_spawns(tmp_path, monkeypatch):
     assert result["ok"] is False
     assert result["reason"] == "executor_busy"
     assert prepared == []
+
+
+def test_derived_child_wait_renews_the_lease_beyond_the_initial_window(tmp_path, monkeypatch):
+    """#73 follow-up: a child wait longer than the 20-min lease keeps it held."""
+    home = _home(tmp_path)
+    dsh = tmp_path / "dsh.cmd"
+    dsh.write_text("", encoding="utf-8")
+    _config(home, dsh=str(dsh))
+    clock = FakeClock()
+    base = datetime(2026, 10, 29, 8, 0, tzinfo=timezone.utc)
+
+    def fake_now():
+        return base + timedelta(seconds=clock.value - 1000.0)
+
+    real_acquire = executor.acquire
+    real_heartbeat = executor.heartbeat
+    monkeypatch.setattr(
+        listener.executor,
+        "acquire",
+        lambda home_path, *, host, minutes=45, run_id=None, at=None: real_acquire(
+            home_path, host=host, minutes=minutes, run_id=run_id, at=fake_now()
+        ),
+    )
+    monkeypatch.setattr(
+        listener.executor,
+        "heartbeat",
+        lambda home_path, *, host, minutes=45, at=None: real_heartbeat(
+            home_path, host=host, minutes=minutes, at=fake_now()
+        ),
+    )
+    # One wait tick = 60 fake seconds, so 30 ticks cover a 30-minute child run.
+    monkeypatch.setattr(listener, "POLL_INTERVAL_SECONDS", 60.0)
+    observed = []
+
+    def on_wait():
+        observed.append(executor.status(home, at=fake_now())["state"])
+
+    def spawn(argv, **kwargs):
+        return FakeProc(clock, exit_after=30 * 60.0, returncode=0)
+
+    result = listener.run_derived(
+        home,
+        "daily",
+        send=lambda target, text: None,
+        run=lambda home_path, intent, **kwargs: {
+            "ok": True,
+            "brief": "BRIEF-TEXT",
+            "next": "finish",
+            "actions": [],
+        },
+        spawn=spawn,
+        report=_report(),
+        clock=clock.clock,
+        sleep=clock.sleep,
+        timeout_seconds=40 * 60,
+        on_wait=on_wait,
+    )
+
+    assert result["ok"] is True
+    assert len(observed) >= 30  # the wait crossed the initial 20-minute window
+    assert all(state == "held" for state in observed)
+    assert executor.status(home)["state"] == "free"
 
 
 def test_derived_daily_run_spawns_dsh_and_records_a_derived_row(tmp_path):
