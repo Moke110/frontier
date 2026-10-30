@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 from common import now, read_json
-from archive.store import is_under_review
+from archive.store import Archive, is_under_review
 from frontier.model import is_temporary_card
 from writer.model import _context
 from writer.render import inspect as inspect_pdf
@@ -113,7 +113,7 @@ def build_task(home: Path, selection: dict, date: str) -> dict:
                         }
                         for rec in (
                             read_json(p) or {}
-                            for p in sorted((home / "archive" / "raw").glob("*.json"))
+                            for p in sorted(Archive(home).raw.glob("*.json"))
                         )
                         if (
                             (rec.get("card_id") or rec.get("checkpoint_id")) == cp_id

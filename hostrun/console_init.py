@@ -1262,13 +1262,33 @@ def _step_knowledge(home: Path, *, reader, out) -> dict:
 
 
 # ------------------------------------------------------------- completion
-def _apply_archive(home: Path, code: Path, archive_value: dict) -> dict:
-    """Apply the archive confirmed in step 1: resolve, create and remember it."""
+def _apply_archive(
+    home: Path, code: Path, archive_value: dict, *, probe=probe_write
+) -> dict:
+    """Apply the archive confirmed in step 1: resolve, re-probe, create, remember."""
     path = str((archive_value or {}).get("path") or "").strip()
     if not path:
         return {"ok": True, "path": "", "note": "未记录资料目录，沿用当前解析结果"}
     try:
         resolved = layout.resolve(code=str(code), archive=path)
+        # Step 1 probed a write once; the directory can become unwritable before
+        # finalization, so re-check before the layout is persisted and the first
+        # push depends on it (S5).
+        if (archive_value or {}).get("outside_code") and not (archive_value or {}).get(
+            "default"
+        ):
+            check = probe(resolved["archive"])
+            if not check.get("ok"):
+                detail = check.get("error") or check.get("reason") or "未知原因"
+                return {
+                    "ok": False,
+                    "reason": "archive_unwritable",
+                    "path": path,
+                    "note": (
+                        f"资料目录已不可写：{resolved['archive']}（{detail}）；"
+                        "初始化未完成，可修正权限后重跑 /frontier-init。"
+                    ),
+                }
         layout.ensure(resolved)
         layout.remember(resolved)
     except (HostRunError, OSError) as exc:
@@ -1314,10 +1334,11 @@ def _finalize(
     service,
     update_kb,
     out,
+    probe=probe_write,
 ) -> dict:
     """Apply the archive, start the service, mark completion, then hand off to KB."""
     archive_value = ((state["steps"].get("archive") or {}).get("value")) or {}
-    applied = _apply_archive(home, code, archive_value)
+    applied = _apply_archive(home, code, archive_value, probe=probe)
     if not applied.get("ok"):
         return {
             "ok": False,
@@ -1474,7 +1495,11 @@ def run(
     }
 
     console_state = read_console_state(home)
-    if console_state.get("service") == "running" and not is_complete(home):
+    # US23 refuses a second init only while the *formal service* is running,
+    # i.e. after initialization completed.  A fresh install has a resident
+    # console whose service already reads "running" but nothing initialized
+    # yet; that first /frontier-init must be allowed (B1, US14/US15).
+    if console_state.get("service") == "running" and is_complete(home):
         return {
             **base,
             "ok": False,
@@ -1657,6 +1682,7 @@ def run(
         service=lifecycle,
         update_kb=update_kb,
         out=out,
+        probe=probe,
     )
     _say(out, finalized.get("text") or "")
     return {

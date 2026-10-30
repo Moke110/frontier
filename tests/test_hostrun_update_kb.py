@@ -386,6 +386,111 @@ def test_cancelling_the_directory_picker_restores_the_service(tmp_path):
     assert events == ["pause", "start"]
 
 
+def test_the_pause_covers_the_per_item_review_until_it_restores(tmp_path):
+    """S1: the scheduler must not be live during the human-paced review (US25)."""
+    source = _source(tmp_path, {"a.txt": "alpha"})
+    home = _runtime(tmp_path)
+    paper_dir = _archive(tmp_path)
+    events: list[str] = []
+    seen: dict = {}
+
+    class StatefulService(FakeService):
+        """The real Service persists the pause; mirror that for the assertion."""
+
+        def pause(self) -> dict:
+            console.write_state(home, service="paused", paused=True)
+            return super().pause()
+
+        def start(self) -> dict:
+            console.write_state(home, service="running", paused=False)
+            return super().start()
+
+    service = StatefulService(events)
+
+    def review(runtime, *, service=None):
+        seen["paused"] = console.read_state(runtime)["paused"]
+        seen["events"] = list(events)
+        service.start()
+        return {
+            "ok": True,
+            "action": "review_kb",
+            "reason": "completed",
+            "text": "审阅完成",
+            "restored": True,
+        }
+
+    def runner(runtime, **kwargs):
+        kwargs.pop("source_dir", None)
+        return update_kb.run(
+            runtime,
+            source_dir=source,
+            archive=paper_dir,
+            upload=_fake_upload(),
+            run_agent=_success_agent(),
+            **kwargs,
+        )
+
+    result = console.dispatch(
+        home,
+        "/frontier-update-kb",
+        service=service,
+        update_kb=runner,
+        review=review,
+    )
+
+    assert result["ok"] is True, result.get("text")
+    # The service was still paused when the review started, and stayed paused
+    # until the review itself restored it.
+    assert seen["paused"] is True
+    assert seen["events"] == ["pause"]
+    assert events == ["pause", "start"]
+
+
+def test_a_cancelled_read_releases_the_deferred_pause(tmp_path):
+    """S1 guard: if no review runs, the console must still restore the service."""
+    home = _runtime(tmp_path)
+    paper_dir = _archive(tmp_path)
+    events: list[str] = []
+
+    class StatefulService(FakeService):
+        def pause(self) -> dict:
+            console.write_state(home, service="paused", paused=True)
+            return super().pause()
+
+        def start(self) -> dict:
+            console.write_state(home, service="running", paused=False)
+            return super().start()
+
+    service = StatefulService(events)
+
+    def runner(runtime, **kwargs):
+        kwargs.pop("source_dir", None)
+        return update_kb.run(
+            runtime,
+            archive=paper_dir,
+            choose_directory_fn=lambda: None,
+            upload=_fake_upload(),
+            run_agent=_success_agent(),
+            **kwargs,
+        )
+
+    def review(runtime, *, service=None):  # pragma: no cover - must not run
+        raise AssertionError("a cancelled read must not enter the review")
+
+    result = console.dispatch(
+        home,
+        "/frontier-update-kb",
+        service=service,
+        update_kb=runner,
+        review=review,
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "cancelled"
+    assert events == ["pause", "start"]
+    assert console.read_state(home)["paused"] is False
+
+
 def test_a_directory_inside_the_archive_is_refused(tmp_path):
     home = _runtime(tmp_path)
     paper_dir = _archive(tmp_path)

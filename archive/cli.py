@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     layout.export(resolved)
     root = Path(resolved["runtime"])
-    store = Archive(root)
+    store = Archive(root, archive=resolved["archive"])
     try:
         if args.cmd == "init":
             emit(store.init())

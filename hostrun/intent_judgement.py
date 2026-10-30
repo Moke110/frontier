@@ -250,7 +250,7 @@ def _action_value(event: dict | None) -> dict:
 def is_confirmation_event(event: dict | None) -> bool:
     """Whether one card callback belongs to the #83 confirmation flow."""
     value = _action_value(event)
-    if value.get("kind") == CONFIRM_KIND or value.get("nonce"):
+    if value.get("kind") == CONFIRM_KIND:
         return True
     return str((event or {}).get("action_name") or "") in CONFIRM_ACTIONS
 

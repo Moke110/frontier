@@ -489,6 +489,36 @@ def _default_service(home: Path):
     return console_service.Service(Path(home))
 
 
+def _restore_service(home: Path, service) -> tuple[bool, str]:
+    """Restore the service after the review, unless the owner had paused it.
+
+    The chained ``/frontier-update-kb`` read leaves the service paused until
+    this point; restoring here — not before the review — keeps the scheduler
+    quiet for the whole human-paced review (US25).  The first-push drill is
+    started by the caller after this returns.
+    """
+    try:
+        from hostrun import console
+
+        prior_paused = bool(console.read_state(home).get("paused"))
+    except Exception:  # noqa: BLE001 - a missing console state is not "paused"
+        prior_paused = False
+    if prior_paused:
+        return False, "服务此前已暂停，保持暂停（未自动启动）。"
+    lifecycle = service or _default_service(home)
+    try:
+        start_result = lifecycle.start()
+        return bool((start_result or {}).get("ok", True)), ""
+    except Exception as exc:  # noqa: BLE001 - restore is reported, not raised
+        return False, f"恢复服务失败：{type(exc).__name__}: {exc}"
+
+
+def _review_refusal(home: Path, service, result: dict) -> dict:
+    """A review that never entered the item loop still releases the pause."""
+    restored, note = _restore_service(home, service)
+    return {**result, "restored": restored, "service_restore": note}
+
+
 # ----------------------------------------------------------------------- run
 def run(
     home: str | Path,
@@ -526,24 +556,32 @@ def run(
     except Exception:  # noqa: BLE001 - an undetectable stdin is not a TTY
         interactive = False
     if not interactive:
-        return {
-            "ok": False,
-            "action": "review_kb",
-            "reason": "not_a_tty",
-            "text": "审阅需要交互式终端；请在控制台执行该指令（非 TTY 环境已拒绝）。",
-            "counts": {"total": 0, ACCEPTED: 0, DISCARDED: 0, KEPT: 0, "remaining": 0},
-        }
+        return _review_refusal(
+            home,
+            service,
+            {
+                "ok": False,
+                "action": "review_kb",
+                "reason": "not_a_tty",
+                "text": "审阅需要交互式终端；请在控制台执行该指令（非 TTY 环境已拒绝）。",
+                "counts": {"total": 0, ACCEPTED: 0, DISCARDED: 0, KEPT: 0, "remaining": 0},
+            },
+        )
 
     payload = read_candidates(home)
     items = build_items(payload)
     if not items:
-        return {
-            "ok": False,
-            "action": "review_kb",
-            "reason": "no_candidates",
-            "text": "没有待审阅的候选；先运行 /frontier-update-kb 读取资料。",
-            "counts": {"total": 0, ACCEPTED: 0, DISCARDED: 0, KEPT: 0, "remaining": 0},
-        }
+        return _review_refusal(
+            home,
+            service,
+            {
+                "ok": False,
+                "action": "review_kb",
+                "reason": "no_candidates",
+                "text": "没有待审阅的候选；先运行 /frontier-update-kb 读取资料。",
+                "counts": {"total": 0, ACCEPTED: 0, DISCARDED: 0, KEPT: 0, "remaining": 0},
+            },
+        )
 
     store = archive if archive is not None else Archive(home)
     existing_cards = {card["id"]: card for card in store.list_cards()}
@@ -554,16 +592,20 @@ def run(
     pending = [item for item in items if item["key"] not in decided]
 
     if not pending:
-        return {
-            "ok": True,
-            "action": "review_kb",
-            "reason": "nothing_pending",
-            "text": f"全部 {counts['total']} 条候选都已审阅，无需再次决定。",
-            "counts": counts,
-            "completed": True,
-            "aborted": False,
-            "decisions": rows,
-        }
+        return _review_refusal(
+            home,
+            service,
+            {
+                "ok": True,
+                "action": "review_kb",
+                "reason": "nothing_pending",
+                "text": f"全部 {counts['total']} 条候选都已审阅，无需再次决定。",
+                "counts": counts,
+                "completed": True,
+                "aborted": False,
+                "decisions": rows,
+            },
+        )
 
     reader = key_reader or read_key
     emit(f"待审阅候选：{len(pending)} 条（全部 {counts['total']} 条）")
@@ -628,27 +670,13 @@ def run(
     )
 
     completed = not aborted and counts["remaining"] == 0
-    restored = False
-    restore_note = ""
+    # The review owns the pause bracket for the chained update-kb flow: the
+    # service restores here (after every decision is durable) and only then may
+    # the first-push drill run.  An abort restores too, without a drill.
+    restored, restore_note = _restore_service(home, service)
     first_push: dict = {}
     if completed:
-        prior_paused = False
-        try:
-            from hostrun import console
-
-            prior_paused = bool(console.read_state(home).get("paused"))
-        except Exception:  # noqa: BLE001 - a missing console state is not "paused"
-            prior_paused = False
         lifecycle = service or _default_service(home)
-        if prior_paused:
-            restore_note = "服务此前已暂停，保持暂停（未自动启动）。"
-        else:
-            try:
-                start_result = lifecycle.start()
-                restored = bool((start_result or {}).get("ok", True))
-            except Exception as exc:  # noqa: BLE001 - restore is reported, not raised
-                restored = False
-                restore_note = f"恢复服务失败：{type(exc).__name__}: {exc}"
         drill = request_push or getattr(lifecycle, "request_push", None)
         if drill is None:
             first_push = {"ok": False, "reason": "no_service"}
@@ -671,7 +699,7 @@ def run(
             f"  写入失败：{failure.get('key')}（{failure.get('reason')}）"
         )
     if aborted:
-        lines.append("审阅未完成：未决定项下次继续，服务状态保持读取后的结果。")
+        lines.append("审阅未完成：未决定项下次继续；服务已恢复，未做首次推送演练。")
     else:
         if restore_note:
             lines.append(restore_note)
@@ -685,7 +713,7 @@ def run(
             )
     lines.append(f"整批确认：{confirmation['batch_hash']}（{confirmation_path(home)}）")
 
-    ok = bool(written["failed"]) is False
+    ok = not written["failed"]
     return {
         "ok": ok,
         "action": "review_kb",

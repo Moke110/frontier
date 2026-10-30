@@ -267,6 +267,8 @@ def test_a_rerun_skips_the_completed_transport_and_does_not_resend(tmp_path):
     sender = Sender()
     run_transport(home, sender=sender, events=event_source(card_event()))
     assert len(sender.calls) == 1
+    # US23: a completed init is re-entered only while the formal service is paused.
+    console.write_state(home, service="paused", paused=True)
 
     again = Sender()
     result, rendered = run_transport(home, sender=again, events=event_source())

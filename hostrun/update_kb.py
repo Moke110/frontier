@@ -795,13 +795,16 @@ def run(
     emit=None,
     max_concurrency: int = MAX_CONCURRENCY,
     text_reader=None,
+    restore_service: bool = True,
 ) -> dict:
     """Pause, copy, shard, read (max 2), merge candidates, report unread, restore.
 
     ``source_dir`` skips the picker.  With no source but pending shards from an
     interrupted run, the previous source is reused and only the pending shards
     are read.  ``upload``/``run_agent`` are the offline seams; the defaults call
-    the live library and the agent-run adapter.
+    the live library and the agent-run adapter.  ``restore_service=False`` keeps
+    the pause in place so the chained per-item review owns the restore; the
+    console uses that to keep the scheduler quiet for the whole review (US25).
     """
     home = Path(home).expanduser().resolve()
     ensure_dir(state_dir(home))
@@ -1084,7 +1087,13 @@ def run(
         return final_result
     finally:
         try:
-            if prior_paused:
+            if not restore_service:
+                # The chained review (#90) restores immediately before its
+                # first-push drill; restoring here would reopen the scheduler
+                # during the human-paced review.
+                restore = {"ok": True, "action": "deferred", "paused": True}
+                restored = True
+            elif prior_paused:
                 # The service was already paused before this run; the first
                 # pause() call above left it that way, so do not log a second one.
                 restore = {"ok": True, "action": "pause_kept"}

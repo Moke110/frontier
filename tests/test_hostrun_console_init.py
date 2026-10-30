@@ -111,6 +111,13 @@ def record_remaining_steps(home: Path) -> None:
     console.write_state(home, knowledge_ready=False)
 
 
+def mark_initialized(home: Path) -> None:
+    """Record every init step and the completion flag (the #23 running rule)."""
+    for step_id in console_init.STEP_IDS:
+        console_init.record_step(home, step_id, {})
+    console_init.mark_complete(home, knowledge="later", archive="")
+
+
 def reader(*answers: str):
     """A line reader that yields the scripted answers then reports EOF."""
     remaining = list(answers)
@@ -162,6 +169,7 @@ def init_run(home, answers, **kwargs):
 # -------------------------------------------------------------- run guards
 def test_init_is_refused_while_the_service_is_running(tmp_path):
     home = make_home(tmp_path, service="running")
+    mark_initialized(home)
 
     result, rendered = init_run(home, [""])
 
@@ -170,8 +178,43 @@ def test_init_is_refused_while_the_service_is_running(tmp_path):
     assert "先停止服务" in result["text"]
     assert "/frontier-stop" in result["text"]
     # A refusal changes nothing and asks nothing.
-    assert not console_init.state_path(home).exists()
+    assert console_init.is_complete(home) is True
     assert rendered == ""
+
+
+def test_a_fresh_console_start_does_not_block_the_first_init(tmp_path):
+    """B1: a new install starts the console (service=running) before any init."""
+    home = make_home(tmp_path)
+    observed: dict = {}
+
+    def reader(prompt):
+        observed["state"] = console.read_state(home)
+        raise EOFError()
+
+    console.serve(
+        home,
+        isatty=lambda: True,
+        reader=reader,
+        out=io.StringIO(),
+        status=lambda repo: {},
+        set_title=lambda title: None,
+        start_worker=lambda function: None,
+    )
+    assert observed["state"]["service"] == "running"
+    assert console_init.is_complete(home) is False
+    # The console is resident again while the first /frontier-init runs.
+    console.write_state(home, service="running", paused=False)
+    record_remaining_steps(home)
+
+    class StartService:
+        def start(self) -> dict:
+            return {"ok": True, "action": "start", "service": "running"}
+
+    result, _rendered = init_run(home, ["", ""], service=StartService())
+
+    assert result["ok"] is True
+    assert result["state"]["complete"] is True
+    assert console_init.is_complete(home) is True
 
 
 def test_init_is_allowed_while_the_service_is_paused(tmp_path):
@@ -325,7 +368,7 @@ def test_a_directory_outside_the_code_directory_is_accepted_after_a_write_probe(
 
     result, _rendered = init_run(home, ["n", ""], pick_folder=lambda default: str(chosen), write_probe=probe)
 
-    assert probed == [chosen]
+    assert probed == [chosen, chosen]
     state = json.loads(console_init.state_path(home).read_text(encoding="utf-8"))
     assert state["steps"]["archive"]["value"] == {
         "path": str(chosen),
@@ -460,6 +503,9 @@ def test_a_rerun_skips_every_completed_step_and_shows_done(tmp_path):
     home = make_home(tmp_path)
     record_remaining_steps(home)
     init_run(home, ["", ""])
+    # US23: a completed init is only re-entered while the formal service is
+    # paused; a running service is refused before this skip/report path.
+    console.write_state(home, service="paused", paused=True)
 
     result, rendered = init_run(home, [])
 

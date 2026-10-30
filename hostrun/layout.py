@@ -117,6 +117,31 @@ def remembered_archive(code: str | Path) -> Path | None:
     return Path(archive).expanduser()
 
 
+def archive_for_runtime(runtime: str | Path) -> Path | None:
+    """The archive directory a runtime area's store must read and write.
+
+    This is the single lookup every consumer (``Archive``, publisher, editor,
+    trigger, library, pdf ingest) uses instead of deriving ``<runtime>/archive``
+    on its own.  Order: the explicit child-process handoff, then the layout
+    recorded for the code directory.  ``None`` means the runtime area has no
+    recorded archive yet (uninitialized install or an isolated test runtime);
+    in that case the legacy runtime-resident store under ``<runtime>/archive``
+    is still what the caller has.
+    """
+    runtime_path = Path(runtime).expanduser().resolve()
+    handed = str(os.environ.get(ENV_ARCHIVE) or "").strip()
+    if handed:
+        archive_path = Path(handed).expanduser()
+        # A resolved-but-not-yet-created archive is the handoff for a fresh
+        # command; if the runtime area still holds the legacy store and that
+        # archive was never materialized, keep reading the legacy store rather
+        # than silently hiding existing material (pre-migration installs).
+        if archive_path.is_dir() or not (runtime_path / "archive").exists():
+            return archive_path
+        return None
+    return remembered_archive(runtime_path.parent)
+
+
 def remember(resolved: dict) -> Path | None:
     """Persist the resolved layout so a custom ``--archive`` survives later runs.
 

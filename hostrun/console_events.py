@@ -343,9 +343,16 @@ def handle_message(
     log("INFO", "feishu", f"收到 owner 消息：{_preview(decision['text']) or '（空）'}")
     sender = send or feishu.send_text
     target = str(decision.get("target") or "")
+    route = operations.route_text(decision["text"])
+    outcome["route_action"] = route["action"]
     # #81 pause gate comes first: a paused service replies only the pause notice
-    # and never routes, executes or derives a run (ADR 0009 §6).
-    if _service_paused(Path(home), paused):
+    # and never routes, executes or derives a run (ADR 0009 §6).  The one
+    # exception is the exact `恢复` instruction, otherwise a Feishu pause would
+    # be unrecoverable without the console (US8/US12, S2).
+    resume_from_feishu = (
+        route["action"] == "execute" and route["operation"] == "resume"
+    )
+    if _service_paused(Path(home), paused) and not resume_from_feishu:
         log("INFO", "feishu", "服务已暂停，只回复暂停提示（不派生任何运行）")
         try:
             result = sender(target, PAUSED_TEXT)
@@ -361,9 +368,6 @@ def handle_message(
             reply_text=PAUSED_TEXT,
         )
         return outcome
-
-    route = operations.route_text(decision["text"])
-    outcome["route_action"] = route["action"]
 
     if route["action"] == "execute":
         runner = execute or operations.execute

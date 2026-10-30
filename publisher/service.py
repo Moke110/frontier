@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+from archive.store import Archive
 from common import append_jsonl, emit, now, read_json, read_jsonl, stable_id
 from hostrun import layout
 from publisher import feishu
@@ -29,7 +30,7 @@ ENABLE_APPROVALS = False
 
 
 def _push_path(home: Path, push_id: str) -> Path:
-    return Path(home) / "archive" / "pushes" / f"{push_id}.json"
+    return Archive(Path(home)).pushes / f"{push_id}.json"
 
 
 ATTEMPTS_REL = Path("publisher") / "send-attempts.jsonl"
@@ -514,7 +515,7 @@ def _duplicate_reason(home: Path, push: dict) -> dict | None:
             return {"reason": "already_sent", "push_id": push_id}
 
     papers = set(push.get("paper_ids") or [])
-    for path in sorted((home / "archive" / "pushes").glob("*.json")):
+    for path in sorted(Archive(home).pushes.glob("*.json")):
         other = read_json(path) or {}
         if other.get("push_id") == push_id:
             continue

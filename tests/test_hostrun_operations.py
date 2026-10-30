@@ -39,6 +39,9 @@ V1_INSTRUCTIONS = {
     "推一篇": "push_again",
     "处理反馈": "process_feedback",
     "状态": "status",
+    "暂停": "pause",
+    "恢复": "resume",
+    "测试飞书消息": "test_message",
 }
 
 
@@ -91,7 +94,7 @@ def test_every_operation_is_machine_readable_and_has_a_wired_executor():
         assert operations.EXECUTORS[spec["executor"]].__name__ == spec["executor"]
 
 
-def test_the_instruction_whitelist_is_the_three_v1_phrases():
+def test_the_instruction_whitelist_is_the_documented_direct_phrases():
     registry = _registry()
     assert {
         phrase: spec["operation"] for phrase, spec in registry["instructions"].items()
@@ -149,6 +152,9 @@ def test_the_contract_instruction_table_matches_the_registry():
         (" 推一篇 ", "push_again"),
         ("处理反馈", "process_feedback"),
         ("\t处理反馈  ", "process_feedback"),
+        ("暂停", "pause"),
+        ("恢复", "resume"),
+        ("测试飞书消息", "test_message"),
     ],
 )
 def test_a_whitelisted_phrase_matches_after_trim_only(text, operation):

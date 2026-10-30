@@ -196,7 +196,7 @@ def validate_evidence(store: Archive, draft: dict) -> tuple[list[str], dict]:
         if not pages:
             errors.append(f"{name}: {paper_id} has no page anchors")
             continue
-        text_path = store.root / (pages.get("text_path") or "")
+        text_path = store.material_path(pages.get("text_path") or "")
         if not text_path.exists():
             errors.append(f"{name}: {paper_id} text file is missing")
             continue

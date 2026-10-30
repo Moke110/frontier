@@ -442,7 +442,7 @@ def status_snapshot(home: Path, *, status=None) -> dict:
     gate = console_gate.knowledge_gate(Path(home))
     return {
         "console": {
-            "state": "running",
+            "state": "stopped" if state.get("service") == "stopped" else "running",
             "pid": beat.get("pid") or os.getpid(),
             "heartbeat_at": beat.get("updated_at"),
         },
@@ -472,7 +472,8 @@ def status_text(snapshot: dict) -> str:
     gate_ready = bool(gate.get("ready", True))
     gate_text = "已就绪" if gate_ready else "待初始化知识库（每日推送已阻塞）"
     lines = [
-        f"控制台：运行中（pid={console_state.get('pid')}）",
+        f"控制台：{'已停止' if console_state.get('state') == 'stopped' else '运行中'}"
+        f"（pid={console_state.get('pid')}）",
         f"服务：{'已暂停' if paused else '运行中'}",
         f"暂停：{yes(paused)}",
         f"下一次推送：{next_push}",
@@ -484,6 +485,14 @@ def status_text(snapshot: dict) -> str:
     ]
     if not gate_ready:
         lines.append(f"  下一步：{gate.get('note') or '/frontier-update-kb'}")
+    request = queue.get("request") or {}
+    last_error = str(request.get("last_error") or "")
+    if last_error and last_error != "console_shutdown":
+        lines.append(
+            f"最近一次推送失败：{last_error}"
+            f"（尝试 {request.get('attempts') or 0} 次；不会自动重试，"
+            "需要重试请执行 /frontier-push）"
+        )
     return "\n".join(lines)
 
 
@@ -678,11 +687,19 @@ def dispatch(
 
         source_arg = " ".join(parsed["args"]).strip().strip('"')
         runner = update_kb if update_kb is not None else update_kb_mod.run
+        deferred = review is not None and service is not None
         try:
+            extra = {}
+            if deferred:
+                # #90 owns the pause bracket: it restores only after the
+                # review (and before the first-push drill), so the scheduler
+                # cannot fire while the owner is still deciding (US25).
+                extra["restore_service"] = False
             outcome = runner(
                 home,
                 source_dir=source_arg or None,
                 service=service,
+                **extra,
             )
         except Exception as exc:  # noqa: BLE001 - a failed read must not kill the console
             return {
@@ -706,6 +723,19 @@ def dispatch(
                     "reason": "review_failed",
                     "text": f"逐条审阅失败：{type(exc).__name__}: {exc}",
                 }
+        # A deferred pause must never be left behind: when no review ran (read
+        # cancelled/failed/interrupted) or the review itself failed before
+        # restoring, release it here.
+        if deferred and not (
+            isinstance(review_outcome, dict) and "restored" in review_outcome
+        ):
+            if not outcome.get("paused_before"):
+                try:
+                    restored = service.start()
+                    outcome["restored"] = bool((restored or {}).get("ok", True))
+                except Exception as exc:  # noqa: BLE001 - restore is reported
+                    outcome["restored"] = False
+                    outcome["restore_error"] = f"{type(exc).__name__}: {exc}"
         text = outcome.get("text") or "知识库更新已结束。"
         if isinstance(review_outcome, dict) and review_outcome.get("text"):
             text = f"{text}\n{review_outcome['text']}"
@@ -1011,7 +1041,7 @@ def serve(
             worker = None
 
         commands = 0
-        events = 0
+        event_count = 0
         reason = "stopped"
         init_runner = init
         if init_runner is None:
@@ -1071,7 +1101,7 @@ def serve(
                     continue
                 commands += 1
                 emit_event(home, "INFO", "command", text, out=out)
-                events += 1
+                event_count += 1
                 result = dispatch(
                     home,
                     text,
@@ -1091,7 +1121,7 @@ def serve(
                 if result.get("reason"):
                     summary = f"{summary}({result['reason']})"
                 emit_event(home, level, "command", f"{text} -> {summary}", out=out)
-                events += 1
+                event_count += 1
                 # Never clobber the pause flag another command just wrote:
                 # only the lifecycle commands own ``paused``/``service``.
                 write_state(home, last_command_at=now())
@@ -1149,7 +1179,7 @@ def serve(
             "ok": True,
             "reason": reason,
             "commands": commands,
-            "events": events,
+            "events": event_count,
             "pid": os.getpid(),
             "started_at": started_at,
             "paused": bool(read_state(home).get("paused")),

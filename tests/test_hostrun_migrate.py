@@ -9,6 +9,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from archive.store import Archive
+from editor import model as editor_model
 from hostrun import archive_index, cli, layout, migration, workspace
 from conftest import cli_locations
 
@@ -230,6 +232,44 @@ def test_materials_move_to_a_separate_archive_directory(tmp_path):
     assert not (env["legacy"] / "archive" / "raw").exists()
     assert (env["code"] / layout.RUNTIME_DIRNAME / "archive" / "cards" / "card_x.json").is_file()
     assert not (env["legacy"] / "install").exists()
+
+
+def test_a_migrated_install_still_reads_raw_material_and_pushes(tmp_path):
+    """B2: the store and its consumers resolve the archive directory after migrate."""
+    env = build_legacy(tmp_path)
+    legacy = env["legacy"]
+    _write(
+        legacy / "archive" / "raw" / "p1.json",
+        {
+            "paper_id": "p1",
+            "source": "arxiv",
+            "source_id": "p1",
+            "title": "Paper one",
+            "text_path": "raw/text/p1.txt",
+        },
+    )
+    _write(
+        legacy / "archive" / "pushes" / "push1.json",
+        {"push_id": "push1", "paper_ids": ["p1"], "checkpoint_id": "card_x"},
+    )
+    _write(
+        legacy / "ratings.jsonl",
+        json.dumps({"push_id": "push1", "paper_id": "p1", "verdict": "great"}) + "\n",
+    )
+
+    result = _migrate(env)
+    runtime = env["code"] / layout.RUNTIME_DIRNAME
+
+    assert result["status"] == "migrated"
+    store = Archive(runtime)
+    assert [push["push_id"] for push in store.list_pushes()] == ["push1"]
+    assert store.get_text("p1") == "text-one"
+    assert store.raw == Path(env["legacy"]) / "originals"
+    assert store.pushes == Path(env["legacy"]) / "pushes"
+    # A consumer (ratings -> pushes -> raw) reads the migrated material too.
+    model = editor_model.fit(runtime)
+    assert model["checkpoints"]["card_x"]["n"] == 1
+    assert model["sources"]["arxiv"]["n"] == 1
 
 
 def test_migration_infers_the_legacy_home_from_the_workspace_record(tmp_path):

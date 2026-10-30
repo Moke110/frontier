@@ -92,7 +92,11 @@ checkpoints:
     proposals: []
 ```
 
-## 2. 原文 `archive/raw/<paper_id>.json`
+## 2. 原文 `<archive>/originals/<paper_id>.json`
+
+`<archive>` 是 `--archive` 解析出的资料目录；知识卡片、命题与索引仍在
+`<code>/.frontier/archive`。原文记录里的 `text_path` 沿用存储内相对路径（`raw/text/...`），
+由 `archive.store.Archive.material_path()` 映射到资料目录的 `originals/text/...`。
 
 ```json
 {
@@ -126,8 +130,8 @@ checkpoints:
 - `source_id` 回退顺序：manifest 的 `doi`（小写）→ `pmid:<pmid>` → `arxiv:<id>`（去 `arXiv:` 前缀、小写）→ `md5:<md5>`。
 - manifest 是书目与身份的唯一来源（PDF ` /Title`、印刷 DOI 不可信）；raw 记录额外保留
   `doi / pmid / pmcid / arxiv / md5 / category / pdf_path / pdf_pages / pages / year / notes`。
-- 正文：PyMuPDF `page.get_text("text")`，各页文本按 `"\n\n"` 连接写入 `raw/text/<paper_id>.txt`。
-- 页码锚点 `archive/raw/pages/<paper_id>.json`：
+- 正文：PyMuPDF `page.get_text("text")`，各页文本按 `"\n\n"` 连接写入 `originals/text/<paper_id>.txt`。
+- 页码锚点 `<archive>/originals/pages/<paper_id>.json`：
 
 ```json
 {
@@ -161,7 +165,7 @@ checkpoints:
 - draft 目录含 `cards.jsonl`、`propositions.jsonl`、`sources.jsonl`（与 #12 样张一致）。
 - 写库前先做完整校验：卡片四字段 / `ontology` ≥3 / `annotation` 含 ⛔ 与 ⚠️；
   命题 `related_knowledge` ≥2 张已知卡、`history[0].action=created` 且有 rationale、
-  每条证据 `paper_id/page/quote` 可在 `archive/raw/pages/` 锚点中定位。
+  每条证据 `paper_id/page/quote` 可在 `<archive>/originals/pages/` 锚点中定位。
 - 单篇证据命题（证据不足 2 篇独立论文）不阻断整批：记入报告的 `held`，不写 archive，留作后续批次。
 - 硬校验失败则整批不写；写库失败会回滚 `cards/` 与 `propositions/`。
 - 幂等：内容相同的卡片/命题记 `skipped`；报告在 `archive/reports/initial-build-<theme>-<ts>.json`。
@@ -194,7 +198,7 @@ checkpoints:
 }
 ```
 
-## 5. 推送 `archive/pushes/<push_id>.json`（writer → archive / publisher）
+## 5. 推送 `<archive>/pushes/<push_id>.json`（writer → archive / publisher）
 
 ```json
 {
@@ -268,7 +272,7 @@ checkpoints:
 - 每个 `<figure data-asset="…"></figure>` 必须对应 `assets` 里的一项，至少一张图；
 - `assets[].path` 是相对 push 文件的路径，不得越出 outbox；
 - `assets[].caption` 非空，`source` 只能是 `paper` 或 `generated`，渲染时会自动加「原文图 / 生成图」标记；
-- `writer render` 用固定模板把片段渲染成 PDF；`archive add-push` 会把 `assets/<push_id>/` 一并复制进 `archive/pushes/assets/`。
+- `writer render` 用固定模板把片段渲染成 PDF；`archive add-push` 会把 `assets/<push_id>/` 一并复制进 `<archive>/pushes/assets/`。
 
 ## 6. 知识卡片
 
@@ -447,7 +451,7 @@ python -m knowledge.cli ledger      # 重建文本基线
 
 ## 10.6 原文/推送库（Phase 4，见 `contracts/lark-storage.md`）
 
-自 ADR 0003 起，云盘 + Base 是原文与推送的唯一真相；`archive/raw/**`、`archive/pushes/**` 降级为本地缓存与物化视图：
+自 ADR 0003 起，云盘 + Base 是原文与推送的唯一真相；`<archive>/originals/**`、`<archive>/pushes/**` 降级为本地缓存与物化视图：
 
 ```bash
 python -m library.cli put-source --file <pdf> --paper <paper_id>
@@ -473,7 +477,7 @@ python -m library.cli decisions sync           # 提议级决定写入「决定�
 
 ```bash
 python -m question_queue.cli status
-python -m question_queue.cli enqueue --push archive/pushes/<push_id>.json
+python -m question_queue.cli enqueue --push <archive>/pushes/<push_id>.json
 python -m question_queue.cli next
 python -m question_queue.cli answer --item <item_id> --verdict great
 python -m question_queue.cli answer --item <item_id> --decision agree_all

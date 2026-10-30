@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from common import now, read_json, read_yaml
-from archive.store import is_under_review
+from archive.store import Archive, is_under_review
 from frontier.model import is_temporary_card
 
 INSTRUCTIONS = """你是检索排序器。根据每张知识卡片的 ontology / annotation 与关联命题，
@@ -58,7 +58,7 @@ def _card_context(home: Path, card: dict, weight: int) -> dict:
                     }
                 )
     archived = 0
-    raw_dir = root / "raw"
+    raw_dir = Archive(Path(home)).raw
     if raw_dir.exists():
         for path in raw_dir.glob("*.json"):
             rec = read_json(path) or {}
@@ -81,7 +81,7 @@ def _card_context(home: Path, card: dict, weight: int) -> dict:
 
 
 def _pushed_paper_ids(home: Path) -> set[str]:
-    push_dir = Path(home) / "archive" / "pushes"
+    push_dir = Archive(Path(home)).pushes
     pushed: set[str] = set()
     if push_dir.exists():
         for path in sorted(push_dir.glob("*.json")):
