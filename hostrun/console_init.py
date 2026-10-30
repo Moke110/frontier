@@ -1,7 +1,7 @@
 """Console ``/frontier-init`` step machine (ADR 0009 §7).
 
 The initialization is an ordered, resumable state machine executed inside the
-Console.  This module currently delivers four steps:
+Console.  This module delivers the seven ADR §7 steps:
 
 1. **archive directory** — confirm the default archive (``Y``/Enter) or open the
    system folder dialog (``N``); a cancelled dialog falls back to the default.
@@ -27,10 +27,28 @@ Console.  This module currently delivers four steps:
    ``install/recipient.json`` (the record the Feishu owner gate reads) and
    records the step; no click, a timeout or another person's click leaves the
    step unrecorded and offers retry/abort.
+5. **Facility naming and creation** — the three user-visible names (Base, source
+   Drive folder, push Drive folder) with Enter = default and typed input as an
+   override; table names stay fixed and are never asked.  Invalid characters and
+   duplicate names are rejected and the same name is asked again.  An existing
+   Base with the same display name triggers reuse-or-create: reuse attaches the
+   existing Base (no duplicate is created), create builds a new one.  The Base,
+   every table and the two Drive folders are created automatically and their
+   stable IDs are recorded in ``install/facilities.json`` and the step state.
+6. **Daily push time** — one daily slot in the user's local timezone, default
+   ``08:00``, validated and persisted through
+   :func:`hostrun.console_service.set_push_time` (the #81 clock, no ``schedules``
+   import), which also records the next occurrence.
+7. **Knowledge-base gate** — "初始化知识库" hands the console over to
+   ``/frontier-update-kb``; "暂不初始化" records an explicit closed gate, starts
+   the service and tells the user that the daily push is blocked until the
+   knowledge base exists.  A completed ``/frontier-update-kb`` review releases
+   the gate automatically (:mod:`hostrun.console_gate`).
 
-The remaining ADR §7 steps (facility naming, push time, knowledge-base gate) are
-registered as explicit not-yet steps owned by #87; they are shown, never silently
-skipped.
+Initialization completes by applying the archive directory confirmed in step 1
+(``layout.ensure`` + ``layout.remember``), recording a completion state, and
+starting the service; an already-complete initialization is reported without
+repeating any side effect.
 
 State lives in the code directory's runtime area at
 ``<runtime>/install/initial/state.json`` — the ``layout`` category ``init``.
@@ -58,6 +76,7 @@ import uuid
 from pathlib import Path
 
 from common import RUNTIME_DIRNAME, ensure_dir, now, read_json, write_json
+from hostrun import console_gate, console_service, facilities as facilities_mod
 from hostrun import lark, layout
 from hostrun.base import HostRunError, dsh_bin, load_config, update_config
 
@@ -119,20 +138,20 @@ STEPS = (
     },
     {
         "id": "naming",
-        "title": "设施命名",
-        "implemented": False,
+        "title": "设施命名与自动创建",
+        "implemented": True,
         "ticket": "#87",
     },
     {
         "id": "push_time",
         "title": "每日推送时刻",
-        "implemented": False,
+        "implemented": True,
         "ticket": "#87",
     },
     {
         "id": "knowledge",
         "title": "知识库初始化选择",
-        "implemented": False,
+        "implemented": True,
         "ticket": "#87",
     },
 )
@@ -151,6 +170,10 @@ def _default_state() -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
         "steps": {},
+        "complete": False,
+        "completed_at": None,
+        "knowledge": "",
+        "archive": "",
         "updated_at": None,
     }
 
@@ -1001,6 +1024,367 @@ def _step_transport(
             )
 
 
+# ------------------------------------------------- naming / facility creation
+#: The three names the user may see and change.  Table names are fixed by the
+#: knowledge contract and are deliberately never shown or asked (#87 / ADR §7).
+NAMING_PROMPTS = (
+    ("base", "Base 名称", None),
+    ("source", "原文云盘目录名", "source"),
+    ("push", "推送云盘目录名", "push"),
+)
+INVALID_NAME_TEXT = "名称不可用"
+
+
+def default_find_same_name(home: Path, name: str, cli_bin: str) -> list[dict]:
+    """Look up an existing Base by display name; a failed lookup is not a blocker."""
+    try:
+        from library.admin import LarkAdminClient
+
+        resolved = LarkAdminClient(bin=cli_bin).resolve_title(name)
+    except Exception:  # noqa: BLE001 - a lookup failure must not block creation
+        return []
+    return [dict(item) for item in ((resolved or {}).get("matches") or []) if item]
+
+
+def _naming_overrides(chosen: dict) -> dict:
+    """Empty answers mean "use the default", so they are left out of the overrides."""
+    overrides: dict = {}
+    if chosen.get("base"):
+        overrides["base"] = chosen["base"]
+    folders = {
+        key: chosen[key] for key in ("source", "push") if chosen.get(key)
+    }
+    if folders:
+        overrides["folders"] = folders
+    return overrides
+
+
+def _ask_name(reader, out, label: str, default: str, chosen: dict, key: str) -> str:
+    """One name: Enter keeps the default, text overrides; invalid input is re-asked."""
+    while True:
+        answer = _ask(reader, out, f"{label}（回车默认：{default}）：")
+        trial = {**chosen, key: answer}
+        try:
+            facilities_mod.normalize(_naming_overrides(trial))
+        except HostRunError as exc:
+            _say(out, f"{INVALID_NAME_TEXT}：{exc}；请重新输入{label}。")
+            continue
+        return answer
+
+
+def _choose_existing(matches: list[dict], *, reader, out) -> bool:
+    """Ask reuse-or-create for a same-name Base; Enter means "create"."""
+    labels = "、".join(str(item.get("name") or "") for item in matches) or "同名 Base"
+    _say(out, f"已存在 {len(matches)} 个同名 Base：{labels}。")
+    while True:
+        answer = _ask(
+            reader,
+            out,
+            "复用已有的 Base 还是新建一个？[R] 复用（不重复创建）/ [N] 新建（回车）：",
+        )
+        choice = answer.lower()
+        if choice in ("", "n", "new"):
+            return False
+        if choice in ("r", "reuse"):
+            return True
+        _say(out, "请输入 R 复用或 N 新建。")
+
+
+def _naming_value(outcome: dict, names: dict, *, reused: bool) -> dict:
+    tables = {
+        key: str((entry or {}).get("id") or "")
+        for key, entry in (outcome.get("tables") or {}).items()
+    }
+    base = outcome.get("base") or {}
+    return {
+        "names": outcome.get("names") or names,
+        "base": {
+            "token": str(base.get("token") or ""),
+            "url": str(base.get("url") or ""),
+            "name": str(base.get("name") or names.get("base") or ""),
+        },
+        "tables": tables,
+        "folders": dict(outcome.get("folders") or {}),
+        "reused": bool(reused),
+        "actions": [str(item) for item in (outcome.get("actions") or [])],
+    }
+
+
+def _step_naming(
+    home: Path,
+    *,
+    code: Path,
+    reader,
+    out,
+    find_same_name,
+    facility_create,
+    facility_attach,
+) -> dict:
+    """Ask the three names, then create (or reuse) every facility automatically."""
+    _say(out, "步骤 5/7：设施命名（表名固定，不询问；回车用默认，输入覆盖）")
+    recorded = facilities_mod.load_confirmed(home) or {}
+    defaults = facilities_mod.normalize(recorded or {})
+    chosen: dict = {}
+    for key, label, folder_key in NAMING_PROMPTS:
+        default = (
+            defaults["folders"][folder_key] if folder_key else defaults["base"]
+        )
+        chosen[key] = _ask_name(reader, out, label, default, chosen, key)
+    names = facilities_mod.normalize(_naming_overrides(chosen))
+    _say(
+        out,
+        "将创建：Base " + names["base"]
+        + "；原文目录 " + names["folders"]["source"]
+        + "；推送目录 " + names["folders"]["push"]
+        + "；表名固定不展示。",
+    )
+
+    config = load_config(Path(home))
+    cli_bin = str((config.get("paths") or {}).get("lark_cli") or "").strip() or "lark-cli"
+    matches = list((find_same_name or default_find_same_name)(home, names["base"], cli_bin) or [])
+    reuse = bool(matches) and _choose_existing(matches, reader=reader, out=out)
+
+    try:
+        if reuse:
+            match = matches[0]
+            link = str(match.get("url") or match.get("base_token") or "")
+            _say(out, f"复用已有 Base：{match.get('name') or names['base']}（只补缺失的表与目录）")
+            outcome = facility_attach(
+                home,
+                link,
+                names=names,
+                confirmed=True,
+                create_missing=True,
+                cli_bin=cli_bin,
+            )
+        else:
+            outcome = facility_create(
+                home, names=names, confirmed=True, cli_bin=cli_bin
+            )
+    except (HostRunError, OSError) as exc:
+        return {
+            "ok": False,
+            "reason": "facilities_failed",
+            "text": f"设施创建失败：{exc}；初始化停在“设施命名与自动创建”，进度已保留。",
+        }
+    if not outcome.get("ok"):
+        detail = outcome.get("note") or outcome.get("reason") or "未知原因"
+        return {
+            "ok": False,
+            "reason": "facilities_failed",
+            "text": (
+                f"设施未就绪：{detail}；初始化停在“设施命名与自动创建”，"
+                "已创建的部分会被记录并复用，重跑不会重复创建。"
+            ),
+            "outcome": outcome,
+        }
+    value = _naming_value(outcome, names, reused=bool(reuse or outcome.get("reused")))
+    record_step(
+        home,
+        "naming",
+        value,
+        note=("复用已有 Base 并补齐设施" if value["reused"] else "已自动创建设施并记录稳定 id"),
+    )
+    _say(
+        out,
+        f"[完成] 设施已就绪：{value['base']['name']}"
+        f"（{len(value['tables'])} 张表，目录 {len(value['folders'])} 个）",
+    )
+    return {"ok": True, "value": value}
+
+
+# --------------------------------------------------------------- push time
+def _step_push_time(home: Path, *, reader, out, set_push_time=None) -> dict:
+    """One daily slot in the user's local timezone, validated and persisted."""
+    setter = set_push_time or console_service.set_push_time
+    default = console_service.DEFAULT_PUSH_TIME
+    _say(out, f"步骤 6/7：每日推送时刻（用户本地时区，单一时段，默认 {default}）")
+    while True:
+        answer = _ask(reader, out, f"每日推送时刻 HH:MM（回车默认 {default}）：")
+        text = answer or default
+        result = setter(home, text)
+        if result.get("ok"):
+            value = {
+                "push_time": str(result.get("push_time") or text),
+                "next_push_at": result.get("next_push_at"),
+            }
+            record_step(home, "push_time", value, note="每日推送时刻已保存")
+            _say(
+                out,
+                f"[完成] 每日推送时刻：{value['push_time']}"
+                f"（下一次：{value['next_push_at'] or '服务暂停时不排期'}）",
+            )
+            return {"ok": True, "value": value}
+        _say(out, f"时刻不合法：{text}（要求 HH:MM，00:00–23:59）。请重新输入。")
+        if answer == "":
+            # Defensive: an invalid *default* must not loop forever.
+            return {
+                "ok": False,
+                "reason": "invalid_push_time",
+                "text": f"每日推送时刻不合法：{text}；初始化停在“每日推送时刻”，进度已保留。",
+            }
+
+
+# ----------------------------------------------------------- knowledge gate
+def _step_knowledge(home: Path, *, reader, out) -> dict:
+    """Ask whether to initialize the knowledge base now; record the gate decision."""
+    _say(out, "步骤 7/7：知识库初始化")
+    _say(
+        out,
+        "知识库是每日推送的来源；暂不初始化时服务照常运行，但每日推送会被知识库门禁挡住。",
+    )
+    while True:
+        answer = _ask(
+            reader,
+            out,
+            "现在初始化知识库（进入 /frontier-update-kb）？[Y] 是 / [N] 暂不初始化（回车）：",
+        )
+        choice = answer.lower()
+        if choice in ("", "n", "no", "2"):
+            value = {"choice": "later", "gate": "blocked", "reason": console_gate.REASON}
+            record_step(
+                home, "knowledge", value, note="暂不初始化知识库：每日推送被门禁挡住"
+            )
+            console_gate.set_knowledge_ready(home, False, source="init.later")
+            _say(out, "[完成] 已选择暂不初始化知识库；每日推送将被门禁挡住。")
+            return {"ok": True, "choice": "later", "value": value}
+        if choice in ("y", "yes", "1"):
+            value = {"choice": "update_kb", "gate": "pending", "reason": console_gate.REASON}
+            record_step(
+                home, "knowledge", value, note="进入 /frontier-update-kb 初始化知识库"
+            )
+            # Closed until #90's completed review releases it: a pending
+            # initialization must not let the daily push slip through.
+            console_gate.set_knowledge_ready(home, False, source="init.update_kb")
+            _say(out, "[完成] 将进入 /frontier-update-kb 初始化知识库。")
+            return {"ok": True, "choice": "update_kb", "value": value}
+        _say(out, "请输入 Y（初始化）或 N（暂不初始化）。")
+
+
+# ------------------------------------------------------------- completion
+def _apply_archive(home: Path, code: Path, archive_value: dict) -> dict:
+    """Apply the archive confirmed in step 1: resolve, create and remember it."""
+    path = str((archive_value or {}).get("path") or "").strip()
+    if not path:
+        return {"ok": True, "path": "", "note": "未记录资料目录，沿用当前解析结果"}
+    try:
+        resolved = layout.resolve(code=str(code), archive=path)
+        layout.ensure(resolved)
+        layout.remember(resolved)
+    except (HostRunError, OSError) as exc:
+        return {
+            "ok": False,
+            "reason": "archive_apply_failed",
+            "path": path,
+            "note": f"资料目录未能生效：{exc}",
+        }
+    return {"ok": True, "path": resolved["archive"], "note": "资料目录已生效"}
+
+
+def mark_complete(home: Path, *, knowledge: str, archive: str) -> dict:
+    """Write the completion state the console and later tickets read back."""
+    state = read_state(home)
+    state["schema_version"] = SCHEMA_VERSION
+    state["complete"] = True
+    state["completed_at"] = now()
+    state["knowledge"] = str(knowledge or "")
+    state["archive"] = str(archive or "")
+    state["updated_at"] = now()
+    path = state_path(home)
+    ensure_dir(path.parent)
+    write_json(path, state)
+    return state
+
+
+def is_complete(home: Path) -> bool:
+    state = read_state(home)
+    if not state.get("complete"):
+        return False
+    return all(
+        (state["steps"].get(step) or {}).get("status") == "ok"
+        for step in STEP_IDS
+    )
+
+
+def _finalize(
+    home: Path,
+    *,
+    code: Path,
+    state: dict,
+    service,
+    update_kb,
+    out,
+) -> dict:
+    """Apply the archive, start the service, mark completion, then hand off to KB."""
+    archive_value = ((state["steps"].get("archive") or {}).get("value")) or {}
+    applied = _apply_archive(home, code, archive_value)
+    if not applied.get("ok"):
+        return {
+            "ok": False,
+            "reason": applied.get("reason") or "archive_apply_failed",
+            "text": f"{applied.get('note')}；初始化未完成，可修正后重跑 /frontier-init。",
+            "archive": applied,
+        }
+    try:
+        started = dict(service.start() or {})
+    except Exception as exc:  # noqa: BLE001 - a failed start is reported, not raised
+        started = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+    if not started.get("ok", True):
+        return {
+            "ok": False,
+            "reason": "service_start_failed",
+            "text": (
+                "初始化步骤已完成，但服务未能自动启动："
+                f"{started.get('reason') or '未知原因'}；请执行 /frontier-start。"
+            ),
+            "archive": applied,
+            "service": started,
+        }
+    choice = str(((state["steps"].get("knowledge") or {}).get("value") or {}).get("choice") or "later")
+    complete = mark_complete(home, knowledge=choice, archive=applied.get("path") or "")
+    lines = [f"初始化已全部完成（{complete['completed_at']}）；服务已启动。"]
+    handoff = None
+    if choice == "update_kb":
+        if update_kb is None:
+            lines.append("下一步执行 /frontier-update-kb 初始化知识库（完成后自动放行推送）。")
+        else:
+            try:
+                handoff = update_kb()
+            except Exception as exc:  # noqa: BLE001 - a failed handoff is reported
+                handoff = {
+                    "ok": False,
+                    "reason": "update_kb_failed",
+                    "text": f"进入 /frontier-update-kb 失败：{type(exc).__name__}: {exc}",
+                }
+            handoff = handoff if isinstance(handoff, dict) else {"ok": False}
+            if handoff.get("text"):
+                lines.append(str(handoff["text"]))
+    gate = console_gate.knowledge_gate(home)
+    if not gate.get("ready"):
+        lines.append(gate["note"])
+    elif choice == "later":
+        lines.append(gate["note"])
+    lines.append(
+        f"知识库门禁：{'已就绪' if gate.get('ready') else '待初始化知识库'}"
+        f"；每日推送时刻：{console_service.configured_push_time(home)}"
+    )
+    return {
+        "ok": True,
+        "reason": "update_kb" if choice == "update_kb" else "knowledge_pending",
+        "text": "\n".join(lines),
+        "archive": applied,
+        "service": started,
+        "handoff": handoff,
+        "knowledge_gate": gate,
+        "state": {
+            "complete": complete.get("complete"),
+            "completed_at": complete.get("completed_at"),
+            "knowledge": complete.get("knowledge"),
+            "archive": complete.get("archive"),
+        },
+    }
+
+
 # --------------------------------------------------------------------- run
 def console_launcher_path(code: Path) -> Path:
     return Path(code) / "bin" / "frontier-console.cmd"
@@ -1035,6 +1419,11 @@ def run(
     lark_install=None,
     transport_send=None,
     transport_events=None,
+    facility_create=None,
+    facility_attach=None,
+    find_same_name=None,
+    service=None,
+    update_kb=None,
     clock=None,
     sleep=None,
 ) -> dict:
@@ -1050,8 +1439,15 @@ def run(
     and ``sleep``.  The transport test's sends go through ``transport_send``
     (default :func:`send_transport_test`) and its card callback through
     ``transport_events`` (default :func:`wait_card_callback`, whose own seam is
-    the lark event source).  Every one of them is injectable so no test ever
-    spawns a real ``lark-cli``, npm or a system terminal.
+    the lark event source).  The facility creation goes through
+    ``find_same_name``/``facility_create``/``facility_attach`` (defaults:
+    :func:`default_find_same_name`, :func:`hostrun.facilities.create`,
+    :func:`hostrun.facilities.attach`), the completion through ``service``
+    (default a :class:`hostrun.console_service.Service` for the same runtime
+    area) and the knowledge-base handoff through ``update_kb`` (default ``None``:
+    the step ends with the exact next command instead of starting a read).
+    Every one of them is injectable so no test ever spawns a real ``lark-cli``,
+    npm, a system terminal or a live Feishu tenant.
     """
     home = Path(home)
     out = sys.stdout if out is None else out
@@ -1062,6 +1458,9 @@ def run(
     lark_install = lark_install or lark.install_cli
     transport_send = transport_send or send_transport_test
     transport_events = transport_events or wait_card_callback
+    facility_create = facility_create or facilities_mod.create
+    facility_attach = facility_attach or facilities_mod.attach
+    find_same_name = find_same_name or default_find_same_name
     clock = clock or time.monotonic
     sleep = sleep or time.sleep
     code = _code_dir(home, resolved)
@@ -1075,7 +1474,7 @@ def run(
     }
 
     console_state = read_console_state(home)
-    if console_state.get("service") == "running":
+    if console_state.get("service") == "running" and not is_complete(home):
         return {
             **base,
             "ok": False,
@@ -1134,6 +1533,20 @@ def run(
                     or default_archive
                 )
                 outcome = _step_agent(home, code=code, archive=archive, reader=reader, out=out)
+            elif step_id == "naming":
+                outcome = _step_naming(
+                    home,
+                    code=code,
+                    reader=reader,
+                    out=out,
+                    find_same_name=find_same_name,
+                    facility_create=facility_create,
+                    facility_attach=facility_attach,
+                )
+            elif step_id == "push_time":
+                outcome = _step_push_time(home, reader=reader, out=out)
+            elif step_id == "knowledge":
+                outcome = _step_knowledge(home, reader=reader, out=out)
             elif step_id == "transport":
                 outcome = _step_transport(
                     home,
@@ -1197,23 +1610,76 @@ def run(
     state = read_state(home)
     completed = [step for step in STEP_IDS if (state["steps"].get(step) or {}).get("status") == "ok"]
     next_step = next((item["step"] for item in not_yet), None)
-    reason = "not_yet" if not_yet else ""
     if next_step:
         text = (
             "已完成的步骤已保存；后续步骤尚未接入："
             + "、".join(f"{item['title']}（{item['ticket']}）" for item in not_yet)
             + "。再次运行 /frontier-init 会跳过已完成的步骤。"
         )
-    else:
-        text = "初始化步骤已全部完成。"
+        return {
+            **base,
+            "ok": True,
+            "reason": "not_yet",
+            "completed": completed,
+            "next_step": next_step,
+            "not_yet": not_yet,
+            "text": text,
+        }
+
+    if state.get("complete"):
+        gate = console_gate.knowledge_gate(home)
+        return {
+            **base,
+            "ok": True,
+            "reason": "already_complete",
+            "completed": completed,
+            "next_step": None,
+            "not_yet": not_yet,
+            "knowledge_gate": gate,
+            "text": (
+                f"初始化已于 {state.get('completed_at')} 完成，本次未重复任何创建或启动动作。"
+                f"服务：{read_console_state(home).get('service') or 'unknown'}；"
+                f"知识库门禁：{'已就绪' if gate.get('ready') else '待初始化知识库'}。"
+            ),
+            "state": {
+                "complete": True,
+                "completed_at": state.get("completed_at"),
+                "knowledge": state.get("knowledge") or "",
+                "archive": state.get("archive") or "",
+            },
+        }
+
+    lifecycle = service if service is not None else console_service.Service(home)
+    finalized = _finalize(
+        home,
+        code=code,
+        state=state,
+        service=lifecycle,
+        update_kb=update_kb,
+        out=out,
+    )
+    _say(out, finalized.get("text") or "")
     return {
         **base,
-        "ok": True,
-        "reason": reason,
-        "completed": completed,
-        "next_step": next_step,
+        "ok": bool(finalized.get("ok")),
+        "reason": finalized.get("reason") or "",
+        "completed": completed_steps(home),
+        "next_step": None,
         "not_yet": not_yet,
-        "text": text,
+        "text": finalized.get("text") or "",
+        "archive": finalized.get("archive"),
+        "service": finalized.get("service"),
+        "handoff": finalized.get("handoff"),
+        "knowledge_gate": finalized.get("knowledge_gate")
+        or console_gate.knowledge_gate(home),
+        "state": finalized.get("state")
+        or {
+            "complete": is_complete(home),
+            "completed_at": read_state(home).get("completed_at"),
+            "knowledge": read_state(home).get("knowledge") or "",
+            "archive": read_state(home).get("archive") or "",
+        },
+        "step": finalized if not finalized.get("ok") else None,
     }
 
 
@@ -1242,4 +1708,18 @@ def _completed_line(step_id: str, value: dict) -> str:
         if value.get("channel") == "ok" and owner.get("verified"):
             return "通道测试通过，owner 已核实"
         return "通道测试未通过"
+    if step_id == "naming":
+        base = value.get("base") or {}
+        tables = value.get("tables") or {}
+        kind = "复用" if value.get("reused") else "新建"
+        return (
+            f"{base.get('name') or (value.get('names') or {}).get('base') or '未记录'}"
+            f"（{kind}，{len(tables)} 张表）"
+        )
+    if step_id == "push_time":
+        return f"每日 {value.get('push_time') or '未记录'}（用户本地时区）"
+    if step_id == "knowledge":
+        if value.get("choice") == "update_kb":
+            return "已选择初始化知识库（进入 /frontier-update-kb）"
+        return "暂不初始化知识库（每日推送被门禁挡住）"
     return "已完成"

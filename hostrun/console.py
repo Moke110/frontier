@@ -34,6 +34,7 @@ import threading
 from pathlib import Path
 
 from common import ensure_dir, file_lock, now, read_json, write_json
+from hostrun import console_gate
 from hostrun.base import load_config
 
 SCRIPT_NAME = "frontier-console.cmd"
@@ -356,6 +357,7 @@ def status_snapshot(home: Path, *, status=None) -> dict:
     install_section = subsystems.get("install") or {}
     steps = install_section.get("steps") or {}
     paused = bool(state.get("paused"))
+    gate = console_gate.knowledge_gate(Path(home))
     return {
         "console": {
             "state": "running",
@@ -371,6 +373,7 @@ def status_snapshot(home: Path, *, status=None) -> dict:
         "executor": subsystems.get("executor") or {},
         "queue": subsystems.get("queue") or {},
         "knowledge": steps.get("knowledge") or "unknown",
+        "knowledge_gate": gate,
         "at": now(),
     }
 
@@ -383,6 +386,9 @@ def status_text(snapshot: dict) -> str:
     paused = bool(service.get("paused"))
     next_push = service.get("next_push_at") or "未排期"
     yes = lambda value: "是" if value else "否"  # noqa: E731 - compact table
+    gate = snapshot.get("knowledge_gate") or {}
+    gate_ready = bool(gate.get("ready", True))
+    gate_text = "已就绪" if gate_ready else "待初始化知识库（每日推送已阻塞）"
     lines = [
         f"控制台：运行中（pid={console_state.get('pid')}）",
         f"服务：{'已暂停' if paused else '运行中'}",
@@ -392,7 +398,10 @@ def status_text(snapshot: dict) -> str:
         f"队列：{queue.get('items', 0)} 项，未完成：{yes(queue.get('unfinished'))}，"
         f"失败：{yes(queue.get('failed'))}",
         f"知识：{snapshot.get('knowledge') or 'unknown'}",
+        f"知识库门禁：{gate_text}",
     ]
+    if not gate_ready:
+        lines.append(f"  下一步：{gate.get('note') or '/frontier-update-kb'}")
     return "\n".join(lines)
 
 
@@ -542,6 +551,11 @@ def dispatch(
                 text = "服务已暂停，未派发推送；先执行 /frontier-start。"
             elif outcome.get("reason") == "push_busy":
                 text = "已有推送正在运行，稍后再试。"
+            elif outcome.get("reason") == "knowledge_not_ready":
+                text = (
+                    "每日推送被知识库门禁挡住：待初始化知识库。"
+                    "先执行 /frontier-update-kb 完成知识库初始化（完成后自动放行）。"
+                )
             else:
                 text = "推送请求未派发：" + str(outcome.get("reason") or "unknown")
         return {
@@ -933,6 +947,16 @@ def serve(
                     transport_events=(
                         getattr(surface, "wait_card", None) if surface is not None else None
                     ),
+                    # The knowledge-base choice "初始化知识库" enters the real
+                    # /frontier-update-kb flow (read + review) through the same
+                    # dispatcher, so #87 hands off to #89/#90 and not to a copy.
+                    update_kb=lambda: dispatch(
+                        home,
+                        "/frontier-update-kb",
+                        service=lifecycle,
+                        review=review_runner,
+                    ),
+                    service=lifecycle,
                 )
         review_runner = review
         if review_runner is None:

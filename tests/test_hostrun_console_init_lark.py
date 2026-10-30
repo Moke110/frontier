@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from common import write_json
-from hostrun import console, console_init, lark
+from hostrun import console, console_init, facilities, lark
 
 
 # ------------------------------------------------------------------ fixtures
@@ -183,9 +183,33 @@ def make_home(tmp_path: Path, *, recorded_cli: bool = True, service: str = "paus
         home, "archive", {"path": str(tmp_path / "frontier-archive"), "default": True, "outside_code": True}
     )
     console_init.record_step(home, "agent", {"dsh": str(dsh), "profile": "headless"})
+    record_completion_steps(home)
     if service != "stopped":
         console.write_state(home, service=service, paused=service == "paused")
     return home, code, cli
+
+
+def record_completion_steps(home: Path) -> None:
+    """#87's naming/push-time/knowledge steps are covered by their own test file."""
+    console_init.record_step(
+        home,
+        "naming",
+        {
+            "names": facilities.default_names(),
+            "base": {"token": "bascn_test", "url": "u", "name": "frontier 知识库"},
+            "tables": {},
+            "folders": {"root": "r", "source": "s", "push": "p"},
+            "reused": False,
+            "actions": [],
+        },
+    )
+    console_init.record_step(home, "push_time", {"push_time": "08:00", "next_push_at": None})
+    console_init.record_step(
+        home,
+        "knowledge",
+        {"choice": "later", "gate": "blocked", "reason": "knowledge_not_ready"},
+    )
+    console.write_state(home, knowledge_ready=False)
 
 
 def reader(*answers):
@@ -228,8 +252,25 @@ def lark_run(home, answers, *, fake=None, clock=None, **kwargs):
     kwargs.setdefault("sleep", clock.sleep)
     kwargs.setdefault("transport_send", transport_send)
     kwargs.setdefault("transport_events", transport_events)
+    kwargs.setdefault("find_same_name", lambda *args: [])
+    kwargs.setdefault("facility_create", _fake_facility)
+    kwargs.setdefault("facility_attach", _fake_facility)
     result = console_init.run(home, reader=reader(*answers), out=out, **kwargs)
     return result, out.getvalue()
+
+
+def _fake_facility(home, *args, names=None, **kwargs):
+    """A facility call that never reaches a live Feishu tenant."""
+    names = names or facilities.default_names()
+    return {
+        "ok": True,
+        "names": names,
+        "base": {"token": "bascn_test", "url": "u", "name": names["base"]},
+        "tables": {},
+        "folders": {"root": "r", "source": "s", "push": "p"},
+        "actions": [],
+        "reused": False,
+    }
 
 
 # -------------------------------------------------------- device-code request
@@ -287,7 +328,15 @@ def test_a_configured_and_logged_in_cli_is_reused_without_install_or_login(tmp_p
     result, rendered = lark_run(home, [], fake=fake)
 
     assert result["ok"] is True
-    assert result["completed"] == ["archive", "agent", "lark", "transport"]
+    assert result["completed"] == [
+        "archive",
+        "agent",
+        "lark",
+        "transport",
+        "naming",
+        "push_time",
+        "knowledge",
+    ]
     assert fake.install_calls() == []
     assert fake.auth_login_calls() == []
     assert str(cli) in rendered
@@ -457,7 +506,15 @@ def test_login_timeout_abort_keeps_progress_and_resumes_at_the_lark_step(tmp_pat
 
     resumed, rendered = lark_run(home, [], fake=FakeLark())
     assert resumed["ok"] is True
-    assert resumed["completed"] == ["archive", "agent", "lark", "transport"]
+    assert resumed["completed"] == [
+        "archive",
+        "agent",
+        "lark",
+        "transport",
+        "naming",
+        "push_time",
+        "knowledge",
+    ]
     assert "使用默认资料目录" not in rendered
 
 
@@ -564,17 +621,14 @@ def test_aborting_a_failed_install_leaves_the_step_unfinished(tmp_path):
 
 
 # ------------------------------------------------------------- step registration
-def test_the_lark_step_is_implemented_and_the_next_not_yet_step_is_naming(tmp_path):
+def test_the_lark_step_is_implemented_and_every_adr_step_is_reached(tmp_path):
     home, _code, _cli = make_home(tmp_path)
 
     result, _rendered = lark_run(home, [], fake=FakeLark())
 
     assert console_init.STEPS[2]["id"] == "lark"
     assert console_init.STEPS[2]["implemented"] is True
-    assert result["next_step"] == "naming"
-    assert [item["step"] for item in result["not_yet"]] == [
-        "naming",
-        "push_time",
-        "knowledge",
-    ]
+    assert all(step["implemented"] for step in console_init.STEPS)
+    assert result["next_step"] is None
+    assert result["not_yet"] == []
 
