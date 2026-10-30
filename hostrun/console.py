@@ -640,7 +640,7 @@ def serve(
         )
 
         script = None
-        if layout.get("mode") == "code" and code and archive:
+        if code and archive:
             python = sys.executable
             try:
                 recorded = str((load_config(home).get("paths") or {}).get("python") or "")
