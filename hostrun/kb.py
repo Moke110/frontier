@@ -30,6 +30,15 @@ LIBRARY_TABLES = {"sources": "原文", "pushes": "推送日志", "decisions": "�
 FEEDBACK_TABLES = feedback_mod.TABLE_NAMES
 REQUIRED = {**KNOWLEDGE_TABLES, **LIBRARY_TABLES, **FEEDBACK_TABLES}
 
+REVIEW_FIELD = "待复核"
+# Optional columns: created with the table, back-filled into existing bases on
+# init/attach, and deliberately absent from ``required_fields()``.  A base that
+# lacks them is still structurally valid; a missing value reads as false.
+OPTIONAL_KNOWLEDGE_FIELDS = {
+    "cards": (REVIEW_FIELD,),
+    "propositions": (REVIEW_FIELD,),
+}
+
 KNOWLEDGE_SCHEMA = {
     "cards": [
         {"name": "卡片 ID", "type": "text"},
@@ -38,6 +47,7 @@ KNOWLEDGE_SCHEMA = {
         {"name": "annotation", "type": "text"},
         {"name": "created_at", "type": "text"},
         {"name": "updated_at", "type": "text"},
+        {"name": REVIEW_FIELD, "type": "checkbox"},
     ],
     "propositions": [
         {"name": "命题 ID", "type": "text"},
@@ -46,6 +56,7 @@ KNOWLEDGE_SCHEMA = {
         {"name": "证据更新计数", "type": "number"},
         {"name": "created_at", "type": "text"},
         {"name": "updated_at", "type": "text"},
+        {"name": REVIEW_FIELD, "type": "checkbox"},
     ],
     "evidence": [
         {"name": "证据 ID", "type": "text"},
@@ -85,14 +96,18 @@ INITIAL_REL = Path("install") / "initial-build.json"
 def required_fields() -> dict[str, list[str]]:
     """The contract field names for every required table key.
 
-    Knowledge tables use ``KNOWLEDGE_SCHEMA``; library tables use the field
-    lists ``library.setup`` creates; feedback tables use ``feedback.FIELDS``.
-    Display names may change, field names may not.
+    Knowledge tables use ``KNOWLEDGE_SCHEMA`` minus the optional columns; library
+    tables use the field lists ``library.setup`` creates; feedback tables use
+    ``feedback.FIELDS``. Display names may change, field names may not.
     """
     from library import setup as library_setup
 
     fields = {
-        key: [field["name"] for field in schema]
+        key: [
+            field["name"]
+            for field in schema
+            if field["name"] not in OPTIONAL_KNOWLEDGE_FIELDS.get(key, ())
+        ]
         for key, schema in KNOWLEDGE_SCHEMA.items()
     }
     fields.update(
@@ -139,6 +154,50 @@ def missing_required_fields(
         if gaps:
             missing[key] = gaps
     return missing
+
+
+def optional_fields() -> dict[str, list[dict]]:
+    """The optional knowledge columns, by stable table key."""
+    return {
+        key: [dict(field) for field in KNOWLEDGE_SCHEMA[key] if field["name"] in names]
+        for key, names in OPTIONAL_KNOWLEDGE_FIELDS.items()
+    }
+
+
+def ensure_optional_fields(
+    client,
+    tables: dict[str, str],
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """Back-fill optional columns into tables that predate them.
+
+    Called by table creation and by attach, so an existing Base gains 「待复核」
+    without a schema upgrade.  Never creates a table; never fails a base that
+    does not have the table yet.
+    """
+    actions: list[str] = []
+    added: dict[str, list[str]] = {}
+    for key, fields in optional_fields().items():
+        table_id = tables.get(key)
+        if not table_id:
+            continue
+        if dry_run and str(table_id).startswith("tbl_dry_"):
+            continue
+        try:
+            present = set(client.field_names(table_id))
+        except Exception:  # noqa: BLE001 - verify reports read failures separately
+            continue
+        missing = [field for field in fields if field["name"] not in present]
+        if not missing:
+            continue
+        for field in missing:
+            actions.append(f"add column {field['name']} → {REQUIRED[key]}")
+        if not dry_run:
+            client.create_fields(table_id, missing)
+            added[key] = [field["name"] for field in missing]
+    return {"actions": actions, "added": added}
+
 
 _TOKEN = re.compile(r"/(?:base|wiki)/([A-Za-z0-9]+)")
 _TABLE = re.compile(r"[?&]table=([A-Za-z0-9]+)")
@@ -260,6 +319,10 @@ def attach(
     write_json(path, config)
     client = base_client(home, client=client)
     report = verify(home, client=client, expect_empty=expect_empty)
+    # Existing bases gain the optional review column on attach; a base without
+    # the table yet is not an error (create-tables adds it later).
+    columns = ensure_optional_fields(client, report["present"])
+    report["columns_added"] = columns["added"]
     if not report["ok"] and (report["missing"] or report["missing_fields"]):
         report["next"] = (
             "缺少的表/字段由宿主用 hostrun kb create-tables 补齐，"
@@ -355,10 +418,20 @@ def create_tables(
         write_json(home / "knowledge" / "base.json", {**config, "tables": tables})
         config = {**config, "tables": tables}
 
+    # Back-fill optional columns in tables that existed before the field did.
+    columns = ensure_optional_fields(client, tables, dry_run=dry_run)
+    actions.extend(columns["actions"])
+
     if dry_run:
         actions.append("plan library tables (原文/推送日志/决定/配置)")
         actions.append("plan feedback tables (问题/反馈/更正)")
-        return {"ok": True, "dry_run": True, "actions": actions, "tables": tables}
+        return {
+            "ok": True,
+            "dry_run": True,
+            "actions": actions,
+            "tables": tables,
+            "columns": columns["added"],
+        }
 
     from library.setup import setup as library_setup
 
@@ -372,6 +445,7 @@ def create_tables(
         "actions": actions,
         "tables": tables,
         "base_token": config.get("base_token"),
+        "columns": columns["added"],
         "library": library_report,
         "feedback": feedback_report,
     }
