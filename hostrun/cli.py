@@ -25,10 +25,11 @@ import sys
 import time
 from pathlib import Path
 
-from common import emit, home, read_json
+from common import emit, read_json
 from hostrun import audit as audit_mod
 from hostrun import cleanup as cleanup_mod
 from hostrun import executor, facilities, feedback, initialize, install, intents, kb, lark, listener, schedules, smoke
+from hostrun import layout as layout_mod
 from hostrun import workspace as workspace_mod
 from hostrun.base import HostRunError, load_config
 
@@ -65,7 +66,18 @@ def _add_resource_token_args(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hostrun", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument(
+        "--home",
+        help="legacy data root; maps to the code runtime area and <home>/archive",
+    )
+    parser.add_argument(
+        "--code",
+        help="code directory (default: this checkout); runtime state lives under it",
+    )
+    parser.add_argument(
+        "--archive",
+        help="archive directory for originals/ and pushes/ (default: <code>/../frontier-archive)",
+    )
     parser.add_argument("--offline", action="store_true", help="use JSON Base/Drive fixtures")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -362,25 +374,31 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _normalize(argv: list[str]) -> list[str]:
-    """Accept ``--home`` / ``--offline`` after the subcommand.
+    """Accept the location flags and ``--offline`` after the subcommand.
 
-    argparse only knows them as global options, so ``run --home X --intent daily``
+    argparse only knows them as global options, so ``run --code C --intent daily``
     used to die with "unrecognized arguments". Generated schedule commands and
-    hand-typed ones both work now, and the last value wins.
+    hand-typed ones both work now, and the last value of each flag wins.
     """
-    home: list[str] = []
+    locations: dict[str, str] = {}
     offline = False
     rest: list[str] = []
     index = 0
     while index < len(argv):
         arg = argv[index]
-        if arg == "--home" and index + 1 < len(argv):
-            home.append(argv[index + 1])
-            index += 2
-            continue
-        if arg.startswith("--home="):
-            home.append(arg.split("=", 1)[1])
-            index += 1
+        matched = False
+        for flag in ("--home", "--code", "--archive"):
+            if arg == flag and index + 1 < len(argv):
+                locations[flag] = argv[index + 1]
+                index += 2
+                matched = True
+                break
+            if arg.startswith(flag + "="):
+                locations[flag] = arg.split("=", 1)[1]
+                index += 1
+                matched = True
+                break
+        if matched:
             continue
         if arg == "--offline":
             offline = True
@@ -389,8 +407,9 @@ def _normalize(argv: list[str]) -> list[str]:
         rest.append(arg)
         index += 1
     prefix: list[str] = []
-    if home:
-        prefix += ["--home", home[-1]]
+    for flag in ("--home", "--code", "--archive"):
+        if flag in locations:
+            prefix += [flag, locations[flag]]
     if offline:
         prefix.append("--offline")
     return [*prefix, *rest]
@@ -398,10 +417,20 @@ def _normalize(argv: list[str]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(_normalize(list(sys.argv[1:] if argv is None else argv)))
-    root = home(args.home)
-    # In-process helpers (library, knowledge) resolve the recorded lark-cli path
-    # from the data root; exporting the explicit --home keeps that lookup on the
-    # same root the command was given instead of the default one.
+    try:
+        resolved = layout_mod.resolve(
+            home=args.home, code=args.code, archive=args.archive
+        )
+        # Establishing the new layout is idempotent and writes no file; the
+        # legacy --home tree keeps creating only what a command needs.
+        layout_mod.ensure(resolved)
+    except HostRunError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    root = Path(resolved["runtime"])
+    # In-process helpers (library, knowledge) resolve configuration and the
+    # recorded lark-cli path from the runtime area; exporting it keeps that
+    # lookup on the same location the command was given.
     os.environ["KL_HOME"] = str(root)
     offline = bool(args.offline)
     try:
