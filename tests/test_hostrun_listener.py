@@ -1073,11 +1073,12 @@ def test_automatic_feedback_worker_exception_does_not_kill_serve(tmp_path, monke
 
 # ------------------------------------------------------------- derived-run guards
 def test_derived_argv_is_the_documented_dsh_contract():
+    # Verified against DeepSeek Harness 0.2.1-rc.3 on 2026-10-30: the headless
+    # profile takes the task positionally and has no --prompt flag.
     assert listener.derived_argv("C:/dsh/dsh.cmd", "do the push") == [
         "C:/dsh/dsh.cmd",
         "--profile",
         "headless",
-        "--prompt",
         "do the push",
     ]
 
@@ -1353,7 +1354,8 @@ def test_derived_daily_run_spawns_dsh_and_records_a_derived_row(tmp_path):
 
     assert result["ok"] is True
     argv, kwargs = spawns[0]
-    assert argv[:4] == [str(dsh), "--profile", "headless", "--prompt"]
+    assert argv[:3] == [str(dsh), "--profile", "headless"]
+    assert len(argv) == 4
     assert "BRIEF-TEXT" in argv[-1] and "frontier-run" in argv[-1]
     assert kwargs["stdin"] is not None
     assert sent and "派生" in sent[0][1]
