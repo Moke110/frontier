@@ -22,8 +22,7 @@ title and the 60-second heartbeat cadence are live-only and stay ``untested``
 until recorded.
 
 Every event line carries a timestamp, a level and a source, on the terminal and
-in ``<runtime>/console/console.log``; the log rolls over at 1 MB like the
-retired listener log.
+in ``<runtime>/console/console.log``; the log rolls over at 1 MB.
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ from pathlib import Path
 
 from common import ensure_dir, file_lock, now, read_json, write_json
 from hostrun import console_gate
-from hostrun.base import load_config
+from hostrun.base import load_config, update_config
 
 SCRIPT_NAME = "frontier-console.cmd"
 WINDOW_TITLE = "frontier-console"
@@ -163,6 +162,89 @@ def ensure_script(code: str | Path, archive: str | Path, python: str) -> dict:
     ensure_dir(path.parent)
     path.write_text(text, encoding="utf-8")
     return {"ok": True, "path": str(path), "written": True, "title": WINDOW_TITLE}
+
+
+def install(
+    home: Path,
+    *,
+    resolved: dict,
+    dsh: str | None = None,
+    python_path: str | None = None,
+    dsh_args: list[str] | None = None,
+) -> dict:
+    """Record the Agent-run executable/overlay and write the fixed launcher.
+
+    This replaces the retired ``listener install``: the Console has no start/stop
+    scripts of its own (a double-click and ``console control`` cover it), but a
+    fresh installation still has to record the absolute ``dsh`` path and the
+    credential overlay an Agent run uses (ADR 0009 §10).  No process is started.
+    """
+    home = Path(home)
+    code = Path(resolved["code"])
+    archive = Path(resolved["archive"])
+    config = load_config(home)
+    problems: list[str] = []
+
+    recorded = str(
+        dsh if dsh is not None else ((config.get("paths") or {}).get("dsh") or "")
+    ).strip()
+    recorded_dsh = ""
+    if not recorded:
+        problems.append("paths.dsh 未记录")
+    else:
+        path = Path(recorded).expanduser()
+        if not path.is_absolute():
+            problems.append(f"paths.dsh 不是绝对路径：{recorded}")
+        elif not path.is_file():
+            problems.append(f"paths.dsh 指向的文件不存在：{path}")
+        else:
+            recorded_dsh = str(path)
+            update_config(home, paths={"dsh": recorded_dsh})
+
+    agent_run = config.get("agent_run") or {}
+    recorded_args = [str(arg) for arg in (agent_run.get("dsh_args") or [])]
+    args_problem = ""
+    if dsh_args is not None:
+        if isinstance(dsh_args, str) or not all(isinstance(arg, str) for arg in dsh_args):
+            args_problem = "dsh_args 必须是字符串列表"
+        else:
+            recorded_args = [arg for arg in dsh_args if arg.strip()]
+            if not recorded_args:
+                args_problem = "dsh_args 为空"
+    if dsh_args is not None and not args_problem:
+        update_config(home, agent_run={"dsh_args": recorded_args})
+
+    python = str(python_path or (config.get("paths") or {}).get("python") or sys.executable)
+    try:
+        script = ensure_script(code, archive, python)
+    except OSError as exc:
+        script = {"ok": False, "reason": "script_unwritable", "error": str(exc)}
+
+    status = "ok" if not problems and not args_problem and script.get("ok") else "blocked"
+    note_parts = list(problems)
+    if args_problem:
+        note_parts.append(args_problem)
+    if not script.get("ok"):
+        note_parts.append(
+            f"启动脚本写入失败：{script.get('error') or script.get('reason')}"
+        )
+    note = (
+        f"启动脚本：{script.get('path')}；记录的 dsh：{recorded_dsh or '未记录'}；未启动进程"
+        if status == "ok"
+        else "；".join(note_parts)
+        + f"；修复：python -m hostrun.cli --code \"{code}\" --archive \"{archive}\" "
+        'console install --dsh "<dsh 的绝对路径>"'
+    )
+    return {
+        "schema_version": 1,
+        "ok": status == "ok",
+        "status": status,
+        "note": note,
+        "dsh": recorded_dsh,
+        "dsh_args": recorded_args,
+        "script": script,
+        "processes_started": False,
+    }
 
 
 # ------------------------------------------------------------------ state file

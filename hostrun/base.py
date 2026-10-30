@@ -23,7 +23,11 @@ from common import read_json, write_json
 CONFIG_REL = Path("install") / "config.json"
 STATE_REL = Path("install") / "state.json"
 BASE_REL = Path("knowledge") / "base.json"
-LISTENER_REL = Path("listener")
+
+#: Config keys the retired listener section used to own but the Console's Agent
+#: runs still consume.  ``load_config`` maps an old ``listener`` record onto the
+#: current ``agent_run`` section so a migrated installation keeps its overlay.
+AGENT_RUN_KEYS = ("feedback_lease_minutes", "derived_timeout_seconds", "dsh_args")
 
 DEFAULT_HOST = "unknown"
 REDACT_KEYS = ("token", "secret", "password", "cookie", "code", "key")
@@ -47,27 +51,29 @@ def default_config(home: Path, *, repo: Path | None = None) -> dict:
             "dsh": "",
         },
         "timezone": "",
-        "schedules": {"enabled": False, "confirmed_at": None, "tasks": []},
         "permissions": {"scope": [], "granted_at": None},
-        # ADR 0008: the listener is the only resident component. Its whole
-        # behaviour is recorded here so nothing is guessed at run time.
-        "listener": {
-            "window_title": "frontier-listener",
-            "heartbeat_seconds": 60,
-            "feedback_poll_seconds": 300,
+        # Agent runs are started by the Console (ADR 0009 §10).  These are the
+        # only run settings; the retired listener section is mapped onto them by
+        # ``load_config`` so an old config file keeps working.
+        "agent_run": {
             "feedback_lease_minutes": 45,
             "derived_timeout_seconds": 1200,
-            "heartbeat_stale_seconds": 600,
-            "event_stale_seconds": 3600,
-            "recovery_recheck_seconds": 30,
-            "start_command": "",
-            "stop_command": "",
             # Extra argv inserted between ``--profile headless`` and the task
-            # text for a derived run (e.g. ["--patch", "<overlay.yml>"] when a
+            # text for an Agent run (e.g. ["--patch", "<overlay.yml>"] when a
             # host's headless profile has no model credential of its own).
             "dsh_args": [],
         },
     }
+
+
+def _mapped_agent_run(cfg: dict) -> dict:
+    """The current ``agent_run`` section, plus any legacy ``listener`` values."""
+    recorded = dict(cfg.get("agent_run") or {})
+    legacy = cfg.get("listener") or {}
+    for key in AGENT_RUN_KEYS:
+        if key in legacy and key not in recorded:
+            recorded[key] = legacy[key]
+    return recorded
 
 
 def load_config(home: Path, *, repo: Path | None = None) -> dict:
@@ -77,9 +83,12 @@ def load_config(home: Path, *, repo: Path | None = None) -> dict:
     merged = {**base, **cfg}
     merged["paths"] = {**base["paths"], **(cfg.get("paths") or {})}
     merged["host"] = {**base["host"], **(cfg.get("host") or {})}
-    merged["schedules"] = {**base["schedules"], **(cfg.get("schedules") or {})}
     merged["permissions"] = {**base["permissions"], **(cfg.get("permissions") or {})}
-    merged["listener"] = {**base["listener"], **(cfg.get("listener") or {})}
+    merged["agent_run"] = {**base["agent_run"], **_mapped_agent_run(cfg)}
+    # The retired section is never handed out under its old name: everything it
+    # still owned now lives under ``agent_run``.
+    merged.pop("listener", None)
+    merged.pop("schedules", None)
     return merged
 
 
@@ -99,11 +108,6 @@ def update_config(home: Path, **sections) -> dict:
             cfg[key] = value
     save_config(home, cfg)
     return cfg
-
-
-def listener_dir(home: Path) -> Path:
-    """The listener's private directory: lock, heartbeat and log live here."""
-    return Path(home) / LISTENER_REL
 
 
 def redact(obj):
@@ -144,9 +148,9 @@ def lark_bin(home: Path) -> str:
 def dsh_bin(home: Path) -> str:
     """The recorded absolute ``dsh`` path, or ``""``.
 
-    ADR 0008 requires the listener to drive ``dsh --profile headless`` from an
-    explicitly recorded absolute path — ``dsh`` is not on PATH, so there is no
-    fallback here: unrecorded, relative or missing all mean "not usable".
+    ADR 0009 §10 requires the Console's Agent runs to use an explicitly recorded
+    absolute path — ``dsh`` is not on PATH, so there is no fallback here:
+    unrecorded, relative or missing all mean "not usable".
     """
     home = Path(home)
     cfg = read_json(home / CONFIG_REL) or {}
@@ -162,14 +166,15 @@ def dsh_bin(home: Path) -> str:
 def require_dsh(home: Path) -> str:
     """Return the recorded ``dsh`` path or raise with an actionable repair.
 
-    The repair hint points at the recorded config file, so the user can fix it
-    by hand or re-run ``listener install --dsh``.
+    The repair hint points at the recorded config file and the console
+    installer, so the user can fix it by hand or re-run
+    ``console install --dsh``.
     """
     home = Path(home)
     config_path = home / CONFIG_REL
     repair = (
         f"在 {config_path} 的 paths.dsh 写入 dsh 的绝对路径"
-        "（或运行 hostrun.cli listener install --dsh <绝对路径>）"
+        "（或运行 hostrun.cli console install --dsh <绝对路径>）"
     )
     cfg = read_json(config_path) or {}
     recorded = str((cfg.get("paths") or {}).get("dsh") or "").strip()

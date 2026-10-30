@@ -174,17 +174,21 @@ def test_migration_moves_runtime_state_and_keeps_materials_in_the_archive(tmp_pa
     # The informational workspace record survives the rewrite unredacted.
     assert config["workspace"]["code_dirname"] == "frontier"
     assert config["workspace"]["home"] == str(runtime)
-    # The recorded listener scripts are replaced by the console start script.
+    # The listener section is retired; its Agent-run settings move to agent_run.
     console = code / "bin" / "frontier-console.cmd"
-    assert config["listener"]["start_command"] == str(console)
-    assert config["listener"]["dsh_args"] == ["--patch", "account.yml"]
+    assert "listener" not in config
+    assert "schedules" not in config
+    assert config["agent_run"]["dsh_args"] == ["--patch", "account.yml"]
     assert console.is_file()
     text = console.read_text(encoding="utf-8")
     assert text.splitlines()[0] == "title frontier-console"
     assert "--code" in text and "--archive" in text and "console" in text
+    assert text.rstrip().endswith("%*")
     assert not (runtime / "bin" / "frontier-listener.cmd").exists()
     assert not (runtime / "bin" / "frontier-listener-stop.cmd").exists()
     assert not (legacy / "bin" / "frontier-listener.cmd").exists()
+    # The retired listener runtime directory is not moved into the new layout.
+    assert not (runtime / "listener").exists()
 
     # The workspace record moves to the code directory and points at it.
     record = workspace.load_record(code)

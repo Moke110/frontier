@@ -70,7 +70,7 @@ def make_home(tmp_path: Path, *, service: str = "stopped", permissions: dict | N
             "schema_version": 1,
             "host": {"product": "dsh", "version": "0.2.1-rc.5"},
             "paths": {"repo": str(code), "dsh": str(dsh), "lark_cli": str(cli)},
-            "listener": {"dsh_args": ["--patch", str(patch)]},
+            "agent_run": {"dsh_args": ["--patch", str(patch)]},
             "permissions": permissions
             if permissions is not None
             else {"scope": ["base:read"], "host_scope": ["filesystem"]},

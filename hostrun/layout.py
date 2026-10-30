@@ -200,9 +200,8 @@ def handoff(runtime: str | Path) -> dict[str, str]:
 
     Runtime state is by contract ``<code>/.frontier``, so the runtime area's
     parent is the code directory; the archive is whatever that code directory
-    resolved to.  Used by the listener, the agent-run adapter and the publisher
-    so a child process resolves exactly the same two locations without
-    repeating the flags.
+    resolved to.  Used by the Console's Agent runs and the publisher so a child
+    process resolves exactly the same two locations without repeating the flags.
     """
     runtime_path = Path(runtime).expanduser().resolve()
     code = runtime_path.parent
