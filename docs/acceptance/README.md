@@ -4,7 +4,7 @@
 
 ## 2026-10-30 控制台化验收（spec #74 / ADR 0009；仅执行本机可安全运行项）
 
-本轮按 ticket #91 执行**不发送真实飞书消息、不使用凭据、不迁移本机既有安装**的验收。离线全量：**722 passed, 3 skipped**（命令见 `E:\Desktop\frontier-dev\.spec74-notes\impl\91\report.md`；比 #87 基线少的部分是随监听进程/smoke/cleanup/schedules 一并删除的旧测试）。以下“pass”只表示对应命令在本机真实执行并得到记录的结果；ADR 0009 的九项真实验收不因离线或本地替身运行而改变状态。
+本轮按 ticket #91 执行**不发送真实飞书消息、不使用凭据、不迁移本机既有安装**的验收。离线全量：**723 passed, 3 skipped**（命令见 `E:\Desktop\frontier-dev\.spec74-notes\impl\91\report.md`；比 #87 基线少的部分是随监听进程/smoke/cleanup/schedules 一并删除的旧测试）。以下“pass”只表示对应命令在本机真实执行并得到记录的结果；ADR 0009 的九项真实验收不因离线或本地替身运行而改变状态。
 
 ### 本机真实执行通过的安全项（不构成 ADR 0009 验收）
 
