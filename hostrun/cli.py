@@ -371,7 +371,28 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("--from", dest="from_host")
     h.add_argument("--force", action="store_true")
 
-    sub.add_parser("console", help="run the resident foreground console (ADR 0009)")
+    p = sub.add_parser("console", help="run the resident foreground console (ADR 0009)")
+    csub = p.add_subparsers(dest="action")
+    control = csub.add_parser(
+        "control",
+        help="write a control-file request for the running console (start|stop|status|push)",
+    )
+    csub2 = control.add_subparsers(dest="control_action", required=True)
+    for name in ("start", "stop", "status", "push"):
+        action = csub2.add_parser(name, help=f"request the console to {name}")
+        action.add_argument(
+            "--by",
+            dest="control_by",
+            default="",
+            help="initiator recorded in the console event stream (default: host agent)",
+        )
+        action.add_argument(
+            "--wait",
+            dest="control_wait",
+            type=float,
+            default=2.0,
+            help="seconds to wait for the console to consume the request (default 2)",
+        )
     sub.add_parser("status", help="one snapshot of executor, queue, feedback, schedules")
     return parser
 
@@ -484,6 +505,16 @@ def _dispatch(args, root: Path, offline: bool, resolved: dict | None = None) -> 
     if args.cmd == "listener":
         return _listener(args, root)
     if args.cmd == "console":
+        if getattr(args, "action", None) == "control":
+            from hostrun import console_service
+
+            payload = console_service.run_control(
+                root,
+                args.control_action,
+                initiator=getattr(args, "control_by", "") or "host-agent",
+                wait_seconds=getattr(args, "control_wait", 2.0),
+            )
+            return (0 if payload.get("ok") else 1), payload
         result = console_mod.serve(
             root, resolved=resolved, events=console_events.live
         )

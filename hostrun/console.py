@@ -72,16 +72,16 @@ COMMANDS = {
         "implemented": True,
     },
     "/frontier-start": {
-        "summary": "启动服务",
-        "implemented": False,
+        "summary": "启动服务（启动或从暂停恢复）",
+        "implemented": True,
     },
     "/frontier-stop": {
         "summary": "暂停服务但保持控制台运行",
-        "implemented": False,
+        "implemented": True,
     },
     "/frontier-push": {
         "summary": "立即请求一次推送",
-        "implemented": False,
+        "implemented": True,
     },
     "/frontier-init": {
         "summary": "初始化资料目录、Agent 与飞书通道",
@@ -131,11 +131,16 @@ def script_path(code: str | Path) -> Path:
 
 # ------------------------------------------------------------- startup script
 def script_text(code: str | Path, archive: str | Path, python: str) -> str:
-    """The launcher argv, identical to the one ``install migrate`` writes."""
+    """The launcher argv, identical to the one ``install migrate`` writes.
+
+    ``%*`` forwards arguments, so ``frontier-console control start`` reaches
+    ``python -m hostrun.cli ... console control start`` while a double-click
+    still starts the resident console with no arguments (#81).
+    """
     return (
         f"title {WINDOW_TITLE}\n"
         f'cd /d "{Path(code)}"\n'
-        f'"{python}" -m hostrun.cli --code "{Path(code)}" --archive "{Path(archive)}" console\n'
+        f'"{python}" -m hostrun.cli --code "{Path(code)}" --archive "{Path(archive)}" console %*\n'
     )
 
 
@@ -443,11 +448,14 @@ def dispatch(
     *,
     status=None,
     logs=None,
+    service=None,
 ) -> dict:
     """Route one prompt line to one bounded action and return its text.
 
-    The dispatcher never raises on a bad command and never starts a run: an
-    unknown line only gets usage, and a registered-but-not-yet-implemented
+    The dispatcher never raises on a bad command.  The lifecycle commands
+    (``/frontier-start|stop|push``) delegate to :class:`hostrun.console_service.Service`;
+    when a test or a plain dispatch call supplies no service, a one-shot service
+    for the same runtime area is used.  A registered-but-not-yet-implemented
     command reports that explicitly.
     """
     parsed = parse_command(line)
@@ -503,6 +511,34 @@ def dispatch(
             "command": name,
             "text": tail.get("text") or "暂无 Agent 运行日志。",
             "path": tail.get("path") or "",
+        }
+    if name in ("/frontier-start", "/frontier-stop", "/frontier-push"):
+        from hostrun import console_service
+
+        lifecycle = service if service is not None else console_service.Service(home)
+        if name == "/frontier-start":
+            outcome = lifecycle.start()
+            text = "服务已启动；定时推送与飞书响应已恢复。"
+        elif name == "/frontier-stop":
+            outcome = lifecycle.pause()
+            text = "服务已暂停；控制台仍在前台，定时推送与飞书响应已停止。"
+        else:
+            outcome = lifecycle.request_push("manual")
+            if outcome.get("ok"):
+                text = "已发起一次推送请求。"
+            elif outcome.get("reason") == "service_paused":
+                text = "服务已暂停，未派发推送；先执行 /frontier-start。"
+            elif outcome.get("reason") == "push_busy":
+                text = "已有推送正在运行，稍后再试。"
+            else:
+                text = "推送请求未派发：" + str(outcome.get("reason") or "unknown")
+        return {
+            "ok": bool(outcome.get("ok")),
+            "action": name.lstrip("/").replace("frontier-", ""),
+            "reason": outcome.get("reason") or "",
+            "command": name,
+            "text": text,
+            "service": outcome,
         }
     if name == "/exit":
         return {
@@ -578,6 +614,7 @@ def serve(
     heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
     start_worker=None,
     events=None,
+    service=None,
 ) -> dict:
     """Run the resident console shell until ``/exit``, EOF or Ctrl+C.
 
@@ -592,6 +629,11 @@ def serve(
     ``events(home, out=out)``.  The default is ``None``: the shell then runs
     without an event surface, which keeps offline shell tests free of every
     subprocess and lets the CLI decide when the live surface is wanted.
+
+    ``service`` is the lifecycle scheduler (#81); the default builds one for the
+    same runtime area.  It restores the last service state, starts the one-second
+    tick worker, dispatches the lifecycle slash commands, and shuts down (kill
+    in-flight run, release lease, mark the request unfinished) in ``finally``.
     """
     home = Path(home)
     ensure_dir(console_dir(home))
@@ -699,11 +741,50 @@ def serve(
                     out=out,
                 )
 
+        lifecycle = service
+        if lifecycle is None:
+            from hostrun import console_service
+
+            lifecycle = console_service.Service(
+                home,
+                emit=lambda level, source, message: emit_event(
+                    home, level, source, message, out=out
+                ),
+                ticker_worker=start_worker,
+            )
+        try:
+            restore = lifecycle.restore()
+        except Exception as exc:  # noqa: BLE001 - the shell survives a bad state file
+            restore = {"ok": False, "reason": "restore_failed"}
+            emit_event(
+                home,
+                "WARN",
+                "console",
+                f"服务状态恢复失败：{type(exc).__name__}: {exc}",
+                out=out,
+            )
+        if restore.get("ok") and service is None:
+            emit_event(
+                home,
+                "INFO",
+                "service",
+                "服务已按上次状态恢复（暂停保持暂停，运行态自动启动）",
+                out=out,
+            )
+        ticker = lifecycle.start_ticker()
+        if not ticker.get("ok"):
+            emit_event(home, "WARN", "console", "调度工作线程未启动", out=out)
+
         surface = None
         if events is not None:
             built = None
             try:
                 built = events(home, out=out) if callable(events) else events
+                # #82's routing and #81's scheduler meet here: a Feishu
+                # ``推一篇`` executes the registry's push_again executor, which
+                # dispatches through this lifecycle's request_push.
+                if built is not None and hasattr(built, "bind_lifecycle"):
+                    built.bind_lifecycle(lifecycle)
                 built.start()
                 surface = built
                 emit_event(
@@ -761,7 +842,7 @@ def serve(
                 commands += 1
                 emit_event(home, "INFO", "command", text, out=out)
                 events += 1
-                result = dispatch(home, text, status=status)
+                result = dispatch(home, text, status=status, service=lifecycle)
                 if result.get("text"):
                     try:
                         out.write(result["text"] + "\n")
@@ -774,13 +855,25 @@ def serve(
                     summary = f"{summary}({result['reason']})"
                 emit_event(home, level, "command", f"{text} -> {summary}", out=out)
                 events += 1
-                write_state(home, paused=paused, last_command_at=now())
+                # Never clobber the pause flag another command just wrote:
+                # only the lifecycle commands own ``paused``/``service``.
+                write_state(home, last_command_at=now())
                 beat["last_event_at"] = now()
                 write_heartbeat(home, **beat)
                 if result.get("exit"):
                     reason = "stopped"
                     break
         finally:
+            try:
+                lifecycle.shutdown()
+            except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+                emit_event(
+                    home,
+                    "WARN",
+                    "console",
+                    f"服务收尾失败：{type(exc).__name__}: {exc}",
+                    out=out,
+                )
             if surface is not None:
                 try:
                     surface.stop()
@@ -806,7 +899,13 @@ def serve(
                 except Exception:  # noqa: BLE001 - shutdown must not raise
                     pass
             write_heartbeat(home, **{**beat, "state": "stopped"})
-            write_state(home, service="stopped", paused=paused)
+            final = read_state(home)
+            write_state(
+                home,
+                service="stopped",
+                paused=bool(final.get("paused")),
+                next_push_at=None,
+            )
             emit_event(home, "INFO", "console", "控制台已退出", out=out)
 
         return {
@@ -816,7 +915,7 @@ def serve(
             "events": events,
             "pid": os.getpid(),
             "started_at": started_at,
-            "paused": paused,
+            "paused": bool(read_state(home).get("paused")),
             "console": str(console_dir(home)),
             "log_path": str(log_path(home)),
             "heartbeat_path": str(heartbeat_path(home)),
