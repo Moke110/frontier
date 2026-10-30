@@ -14,6 +14,10 @@ starts an Agent run.  This module owns that lifecycle:
   ``paused``); no scheduled push, no manual push and no Feishu-derived run is
   started while paused, and the Feishu surface replies only the pause notice.
   ``/frontier-start`` resumes and lets the next tick catch up.
+- **knowledge gate.**  A daily push is refused (``knowledge_not_ready``) until
+  the knowledge base is initialized; the Console and ``/frontier-status`` say
+  "待初始化知识库" and the next step (:mod:`hostrun.console_gate`).  A completed
+  ``/frontier-update-kb`` review releases it automatically.
 - **restore.**  ``restore()`` keeps a paused session paused and starts a session
   that was running when the window was closed.
 - **shutdown.**  ``shutdown()`` sets the stop signal (``agent_run.run``'s
@@ -44,7 +48,7 @@ from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 
 from common import ensure_dir, read_json, write_json
-from hostrun import console, executor
+from hostrun import console, console_gate, executor
 from hostrun.base import load_config
 from question_queue.store import QueueStore
 
@@ -238,6 +242,7 @@ class Service:
         self._recovery_done = False
         self._unfinished_marked = False
         self._last_next_push_at: str | None = None
+        self._gate_noted = False
 
     # -- small helpers ---------------------------------------------------
     def _config_now(self) -> dict:
@@ -324,19 +329,40 @@ class Service:
         return {"ok": True, "action": "stop", "service": "paused", "paused": True}
 
     # -- push ------------------------------------------------------------
+    def knowledge_gate(self) -> dict:
+        """The daily-push gate: blocked until the knowledge base is initialized."""
+        return console_gate.knowledge_gate(self.home)
+
+    def _note_gate(self, gate: dict) -> None:
+        """Log the blocked gate once per blocked episode, not on every tick."""
+        if gate.get("ready"):
+            self._gate_noted = False
+            return
+        if self._gate_noted:
+            return
+        self._gate_noted = True
+        self._log("INFO", "service", f"每日推送被知识库门禁挡住：{gate.get('note') or ''}")
+
     def request_push(self, trigger: str = "manual") -> dict:
-        """Ask for one push now (manual/control).  Refused while paused/busy."""
+        """Ask for one push now (manual/control).  Refused while paused/busy/blocked."""
         with self._lock:
             if self.paused:
                 self._log("INFO", "service", f"推送请求被拒绝（服务已暂停，trigger={trigger}）")
                 return {"ok": False, "reason": "service_paused", "trigger": trigger}
             if self._push_running:
                 return {"ok": False, "reason": "push_busy", "trigger": trigger}
-            self._start_push(trigger)
+            started = self._start_push(trigger)
+            if not started.get("ok"):
+                return {"ok": False, "reason": started.get("reason") or "push_refused", "trigger": trigger}
         return {"ok": True, "action": "push", "started": True, "trigger": trigger}
 
     def _start_push(self, trigger: str) -> dict:
         """Mark the day and start the push worker (lock already held)."""
+        gate = self.knowledge_gate()
+        if not gate.get("ready"):
+            self._note_gate(gate)
+            return {"ok": False, "reason": console_gate.REASON, "trigger": trigger}
+        self._gate_noted = False
         moment = self._moment()
         console.write_state(
             self.home,
@@ -441,7 +467,9 @@ class Service:
         with self._lock:
             if self.paused or self._push_running:
                 return None
-            self._start_push("recovery")
+            started = self._start_push("recovery")
+            if not started.get("ok"):
+                return None
         return {"pushed": "recovery"}
 
     def _mark_unfinished(self) -> None:
@@ -556,8 +584,8 @@ class Service:
             return None
         if self._push_running:
             return None
-        self._start_push("scheduled")
-        return "scheduled"
+        started = self._start_push("scheduled")
+        return "scheduled" if started.get("ok") else None
 
     # -- control consumption --------------------------------------------
     def _consume_control(self, moment: datetime) -> dict | None:
@@ -641,6 +669,7 @@ class Service:
             "last_push_at": state.get("last_push_at"),
             "last_push_trigger": state.get("last_push_trigger"),
         }
+        snapshot["knowledge_gate"] = self.knowledge_gate()
         return snapshot
 
 

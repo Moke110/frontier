@@ -385,10 +385,17 @@ def push_again(home: Path, params: dict, context: dict) -> dict:
                 "request": request,
                 "start": started,
             }
+        reason = str((started or {}).get("reason") or "push_failed")
+        text = "推送请求已记录，但本次启动未成功；稍后再试。"
+        if reason == "knowledge_not_ready":
+            text = (
+                "每日推送被知识库门禁挡住：待初始化知识库；"
+                "请在控制台执行 /frontier-update-kb 完成知识库初始化。"
+            )
         return {
             "ok": False,
-            "reason": str((started or {}).get("reason") or "push_failed"),
-            "text": "推送请求已记录，但本次启动未成功；稍后再试。",
+            "reason": reason,
+            "text": text,
             "request": request,
             "start": started,
         }

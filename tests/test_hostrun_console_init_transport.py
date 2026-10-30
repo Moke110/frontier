@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from common import write_json
-from hostrun import console, console_init, intents, lark
+from hostrun import console, console_init, facilities, intents, lark
 
 
 class Proc:
@@ -68,8 +68,32 @@ def make_home(tmp_path: Path):
     )
     console_init.record_step(home, "agent", {"dsh": str(dsh), "profile": "headless"})
     console_init.record_step(home, "lark", {"cli": {"path": str(cli), "source": "recorded"}})
+    record_completion_steps(home)
     console.write_state(home, service="paused", paused=True)
     return home
+
+
+def record_completion_steps(home: Path) -> None:
+    """#87's naming/push-time/knowledge steps are covered by their own test file."""
+    console_init.record_step(
+        home,
+        "naming",
+        {
+            "names": facilities.default_names(),
+            "base": {"token": "bascn_test", "url": "u", "name": "frontier 知识库"},
+            "tables": {},
+            "folders": {"root": "r", "source": "s", "push": "p"},
+            "reused": False,
+            "actions": [],
+        },
+    )
+    console_init.record_step(home, "push_time", {"push_time": "08:00", "next_push_at": None})
+    console_init.record_step(
+        home,
+        "knowledge",
+        {"choice": "later", "gate": "blocked", "reason": "knowledge_not_ready"},
+    )
+    console.write_state(home, knowledge_ready=False)
 
 
 class Sender:
@@ -149,8 +173,25 @@ def run_transport(home, *, sender=None, events=None, answers=(), runner=None):
         lark_runner=runner or ready_runner(),
         transport_send=sender or Sender(),
         transport_events=events or event_source(card_event()),
+        find_same_name=lambda *args: [],
+        facility_create=_fake_facility,
+        facility_attach=_fake_facility,
     )
     return result, out.getvalue()
+
+
+def _fake_facility(home, *args, names=None, **kwargs):
+    """A facility call that never reaches a live Feishu tenant."""
+    names = names or facilities.default_names()
+    return {
+        "ok": True,
+        "names": names,
+        "base": {"token": "bascn_test", "url": "u", "name": names["base"]},
+        "tables": {},
+        "folders": {"root": "r", "source": "s", "push": "p"},
+        "actions": [],
+        "reused": False,
+    }
 
 
 # ------------------------------------------------------------ happy path
@@ -161,7 +202,15 @@ def test_transport_sends_one_html_and_one_button_card_and_records_the_owner(tmp_
     result, rendered = run_transport(home, sender=sender, events=event_source(card_event()))
 
     assert result["ok"] is True
-    assert result["completed"] == ["archive", "agent", "lark", "transport"]
+    assert result["completed"] == [
+        "archive",
+        "agent",
+        "lark",
+        "transport",
+        "naming",
+        "push_time",
+        "knowledge",
+    ]
     assert len(sender.calls) == 1
     call = sender.calls[0]
     assert call["owner"] == "ou_user"
@@ -200,13 +249,17 @@ def test_the_transport_step_is_the_implemented_fourth_step(tmp_path):
     assert console_init.STEPS[3]["id"] == "transport"
     assert console_init.STEPS[3]["implemented"] is True
     assert console_init.STEPS[3]["ticket"] == "#86"
-    assert result["next_step"] == "naming"
-    assert [item["step"] for item in result["not_yet"]] == [
+    assert result["next_step"] is None
+    assert result["not_yet"] == []
+    assert result["completed"] == [
+        "archive",
+        "agent",
+        "lark",
+        "transport",
         "naming",
         "push_time",
         "knowledge",
     ]
-    assert result["completed"] == ["archive", "agent", "lark", "transport"]
 
 
 def test_a_rerun_skips_the_completed_transport_and_does_not_resend(tmp_path):

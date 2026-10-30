@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from common import write_json
-from hostrun import console, console_init, install, lark
+from hostrun import console, console_init, facilities, install, lark
 
 
 # ------------------------------------------------------------------ fixtures
@@ -79,6 +79,36 @@ def make_home(tmp_path: Path, *, service: str = "stopped", permissions: dict | N
     if service != "stopped":
         console.write_state(home, service=service, paused=service == "paused")
     return home
+
+
+def record_remaining_steps(home: Path) -> None:
+    """#87's steps live in ``test_hostrun_console_init_completion.py``; mark them done.
+
+    These tests exercise the archive/agent/Lark/transport steps and their resume
+    behaviour, so the naming, push-time and knowledge decisions are recorded as
+    completed instead of being re-asked on every run.
+    """
+    console_init.record_step(
+        home,
+        "naming",
+        {
+            "names": facilities.default_names(),
+            "base": {"token": "bascn_test", "url": "u", "name": "frontier 知识库"},
+            "tables": {},
+            "folders": {"root": "r", "source": "s", "push": "p"},
+            "reused": False,
+            "actions": [],
+        },
+    )
+    console_init.record_step(
+        home, "push_time", {"push_time": "08:00", "next_push_at": None}
+    )
+    console_init.record_step(
+        home,
+        "knowledge",
+        {"choice": "later", "gate": "blocked", "reason": "knowledge_not_ready"},
+    )
+    console.write_state(home, knowledge_ready=False)
 
 
 def reader(*answers: str):
@@ -146,11 +176,20 @@ def test_init_is_refused_while_the_service_is_running(tmp_path):
 
 def test_init_is_allowed_while_the_service_is_paused(tmp_path):
     home = make_home(tmp_path, service="paused")
+    record_remaining_steps(home)
 
     result, _rendered = init_run(home, ["", ""])
 
     assert result["ok"] is True
-    assert result["completed"] == ["archive", "agent", "lark", "transport"]
+    assert result["completed"] == [
+        "archive",
+        "agent",
+        "lark",
+        "transport",
+        "naming",
+        "push_time",
+        "knowledge",
+    ]
 
 
 def test_init_refuses_a_non_tty_with_the_launcher_hint(tmp_path):
@@ -168,12 +207,21 @@ def test_init_refuses_a_non_tty_with_the_launcher_hint(tmp_path):
 # --------------------------------------------------------- first run / state
 def test_first_run_confirms_the_default_archive_then_the_agent(tmp_path):
     home = make_home(tmp_path)
+    record_remaining_steps(home)
     default_archive = tmp_path / "frontier-archive"
 
     result, rendered = init_run(home, ["", ""])
 
     assert result["ok"] is True
-    assert result["completed"] == ["archive", "agent", "lark", "transport"]
+    assert result["completed"] == [
+        "archive",
+        "agent",
+        "lark",
+        "transport",
+        "naming",
+        "push_time",
+        "knowledge",
+    ]
     state = json.loads(console_init.state_path(home).read_text(encoding="utf-8"))
     assert state["steps"]["archive"]["status"] == "ok"
     assert state["steps"]["archive"]["value"]["path"] == str(default_archive)
@@ -181,14 +229,14 @@ def test_first_run_confirms_the_default_archive_then_the_agent(tmp_path):
     assert state["steps"]["agent"]["status"] == "ok"
     assert state["steps"]["agent"]["value"]["dsh"].endswith("dsh.cmd")
     assert "dsh-headless-account.patch.yml" in state["steps"]["agent"]["value"]["patch"]
-    # The remaining ADR §7 steps are explicit not-yet steps, not silent skips.
-    assert result["next_step"] == "naming"
-    assert [item["step"] for item in result["not_yet"]] == [
-        "naming",
-        "push_time",
-        "knowledge",
-    ]
-    assert "尚未实现" in rendered
+    # ADR §7 now has no unimplemented step: #87 finished the remaining three.
+    assert result["next_step"] is None
+    assert result["not_yet"] == []
+    assert "尚未实现" not in rendered
+    # The completion state is written and the service is started by init.
+    assert state["complete"] is True
+    assert state["completed_at"]
+    assert console.read_state(home)["service"] == "running"
     # The agent confirmation shows the absolute dsh path, the --patch overlay
     # and the authorization scope before asking.
     assert str(tmp_path / "bin" / "dsh.cmd") in rendered
@@ -198,6 +246,7 @@ def test_first_run_confirms_the_default_archive_then_the_agent(tmp_path):
 
 def test_init_state_lives_in_the_code_runtime_area_not_install_steps(tmp_path):
     home = make_home(tmp_path)
+    record_remaining_steps(home)
 
     init_run(home, ["", ""])
 
@@ -211,6 +260,7 @@ def test_init_state_lives_in_the_code_runtime_area_not_install_steps(tmp_path):
 # ------------------------------------------------------- archive directory choice
 def test_y_uses_the_default_archive_directory(tmp_path):
     home = make_home(tmp_path)
+    record_remaining_steps(home)
 
     def pick(default):  # pragma: no cover - must never open the dialog
         raise AssertionError("the folder dialog must not open for Y/y")
@@ -220,12 +270,21 @@ def test_y_uses_the_default_archive_directory(tmp_path):
     state = json.loads(console_init.state_path(home).read_text(encoding="utf-8"))
     assert state["steps"]["archive"]["value"]["path"] == str(tmp_path / "frontier-archive")
     assert state["steps"]["archive"]["value"]["default"] is True
-    assert result["completed"] == ["archive", "agent", "lark", "transport"]
+    assert result["completed"] == [
+        "archive",
+        "agent",
+        "lark",
+        "transport",
+        "naming",
+        "push_time",
+        "knowledge",
+    ]
     assert "默认资料目录" in rendered
 
 
 def test_n_opens_the_folder_dialog_and_a_cancel_falls_back_to_the_default(tmp_path):
     home = make_home(tmp_path)
+    record_remaining_steps(home)
     seen: list[str] = []
 
     def pick(default):
@@ -242,11 +301,20 @@ def test_n_opens_the_folder_dialog_and_a_cancel_falls_back_to_the_default(tmp_pa
         "outside_code": True,
     }
     assert "已取消" in rendered
-    assert result["completed"] == ["archive", "agent", "lark", "transport"]
+    assert result["completed"] == [
+        "archive",
+        "agent",
+        "lark",
+        "transport",
+        "naming",
+        "push_time",
+        "knowledge",
+    ]
 
 
 def test_a_directory_outside_the_code_directory_is_accepted_after_a_write_probe(tmp_path):
     home = make_home(tmp_path)
+    record_remaining_steps(home)
     chosen = tmp_path / "custom-archive"
     chosen.mkdir()
     probed: list[Path] = []
@@ -264,7 +332,15 @@ def test_a_directory_outside_the_code_directory_is_accepted_after_a_write_probe(
         "default": False,
         "outside_code": True,
     }
-    assert result["completed"] == ["archive", "agent", "lark", "transport"]
+    assert result["completed"] == [
+        "archive",
+        "agent",
+        "lark",
+        "transport",
+        "naming",
+        "push_time",
+        "knowledge",
+    ]
 
 
 def test_a_chosen_directory_inside_the_code_directory_is_refused(tmp_path):
@@ -354,6 +430,7 @@ def test_a_missing_dsh_blocks_the_agent_step_without_recording_it(tmp_path):
 # ------------------------------------------------------------- resume behaviour
 def test_an_interruption_resumes_at_the_unfinished_step(tmp_path):
     home = make_home(tmp_path)
+    record_remaining_steps(home)
 
     first, _rendered = init_run(home, [""], )  # EOF at the agent question
     assert first["ok"] is False
@@ -365,7 +442,15 @@ def test_an_interruption_resumes_at_the_unfinished_step(tmp_path):
     second, rendered = init_run(home, [""])
 
     assert second["ok"] is True
-    assert second["completed"] == ["archive", "agent", "lark", "transport"]
+    assert second["completed"] == [
+        "archive",
+        "agent",
+        "lark",
+        "transport",
+        "naming",
+        "push_time",
+        "knowledge",
+    ]
     assert "[已完成] 确认资料目录" in rendered
     # The archive step is not asked again.
     assert "使用默认资料目录" not in rendered
@@ -373,14 +458,24 @@ def test_an_interruption_resumes_at_the_unfinished_step(tmp_path):
 
 def test_a_rerun_skips_every_completed_step_and_shows_done(tmp_path):
     home = make_home(tmp_path)
+    record_remaining_steps(home)
     init_run(home, ["", ""])
 
     result, rendered = init_run(home, [])
 
     assert result["ok"] is True
-    assert result["completed"] == ["archive", "agent", "lark", "transport"]
-    assert rendered.count("[已完成]") == 4
-    assert "尚未实现" in rendered
+    assert result["completed"] == [
+        "archive",
+        "agent",
+        "lark",
+        "transport",
+        "naming",
+        "push_time",
+        "knowledge",
+    ]
+    assert rendered.count("[已完成]") == 7
+    assert "尚未实现" not in rendered
+    assert result["reason"] == "already_complete"
 
 
 # ------------------------------------------------------------------ dispatch
@@ -411,6 +506,7 @@ def test_frontier_init_is_no_longer_a_stub_in_the_help(tmp_path):
 
 def test_serve_wires_the_init_step_machine_to_the_prompt_reader(tmp_path):
     home = make_home(tmp_path)
+    record_remaining_steps(home)
     console.write_state(home, paused=True, service="paused")
     # The Lark and transport steps have their own offline test files; record them
     # as done here so the serve test exercises the prompt wiring without a

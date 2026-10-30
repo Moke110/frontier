@@ -633,9 +633,9 @@ def run(
         # A daily push also requires formal knowledge to be ready.
         queue = _queue(home)
         if intent == "daily":
-            from hostrun.install import step_status
+            from hostrun import console_gate
 
-            if step_status(home).get("knowledge") != "ok":
+            if not console_gate.daily_allowed(home).get("ready"):
                 result["retrieval"] = {
                     "requested": False,
                     "started": False,
