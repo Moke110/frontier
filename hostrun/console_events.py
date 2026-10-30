@@ -34,6 +34,7 @@ The message parser and feedback-poll gate are moved from ``hostrun.listener``
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import time
 from pathlib import Path
@@ -626,6 +627,10 @@ class EventSurface:
         self._stop = threading.Event()
         self._threads: dict[str, threading.Thread] = {}
         self.inflight: dict[str, bool] = {}
+        # One queue per transport test currently waiting for its card callback
+        # (#86): the console already owns the card subscription, so a second
+        # ``lark-cli event consume`` must never be spawned during initialization.
+        self._card_waiters: list[queue.Queue] = []
         now = float(self._clock())
         self._last_feedback = now
         self._last_pull = now
@@ -696,6 +701,35 @@ class EventSurface:
 
     def request_stop(self) -> None:
         self._stop.set()
+
+    # -- transport test bridge (#86) -------------------------------------
+    def wait_card(self, *, timeout_seconds: float = 300, identity: str = "bot") -> dict:
+        """Block until the next card callback arrives on this surface.
+
+        ``/frontier-init`` uses this instead of spawning a second
+        ``lark-cli event consume``: the console's single card subscription is the
+        only consumer.  ``identity`` is accepted for the event-source contract and
+        is not used (the surface already consumes as bot).
+        """
+        waiter: queue.Queue = queue.Queue()
+        self._card_waiters.append(waiter)
+        try:
+            event = waiter.get(timeout=max(0.0, float(timeout_seconds)))
+        except queue.Empty:
+            return {"ok": False, "reason": "timeout", "events": []}
+        finally:
+            try:
+                self._card_waiters.remove(waiter)
+            except ValueError:
+                pass
+        return {"ok": True, "reason": "ok", "events": [event]}
+
+    def _notify_card(self, event: dict) -> None:
+        for waiter in list(self._card_waiters):
+            try:
+                waiter.put_nowait(event)
+            except Exception:  # noqa: BLE001 - a dead waiter never kills the surface
+                pass
 
     # -- event routing ---------------------------------------------------
     def run_subscription(self, event_key: str, *, stop=None) -> dict:
@@ -774,6 +808,10 @@ class EventSurface:
             if event is None:
                 self._log("INFO", "feishu", f"忽略非卡片回调事件（{event_key}）")
                 return {"ok": True, "action": "ignored", "reason": "not_a_card"}
+            # Hand the callback to an in-flight /frontier-init transport test
+            # before routing it.  Pause only suppresses replies/runs; the click
+            # itself is still the evidence the init step is waiting for.
+            self._notify_card(event)
             return handle_card(
                 self.home,
                 event,

@@ -1,7 +1,7 @@
 """Console ``/frontier-init`` step machine (ADR 0009 §7).
 
 The initialization is an ordered, resumable state machine executed inside the
-Console.  This module currently delivers three steps:
+Console.  This module currently delivers four steps:
 
 1. **archive directory** — confirm the default archive (``Y``/Enter) or open the
    system folder dialog (``N``); a cancelled dialog falls back to the default.
@@ -21,10 +21,16 @@ Console.  This module currently delivers three steps:
    Feishu developer-console link and the missing list and waits for a re-check.
    The login wait is capped at 15 minutes, a failure offers "retry / abort
    (progress preserved)" and never a skip, and no system terminal is opened.
+4. **Transport test** — one test HTML message and one single-button card are
+   sent to the authenticated user; the step waits for the card callback and
+   compares the clicker with the logged-in open id.  A matching click writes
+   ``install/recipient.json`` (the record the Feishu owner gate reads) and
+   records the step; no click, a timeout or another person's click leaves the
+   step unrecorded and offers retry/abort.
 
-The remaining ADR §7 steps (transport test, facility naming, push time,
-knowledge-base gate) are registered as explicit not-yet steps owned by
-#86/#87; they are shown, never silently skipped.
+The remaining ADR §7 steps (facility naming, push time, knowledge-base gate) are
+registered as explicit not-yet steps owned by #87; they are shown, never silently
+skipped.
 
 State lives in the code directory's runtime area at
 ``<runtime>/install/initial/state.json`` — the ``layout`` category ``init``.
@@ -44,6 +50,7 @@ the real browser authorization stay ``untested`` until recorded live.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import time
@@ -70,6 +77,20 @@ LARK_REQUIRED_SCOPES = tuple(
     dict.fromkeys(scope for scopes in lark.REQUIRED_SCOPES.values() for scope in scopes)
 )
 
+#: The transport test (#86): one HTML message plus one single-button card.  The
+#: owner clicks the button; the callback must arrive through the card event
+#: stream.  ``recipient.json`` is the same record the Feishu owner gate reads.
+TRANSPORT_WAIT_SECONDS = 5 * 60
+TRANSPORT_ACTION = "transport_test"
+RECIPIENT_REL = Path("install") / "recipient.json"
+TEST_HTML = (
+    "<html><body>"
+    "<h1>frontier 通道测试</h1>"
+    "<p>这是一条测试 HTML：收到它说明控制台能用已记录的 Lark CLI 给你发消息。</p>"
+    "<p>请点击随后到达的卡片上的按钮；控制台会核对点击者并写入 owner 记录。</p>"
+    "</body></html>"
+)
+
 #: The ADR §7 order.  ``implemented`` flips in later tickets without reordering.
 STEPS = (
     {
@@ -93,7 +114,7 @@ STEPS = (
     {
         "id": "transport",
         "title": "飞书测试消息与 owner 验证",
-        "implemented": False,
+        "implemented": True,
         "ticket": "#86",
     },
     {
@@ -719,6 +740,267 @@ def _step_lark(
     return {"ok": True, "value": value}
 
 
+# ------------------------------------------------------- transport test step
+def transport_test_card() -> dict:
+    """One Card 2.0 payload with exactly one button (reusing ``cards._button``)."""
+    from publisher.cards import _button
+
+    return {
+        "schema": "2.0",
+        "config": {
+            "update_multi": True,
+            "summary": {"content": "frontier 通道测试"},
+        },
+        "header": {
+            "title": {"tag": "plain_text", "content": "frontier 通道测试"},
+            "template": "blue",
+        },
+        "body": {
+            "direction": "vertical",
+            "padding": "12px 12px 20px 12px",
+            "vertical_spacing": "12px",
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": "点击下面的按钮，证明飞书通道与 owner 核实都可用。",
+                },
+                {
+                    "tag": "form",
+                    "name": "transport_form",
+                    "vertical_spacing": "12px",
+                    "elements": [
+                        _button(
+                            TRANSPORT_ACTION,
+                            "我已收到，确认通道可用",
+                            kind="primary",
+                        )
+                    ],
+                },
+            ],
+        },
+    }
+
+
+def send_transport_test(*, owner: str, html: str, card: dict, identity: str = "bot") -> dict:
+    """Send the HTML text and the single-button card through the recorded CLI."""
+    from publisher import feishu
+
+    try:
+        text_message = feishu.send_text(owner, html, identity=identity)
+        card_message = feishu.send_card(owner, card, identity=identity)
+    except Exception as exc:  # noqa: BLE001 - a send failure is a retryable result
+        return {
+            "ok": False,
+            "reason": "transport_send_failed",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    card_message_id = str(card_message.get("message_id") or "")
+    if not card_message_id:
+        return {
+            "ok": False,
+            "reason": "transport_send_failed",
+            "error": "卡片发送成功但没有 message_id",
+        }
+    return {
+        "ok": True,
+        "html_message_id": str(text_message.get("message_id") or ""),
+        "card_message_id": card_message_id,
+    }
+
+
+def wait_card_callback(
+    *,
+    timeout_seconds: int = TRANSPORT_WAIT_SECONDS,
+    identity: str = "bot",
+    consume=None,
+) -> dict:
+    """Wait for one ``card.action.trigger`` event through the injectable source.
+
+    ``consume`` is the lark event source (default
+    :func:`publisher.feishu.listen_events`); it is injected in tests so no real
+    ``lark-cli`` process is ever spawned.  Only the first event stops the chunk.
+    """
+    from hostrun.console_events import parse_card_event
+    from publisher import feishu
+
+    consume = consume or feishu.listen_events
+    lines: list[str] = []
+
+    def on_line(line: str):
+        lines.append(str(line))
+        return False
+
+    try:
+        chunk = consume(
+            identity=identity,
+            event_key="card.action.trigger",
+            max_events=1,
+            timeout=f"{int(timeout_seconds)}s",
+            on_line=on_line,
+            deadline_seconds=timeout_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001 - an event-source failure is a result
+        return {
+            "ok": False,
+            "reason": "consume_failed",
+            "events": [],
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    events = []
+    for line in lines:
+        try:
+            raw = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        event = parse_card_event(raw)
+        if event:
+            events.append(event)
+    if events:
+        return {"ok": True, "reason": "ok", "events": events, "chunk": chunk}
+    if chunk.get("reason") in ("timeout", "stopped") or chunk.get("ok"):
+        return {"ok": False, "reason": "timeout", "events": [], "chunk": chunk}
+    return {
+        "ok": False,
+        "reason": "consume_failed",
+        "events": [],
+        "chunk": chunk,
+        "error": chunk.get("stderr_tail") or chunk.get("reason") or "",
+    }
+
+
+def _transport_failure(reason: str, text: str) -> dict:
+    return {"ok": False, "reason": reason, "text": text}
+
+
+def _step_transport(
+    home: Path,
+    *,
+    reader,
+    out,
+    runner,
+    send,
+    consume,
+) -> dict:
+    """Send the test HTML + one-button card, wait for the owner's click, write owner."""
+    _say(out, "步骤 4/7：飞书测试消息与 owner 验证")
+    config = load_config(Path(home))
+    cli = str((config.get("paths") or {}).get("lark_cli") or "").strip()
+    if not cli:
+        return _transport_failure(
+            "recipient_unverified",
+            "安装记录没有可用的飞书 CLI，无法发送测试消息；"
+            "请先完成 Lark CLI 步骤，再运行 /frontier-init。",
+        )
+    wait_minutes = TRANSPORT_WAIT_SECONDS // 60
+    while True:
+        # Re-check the authenticated user before every send: a retried test must
+        # never target a stale or different identity (ADR 0007 / #53).
+        identity = lark.user_open_id(cli, runner=runner)
+        if not identity.get("ok"):
+            _say(out, "无法核对当前登录的飞书用户身份（未登录、令牌不可用或 CLI 失效）。")
+            if _failure_choice(reader, out, what="飞书通道测试") == "abort":
+                return _transport_failure(
+                    "recipient_unverified",
+                    "未核实 owner：无法读取当前登录的飞书用户身份；"
+                    "初始化停在“飞书测试消息与 owner 验证”，进度已保留。",
+                )
+            continue
+        owner = str(identity["open_id"])
+        _say(out, "正在发送测试 HTML 与单按钮测试卡片…")
+        sent = send(owner=owner, html=TEST_HTML, card=transport_test_card())
+        if not sent.get("ok"):
+            detail = sent.get("error") or sent.get("reason") or "未知原因"
+            _say(out, f"测试消息发送失败：{detail}")
+            if _failure_choice(reader, out, what="飞书测试消息发送") == "abort":
+                return _transport_failure(
+                    "transport_send_failed",
+                    f"测试消息发送失败（{detail}）；"
+                    "初始化停在“飞书测试消息与 owner 验证”，进度已保留。",
+                )
+            continue
+        card_message_id = str(sent.get("card_message_id") or "")
+        _say(
+            out,
+            f"测试消息已发送；请在飞书点击测试卡片上的按钮"
+            f"（等待上限 {wait_minutes} 分钟，不新开终端）。",
+        )
+        waited = consume(timeout_seconds=TRANSPORT_WAIT_SECONDS, identity="bot")
+        if not waited.get("ok"):
+            if waited.get("reason") == "consume_failed":
+                _say(out, "等待卡片回调失败：卡片事件源不可用。")
+                if _failure_choice(reader, out, what="飞书卡片回调") == "abort":
+                    return _transport_failure(
+                        "transport_event_failed",
+                        "无法接收卡片回调；初始化停在“飞书测试消息与 owner 验证”，进度已保留。",
+                    )
+            else:
+                _say(out, f"未在 {wait_minutes} 分钟内收到测试卡片的按钮点击。")
+                if _failure_choice(reader, out, what="飞书测试消息点击") == "abort":
+                    return _transport_failure(
+                        "recipient_unverified",
+                        "未收到测试卡片点击，owner 未核实；"
+                        "初始化停在“飞书测试消息与 owner 验证”，可重试重发。",
+                    )
+            continue
+
+        mismatch = None
+        matched = None
+        for event in waited.get("events") or []:
+            message_id = str(event.get("message_id") or "")
+            # Ignore callbacks for other cards.  A missing id is tolerated
+            # because the injected source already targets one event key.
+            if card_message_id and message_id and message_id != card_message_id:
+                continue
+            action = str(event.get("action_name") or "")
+            if action and action != TRANSPORT_ACTION:
+                continue
+            if str(event.get("operator_id") or "") != owner:
+                mismatch = event
+                continue
+            matched = event
+            break
+        if matched:
+            write_json(
+                home / RECIPIENT_REL,
+                {
+                    "schema_version": 1,
+                    "owner": owner,
+                    "verified_at": now(),
+                    "source": "init.transport",
+                },
+            )
+            value = {
+                "channel": "ok",
+                "owner": {
+                    "verified": True,
+                    "record": str(RECIPIENT_REL),
+                    "source": "init.transport",
+                },
+                "html_message_id": str(sent.get("html_message_id") or ""),
+                "card_message_id": card_message_id,
+            }
+            record_step(home, "transport", value, note="飞书通道测试通过，owner 已核实")
+            # The open id original is never echoed back to the terminal.
+            _say(out, "[完成] 飞书通道测试通过；owner 已核实并写入 recipient.json。")
+            return {"ok": True, "value": value}
+        if mismatch is not None:
+            _say(out, "卡片被其他人点击：点击者与当前登录用户不一致，未写入 owner。")
+            if _failure_choice(reader, out, what="飞书 owner 核实") == "abort":
+                return _transport_failure(
+                    "recipient_mismatch",
+                    "点击者与当前登录用户不一致，owner 未核实；"
+                    "初始化停在“飞书测试消息与 owner 验证”，可重试重发。",
+                )
+            continue
+        _say(out, "等待期间没有收到本卡片的有效点击。")
+        if _failure_choice(reader, out, what="飞书测试消息点击") == "abort":
+            return _transport_failure(
+                "recipient_unverified",
+                "未收到测试卡片点击，owner 未核实；"
+                "初始化停在“飞书测试消息与 owner 验证”，可重试重发。",
+            )
+
+
 # --------------------------------------------------------------------- run
 def console_launcher_path(code: Path) -> Path:
     return Path(code) / "bin" / "frontier-console.cmd"
@@ -751,6 +1033,8 @@ def run(
     write_probe=None,
     lark_runner=None,
     lark_install=None,
+    transport_send=None,
+    transport_events=None,
     clock=None,
     sleep=None,
 ) -> dict:
@@ -763,8 +1047,11 @@ def run(
     The Lark step's subprocess calls go through ``lark_runner`` (default
     ``subprocess.run``), its private installer through ``lark_install`` (default
     :func:`hostrun.lark.install_cli`), and its 15-minute wait through ``clock``
-    and ``sleep``.  Every one of them is injectable so no test ever spawns a real
-    ``lark-cli``, npm or a system terminal.
+    and ``sleep``.  The transport test's sends go through ``transport_send``
+    (default :func:`send_transport_test`) and its card callback through
+    ``transport_events`` (default :func:`wait_card_callback`, whose own seam is
+    the lark event source).  Every one of them is injectable so no test ever
+    spawns a real ``lark-cli``, npm or a system terminal.
     """
     home = Path(home)
     out = sys.stdout if out is None else out
@@ -773,6 +1060,8 @@ def run(
     probe = write_probe or probe_write
     lark_runner = lark_runner or subprocess.run
     lark_install = lark_install or lark.install_cli
+    transport_send = transport_send or send_transport_test
+    transport_events = transport_events or wait_card_callback
     clock = clock or time.monotonic
     sleep = sleep or time.sleep
     code = _code_dir(home, resolved)
@@ -845,6 +1134,15 @@ def run(
                     or default_archive
                 )
                 outcome = _step_agent(home, code=code, archive=archive, reader=reader, out=out)
+            elif step_id == "transport":
+                outcome = _step_transport(
+                    home,
+                    reader=reader,
+                    out=out,
+                    runner=lark_runner,
+                    send=transport_send,
+                    consume=transport_events,
+                )
             else:
                 outcome = _step_lark(
                     home,
@@ -939,4 +1237,9 @@ def _completed_line(step_id: str, value: dict) -> str:
             name for name in ("user", "bot") if identity.get(f"{name}_ready")
         ) or "未就绪"
         return f"{cli.get('path') or '未记录'}（身份：{sides}）"
+    if step_id == "transport":
+        owner = value.get("owner") or {}
+        if value.get("channel") == "ok" and owner.get("verified"):
+            return "通道测试通过，owner 已核实"
+        return "通道测试未通过"
     return "已完成"

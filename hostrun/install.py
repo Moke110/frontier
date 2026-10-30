@@ -49,14 +49,17 @@ STEPS = (
     "identity",
     "permissions",
     "facilities",
-    "test_loop",
-    "cleanup",
     "knowledge",
     "schedules",
     "scheduled_run",
     "listener",
     "listener_health",
 )
+#: Retired by #86: the temporary keyword smoke loop no longer gates installation
+#: or the console initialization.  Older install records may still contain these
+#: steps (``record`` keeps accepting them so existing state stays readable), but
+#: they are absent from the report, ``summary`` and ``next_step``.
+RETIRED_STEPS = ("test_loop", "cleanup")
 STEP_NOTES = {
     "host": "宿主产品、版本、本机执行、内置调度与实际权限",
     "workspace": "代码目录与资料目录分离（运行时区在代码目录内），已有副本检查与续接",
@@ -66,8 +69,6 @@ STEP_NOTES = {
     "identity": "飞书 user / bot 身份与登录有效期",
     "permissions": "运行时区与 CLI 凭据目录写入、Base/Drive 资源读取与消息权限的真实预检",
     "facilities": "Base 本身、各表、原文库与推送库目录的稳定 ID",
-    "test_loop": "关键词驱动的临时闭环（推送、评分、采纳、写入）",
-    "cleanup": "本次测试副作用的删除与无残留验证",
     "knowledge": "文献库与用户要求确认后的正式知识卡片",
     "schedules": "每日推送与每日监听巡检两类宿主任务",
     "scheduled_run": "至少一次真实到点的本地定时触发",
@@ -133,7 +134,7 @@ def record(
     actually break (workspace paths, interpreter, registered skill): it may
     downgrade the status but keeps ``first_ok_at``.
     """
-    if step not in STEPS:
+    if step not in STEPS and step not in RETIRED_STEPS:
         raise HostRunError(f"unknown install step: {step}")
     if status not in STATE_STATUSES:
         raise HostRunError(f"unknown install status: {status}")

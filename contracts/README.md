@@ -543,10 +543,11 @@ python -m hostrun.cli status
     ├── install/
     │   ├── config.json           # 宿主、私有路径、时区、权限与任务（凭据字段一律 ***）
     │   ├── state.json            # 分步状态：host/workspace/dependencies/skill/lark_cli/identity/
-    │   │                         #   permissions/facilities/test_loop/cleanup/knowledge/schedules/scheduled_run/
-    │   │                         #   listener/listener_health（巡检证据单独记为 listener_health）
+    │   │                         #   permissions/facilities/knowledge/schedules/scheduled_run/
+    │   │                         #   listener/listener_health（巡检证据单独记为 listener_health）；
+    │   │                         #   test_loop/cleanup 已退役，旧记录仍可读但不参与门禁
     │   ├── facilities.json       # Base/表/目录的稳定 ID 与已确认展示名
-    │   ├── recipient.json        # smoke start 核实后的收件人（schema_version/owner/verified_at/source）；
+    │   ├── recipient.json        # /frontier-init 传输测试核实后的收件人（schema_version/owner/verified_at/source）；
     │   │                         #   用户标识原文只在这里与测试记录中，不进入安装报告
     │   ├── smoke.json            # 测试 ID、owner 与 owner_verified、步骤、副作用归属
     │   │                         #   （artifacts.candidates/plan/paper_ids/push_html）、
