@@ -74,6 +74,7 @@ def build_legacy(tmp_path):
     _write(legacy / "queue" / "request.json", {"requested": True})
     _write(legacy / "proposals" / "p.json", {"id": "p"})
     _write(legacy / "logs" / "run.log", "log\n")
+    _write(legacy / "state" / "checkpoints.yaml", "checkpoints: {}\n")
     _write(legacy / "executor" / "lease.json", {"holder": "workbuddy"})
     _write(legacy / "console" / "state.json", {"service": "paused"})
     _write(legacy / "lark-cli" / "bin" / "lark-cli.exe", b"fake lark")
@@ -148,6 +149,7 @@ def test_migration_moves_runtime_state_and_keeps_materials_in_the_archive(tmp_pa
         "queue/request.json",
         "proposals/p.json",
         "logs/run.log",
+        "state/checkpoints.yaml",
         "executor/lease.json",
         "console/state.json",
         "lark-cli/bin/lark-cli.exe",

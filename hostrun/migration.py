@@ -35,6 +35,7 @@ LEGACY_RUNTIME_DIRS = (
     "queue",
     "proposals",
     "logs",
+    "state",
     "executor",
     "console",
     "lark-cli",
