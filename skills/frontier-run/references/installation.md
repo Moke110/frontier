@@ -1,209 +1,188 @@
 # frontier 安装与恢复参考（供宿主 agent 执行）
 
-frontier 不是后台服务，而是**由你正在用的宿主 agent 在本机按需执行**的一组命令。用户从仓库 [README.md](../../../README.md) 的安装 Prompt 启动；宿主加载 `skills/frontier-run/SKILL.md` 后按本参考执行。示例中的 `<workspace>`、`<home>`、`<repo>`、解释器与 CLI 路径都替换为安装时验证过的绝对路径。
+> 状态：控制台化设计已定（[ADR 0009](../../../docs/adr/0009-console-as-service.md)），代码尚未实现。本文件描述目标流程；当前仓库仍按旧流程运行。
 
-- 代码目录与数据根分开：工作区内代码子目录默认 `frontier`，数据根默认 `frontier-archive`。
-- 不需要 WSL、systemd、Windows 任务计划或登录自启；不写持久环境变量、PATH 或注册表。唯一常驻组件是用户手动启停的 `frontier-listener` 监听进程（[ADR 0008](../../../docs/adr/0008-listener-process.md)）。
-- 单执行端：同一知识库同一时刻只由一个宿主驱动。
-- 判断标准只有 `python -m hostrun.cli install report` 的分项：`working` 才是通过，`blocked` 是缺能力，`untested` 是没测过。**离线测试、任务计划、手动调用都不代替真实交付/到点证据。**
+frontier 的安装与日常操作由**用户可见的前台控制台**承担，宿主 agent 负责准备工作区、环境、设施与用户对话。用户从仓库 [README.md](../../../README.md) 的安装 Prompt 启动；宿主加载 `skills/frontier-run/SKILL.md` 后按本参考执行。示例中的 `<workspace>`、`<code>`、`<archive>`、解释器与 CLI 路径都替换为安装时验证过的绝对路径。
+
+- 工作区（`<workspace>`）下是代码目录（`<code>`，默认 `<workspace>/frontier`）与资料目录（`<archive>`，默认 `<workspace>/frontier-archive`）。
+- 代码、私有环境（`<code>/.venv`）、配置、运行状态、日志与资料登记（`<code>/runtime/archive-index.jsonl`）都在代码目录；资料目录只放 `originals/` 与 `pushes/`。
+- 不需要 WSL、systemd、Windows 任务计划或登录自启；不写持久环境变量、PATH 或注册表。唯一常驻组件是用户可见、关闭即停的控制台（[ADR 0009](../../../docs/adr/0009-console-as-service.md)）。
+- 单执行端：同一知识库同一时刻只由一个控制台驱动。
+- 判断标准只有 `python -m hostrun.cli install report` 的分项：`working` 才是通过，`blocked` 是缺能力，`untested` 是没测过。**离线测试、任务计划、手动调用都不代替真实交付证据。**
 
 ## 1. 支持的宿主
 
 | 宿主 | 形态 | 状态 |
 |---|---|---|
-| WorkBuddy（Windows 桌面端） | 本地会话 + 内置自动化 | 历史验证过项目访问、技能与本地命令；内置调度真实触发与无人值守权限仍待验收 |
-| ChatGPT（Windows 桌面端本地模式） | 本地会话 + 计划任务 | 未实测；不得把旧票据状态当作通过 |
-| DeepSeek Harness（Windows 本地会话） | 本地命令 + 技能 + 会话内定时 + 用户启停的监听进程 | 第三款运行宿主（见 [ADR 0006](../../../docs/adr/0006-deepseek-harness-as-a-host.md)）；真实安装闭环、定时触发与监听 24 小时在线仍待验收 |
+| WorkBuddy（Windows 桌面端） | 本地命令 + 技能 + 启动前台控制台 | 历史验证过项目访问、技能与本地命令；控制台流程未实测 |
+| ChatGPT（Windows 桌面端本地模式） | 本地命令 + 技能 + 启动前台控制台 | 未实测；不得把旧票据状态当作通过 |
+| DeepSeek Harness（Windows 本地会话） | 本地命令 + 技能 + 启动前台控制台 | 第三款运行宿主（见 [ADR 0006](../../../docs/adr/0006-deepseek-harness-as-a-host.md)）；控制台安装闭环与真实交付仍待验收 |
 | Linux / macOS 终端 | 直接跑 CLI | 与宿主无关的命令行链路由离线测试覆盖 |
 
-每款宿主分别记录实际版本、权限与运行证据，不能互相替代。DeepSeek Harness 会话结束或宿主关闭后不承诺定时触发；监听进程独立于会话，但它由用户手动启动，宿主所在机器必须开机。必须在目标宿主中观察真实运行。
+控制台化后不再要求宿主内置定时任务：推送时刻由控制台计时。每款宿主分别记录实际版本、权限与运行证据，不能互相替代。宿主或控制台关闭后不承诺定时触发；机器必须开机。必须在目标宿主中观察真实运行。
 
 ## 2. 前置条件
 
 | 需要 | 说明 |
 |---|---|
-| 宿主本地执行 | 能运行命令、读写项目目录、加载技能、创建内置定时任务 |
+| 宿主本地执行 | 能运行命令、读写项目目录、加载技能、启动前台控制台 |
 | Node.js / npm | 仅在系统里没有可用 `lark-cli` 时用于私有安装；不装全局包 |
-| 飞书账号 | 由你本人完成登录与管理员授权；agent 只给直达命令 |
-| 用户确认 | 数据根/展示名称、关键词测试、正式知识卡片、时区与任务启用 |
+| 飞书账号 | 由你本人完成登录与管理员授权；agent 只给直达链接与设备码 |
+| 用户确认 | 资料目录、执行 agent、设施展示名称、每日推送时刻、是否初始化知识库 |
 
 ## 3. 安装顺序
 
-### 3.1 工作区与私有环境
+### 3.1 工作区、代码目录与私有环境
 
-先实测当前宿主对数据根和飞书 CLI 支持的凭据存储（令牌与 DPoP 密钥）的必要写入权限。私有环境位于数据根只隔离依赖，不解除宿主沙箱对进程树的限制；改变解释器位置不能作为权限已解决的证据。失败时记录实际路径、错误与所需授权范围，不搬迁凭据或使用全局完全访问绕过。
+先实测当前宿主对代码目录、资料目录与飞书 CLI 凭据存储（令牌与 DPoP 密钥）的必要写入权限。私有环境位于代码目录只隔离依赖，不解除宿主沙箱对进程树的限制；改变解释器位置不能作为权限已解决的证据。失败时记录实际路径、错误与所需授权范围，不搬迁凭据或使用全局完全访问绕过。
 
 ```bash
 python -m hostrun.cli install workspace --root <workspace> --repo-url https://github.com/Moke110/frontier.git
-python -m hostrun.cli --home <home> install toolchain --root <workspace>
-python -m hostrun.cli --home <home> install skill --root <workspace> --target <host-skill-dir>/frontier-run
+python -m hostrun.cli --code <code> install toolchain --root <workspace>
+python -m hostrun.cli --code <code> install skill --root <workspace> --target <host-skill-dir>/frontier-run
 ```
 
-- `install workspace` 只**检查**已有副本：有未提交改动、origin 不符或不是 git 仓库时报告 blocked，不拉取、不覆盖；数据根只创建不删除。若数据根落在代码目录内，明确拒绝且不写入。
-- `install toolchain` 先在**工作区外**解析 `uv`（记录过的或系统 PATH 中的），都没有才把 `uv` 装到 `<home>/bin`；由它在**数据根**建私有环境 `<home>/.venv` 并安装 `requirements.txt`（含 PDF 初始化需要的 PyMuPDF），安装后跑一次 `yaml`/`fitz` 导入探针。解释器的绝对路径同时写入工作区指针记录与安装配置；重跑复用现有环境，不重建。
-- 解释器缺失或损坏时 `dependencies` 为 `blocked` 并给出可执行的修复命令（`install toolchain --root <workspace> --clear`）；按命令加 `--clear` 重跑才重建数据根环境，不会静默重建。修复后重跑恢复为 `ok`。
-- `install skill` 写入的是**入口指针**，不是仓库副本；指针包含绝对仓库、数据根、uv、私有环境与解释器路径，技能目录移动后仍能定位代码。步骤可重复执行，已完成的组件不重做。
+- `install workspace` 只**检查**已有副本：有未提交改动、origin 不符或不是 git 仓库时报告 blocked，不拉取、不覆盖；资料目录只创建不删除；资料目录落在代码目录内时明确拒绝且不写入。
+- `install toolchain` 先在**工作区外**解析 `uv`（记录过的或系统 PATH 中的），都没有才把 `uv` 装进代码目录内的运行目录并由安装记录保存绝对路径；由它在代码目录建私有环境 `<code>/.venv` 并安装 `requirements.txt`（含 PDF 初始化需要的 PyMuPDF），安装后跑一次 `yaml`/`fitz` 导入探针。解释器的绝对路径同时写入入口指针与安装配置；重跑复用现有环境，不重建。
+- 解释器缺失或损坏时 `dependencies` 为 `blocked` 并给出可执行的修复命令（`install toolchain --root <workspace> --clear`）；按命令加 `--clear` 重跑才重建环境，不会静默重建。
+- `install skill` 写入的是**入口指针**，不是仓库副本；指针包含绝对代码目录、资料目录、uv、私有环境与解释器路径，技能目录移动后仍能定位代码。步骤可重复执行，已完成的组件不重做。
+- **既有安装迁移**：对旧流程安装（数据根承载环境与运行状态）执行一次迁移，把环境、配置、运行状态、日志与资料登记移入代码目录的运行目录，原文与推送件留在资料目录，并读回确认：
 
-### 3.2 飞书 CLI、登录与权限
+```bash
+python -m hostrun.cli install migrate --root <workspace> --code <code> --archive <archive>
+```
+
+  迁移前报告将要移动的路径与文件数；任何一步失败都停手并报告已完成的动作，不删除源数据。迁移后旧启动脚本与监听进程配置作废。
+
+### 3.2 控制台
+
+```bash
+python -m hostrun.cli --code <code> --archive <archive> console install --dsh "<dsh 绝对路径>"
+python -m hostrun.cli --code <code> --archive <archive> console install --dsh "<dsh 绝对路径>" \
+  --dsh-arg=--patch --dsh-arg "<overlay.yml 绝对路径>"   # 本机 headless 缺模型凭据时记录 overlay
+python -m hostrun.cli --code <code> --archive <archive> console
+```
+
+- `console install` 只生成 `<code>/bin/frontier-console.cmd`（窗口标题 `frontier-console`）并写入代码目录、资料目录、解释器、`dsh` 绝对路径与 `dsh_args`；**不**创建服务、不登录自启、不写注册表。`dsh` 必须显式记录：未给 `--dsh` 且记录为空或失效时，脚本仍生成但控制台步骤记 `blocked`，agent 运行也会拒绝启动。
+- `--dsh-arg`（可重复）记录 agent 运行在 `--profile headless` 与任务文本之间的额外参数。本机实测：`dsh --profile headless` 的出厂层把 `deepseek-account` 与 `credentials` 插件置为 disabled，只留 API-key 路由，没有 `DEEPSEEK_API_KEY` 时会报 `MISSING_CREDENTIAL`。用 `--patch` 指定一个启用账号授权路由的 overlay 即可复用交互会话已有凭据，不另配 key。
+- 控制台前台运行：`Ctrl+C`、`/exit` 或关闭窗口即停止服务；单实例锁保证同一安装只有一个控制台；心跳写 `<code>/runtime/console/heartbeat.json`，日志写 `<code>/runtime/logs/console.log`（滚动）。
+- 控制台启动时**自检权限**：需要写飞书凭据库或工作区外资料目录而当前进程受限时，打印提示要求用户双击 `frontier-console.cmd` 以完整权限重启，并保留已完成的初始化进度（`<code>/runtime/state/init.json`）。这是唯一改变权限范围的机制；另开子终端不能解除沙箱。
+- 控制台运行时由宿主 agent 用控制文件操作服务，不等价于替用户输入：`python -m hostrun.cli console control start|stop|status|push`。
+- 控制台职责：按每日时刻触发一次推送、消费飞书消息与卡片回调、每 5 分钟反馈轮询、每 10 分钟 `knowledge.cli pull`、按需启动一次 agent 运行，并在事件流里显示 agent 运行的开始/结束/失败摘要。
+- 控制台内命令：`/frontier-init`、`/frontier-start`、`/frontier-stop`、`/frontier-status`、`/frontier-push`、`/frontier-update-kb`、`/frontier-logs`、`/frontier-help`、`/exit`。
+
+### 3.3 飞书 CLI、登录与权限（全部在控制台内完成）
 
 ```bash
 python -m hostrun.cli lark discover --root <workspace>
-python -m hostrun.cli lark install --root <workspace>     # 缺失时私有安装 @larksuite/cli
-python -m hostrun.cli lark login --root <workspace>       # 只输出用户要执行的登录命令
-python -m hostrun.cli lark status --root <workspace>      # 可执行 / 身份 / 授权范围 / 资源读取
+python -m hostrun.cli lark install  --root <workspace>   # 缺失时私有安装 @larksuite/cli
+python -m hostrun.cli lark login    --root <workspace>   # 只输出登录命令与设备码
+python -m hostrun.cli lark status   --root <workspace>   # 可执行 / 身份 / 授权范围 / 资源读取
 # 对既有库做只读预检，不接入也不修改：
 python -m hostrun.cli lark status --root <workspace> --base-token <base-token> --folder <drive-folder-token>
-python -m hostrun.cli --home <home> install check --base-token <base-token> --folder <drive-folder-token>
 ```
 
-- 可执行、已登录、授权范围、真实资源读取是四件事，分别报告。
-- 登录、管理员授权必须由用户完成；agent 不伪造、不静默扩大权限。
-- `install check` 在 `permissions` 步骤**实测**数据根与 CLI 凭据目录（`LARK_CLI_HOME`，未设置时 `~/.lark-cli`）的写入：各创建一个随机临时探针文件再删除，任一失败即 `blocked`，note 给出具体路径与错误。身份证据另报 `dpop_key_status`/`dpop_mode` 状态词，不含密钥或用户标识原文。
-- `--base-token` 与可重复的 `--folder` 让预检读取既有 Base/Drive 资源，只发读请求：不写 `install/facilities.json`，不创建或接入 `knowledge/base.json`。设施创建前可对有权限的既有资源做只读 Base/Drive 预检，不代表接入或允许修改该库；没有可用资源时标 `untested`。设施就绪后还须读回新设施；要求预先成功读取的票据不能以 `untested` 通过。
+- 私有安装落在代码目录的运行目录（`<code>/runtime/lark`，launcher `<code>/runtime/bin/lark-cli.cmd`），不装全局包、不写 PATH 或注册表。
+- **三级检测**分别处理：没有可用 CLI → 安装；CLI 在但身份未登录 → 登录；已登录但授权范围不足或真实读操作失败 → 给出飞书开发者后台链接与缺失清单，等用户开权限后复检。bot scope 只能在开发者后台开通，`auth login` 从不用于 bot。
+- 登录是拆分式设备码流程：`lark-cli auth login --domain all --no-wait --json` 返回授权链接与设备码，用户浏览器授权后由控制台执行 `auth login --device-code <code>` 完成。全程不新开终端，也不要求用户自己敲命令；需要时把授权链接或二维码发到飞书。
+- 控制台等待登录最长 15 分钟；窗口内每 5 秒复检 `lark status`。失败或超时给用户「重试 / 中止（保留进度）」两个选项，**不允许跳过**进入下一步。
+- `install check` 在 `permissions` 步骤**实测**飞书 CLI 凭据目录（`LARK_CLI_HOME`，未设置时 `~/.lark-cli`）的写入：创建随机临时探针文件再删除，任一失败即 `blocked`，note 给出具体路径与错误。身份证据另报 `dpop_key_status`/`dpop_mode`，不含密钥或用户标识原文。
 - 状态命令与报告都不含 token；凭据只保存在 `lark-cli` 自己的机制里。
 
-### 3.3 设施（Base、表、云盘目录）
+### 3.4 设施（Base、表、云盘目录）与命名
 
 ```bash
-python -m hostrun.cli facilities plan   --home <home>
-python -m hostrun.cli facilities create --home <home> --yes   # agent 创建 Base 本身
-# 或接入已有库
-python -m hostrun.cli facilities attach --home <home> --link <base-link> --yes
-python -m hostrun.cli facilities status --home <home>
+python -m hostrun.cli facilities plan   --code <code> --archive <archive>
+python -m hostrun.cli facilities create --code <code> --archive <archive> --yes
+# 或接入既有库
+python -m hostrun.cli facilities attach --code <code> --archive <archive> --link <base-link> --yes
+python -m hostrun.cli facilities status --code <code> --archive <archive>
 ```
 
-- 先集中确认数据根与默认展示名称（Base、各表、原文库/推送库目录可改），确认后才写入。
-- 新建路径由 agent 创建 Base 本身、表、字段与两个云盘目录，不需要用户先手工准备空 Base。
-- 记录稳定 ID；改展示名不改 ID。`create` 总是新建独立 Base，绝不按名称复用已有库；创建前若已有同名 Base 只给出提示（可用 `facilities plan` 查看），接入已有库必须显式 `facilities attach`。
-- 现行契约包含 12 张表：知识卡片、命题、证据、报道、变更日志、原文、推送日志、决定、配置、问题、反馈、更正。按契约逐字段读回；旧票据标题中的“九表”不能作为漏建后三表的依据。
-- 重跑复用已记录设施；本地记录丢失时不会按名称猜测复用，需重新 create 新库或用 attach 显式接入。已有库只检查与补缺，不清空、不重建。
-- 部分创建/权限拒绝/网络中断会报告已完成动作与缺项；修复后重跑继续。
+- 命名由控制台集中询问**三项**：Base 名、原文云盘目录名、推送云盘目录名。直接回车用默认值，输入后回车用用户输入；逐项校验非空、无非法字符、同一 Base 内不重名。表名固定，不询问。
+- 新建路径由控制台自动创建 Base 本身、表、字段与两个云盘目录，不需要用户手工准备空 Base。
+- 记录稳定 ID；改展示名不改 ID。`create` 总是新建独立 Base，绝不按名称复用已有库；接入已有库必须显式 `facilities attach`，只检查与补缺，不清空、不重建。
+- 现行契约包含 12 张表：知识卡片、命题、证据、报道、变更日志、原文、推送日志、决定、配置、问题、反馈、更正。按契约逐字段读回，缺字段报告为阻塞。
+- 重跑复用已记录设施；本地记录丢失时不会按名称猜测复用。部分创建/权限拒绝/网络中断会报告已完成动作与缺项，修复后重跑继续。
 
-### 3.4 关键词临时闭环（不改正式知识）
+### 3.5 测试消息与收件人验证
+
+- 设施就绪后，控制台发一条测试消息给用户本人：一份测试 HTML 与一张带 1 个按钮的交互卡片，等用户点击卡片按钮。
+- 用户点击后，控制台核对点击者与当前登录身份一致，**同时完成 owner 验证并写入 `<code>/runtime/install/recipient.json`**（用户标识原文只留在运行目录，不进入安装配置或报告）；后续只认该收件人的单聊。
+- 测试消息可重发；重发前重新核对收件人，不清理聊天记录。没有点击、超时或身份不一致时报告 `recipient_unverified`/`recipient_mismatch`（不回显 open_id），初始化暂停在该步骤。
+- 不再有临时关键词闭环与测试产物清理：链路验证由这次传输测试与首次知识库初始化后的正式推送演练承担。
+
+### 3.6 `/frontier-init` 流程与门禁
+
+用户在控制台输入 `/frontier-init`，控制台按步骤执行并显示进度。步骤结果写 `<code>/runtime/state/init.json`，可重入：
+
+1. **确认资料目录**：`Y`/`y` 用默认 `<workspace>/frontier-archive`；`N`/`n` 打开系统文件夹对话框选择，允许工作区外，但要求控制台已以完整权限运行，否则提示重启。
+2. **确认执行 agent**：展示将调用的 agent、`dsh` 绝对路径、`--patch` overlay 与授权范围，用户回车确认。v1 只支持当前安装宿主（DeepSeek Harness 适配器）。
+3. **飞书 CLI**：按 3.3 的三级检测完成安装、登录与权限复检。
+4. **测试消息与 owner 验证**：按 3.5 完成。
+5. **设施命名与创建**：按 3.4 完成。
+6. **每日推送时刻**：默认 08:00，用户可改；v1 只支持一个每日时刻，不做工作日过滤。
+7. **是否初始化知识库**：是 → 进入 `/frontier-update-kb`；否 → 初始化结束，控制台启动服务但每日推送被知识库门禁挡住，并明确显示「待初始化知识库，推送已阻塞」。
+
+- init 运行中正式服务在跑时**拒绝重跑**，提示先 `/frontier-stop` 或关闭控制台；不在后台隐式停止服务。
+- 已完成的步骤重跑时跳过并显示「已完成：…」；已存在的同名设施询问「复用 / 新建」。中断后重新 `/frontier-init` 从断点继续。
+- 设施、测试消息、`recipient.json`、每日时刻写入安装记录后，控制台不把“命令成功”当作安装通过。
+
+### 3.7 `/frontier-update-kb`（知识库初始化与增量更新）
+
+用户选中目录后，控制台按以下顺序执行：
+
+1. **暂停正式服务**：停止定时推送与飞书响应，记录暂停原因与可恢复状态；控制台仍在前台并显示进度。
+2. **复制原文**：把目录中的文件**复制**进资料目录 `originals/`（md5 校验，原目录不动），按业务 id 登记到 `<code>/runtime/archive-index.jsonl`，再按现有 `library ensure-source` 上传云盘；付费墙或无法读取的文件记为缺口并报告，不阻断其余文件。
+3. **分片读取**：控制台按整文件打包，每片不超过上下文窗口约 10% 的字符估算；**单个文件可超过预算**，不做文件内切分；单个文件估算超过窗口 50% 时记为「未读取：超出读取上限」。最多 2 个读取子运行并发，串行提交，单次失败重试 1 次后跳过并报告。每个子运行只产出候选卡片/命题 JSON 到 `<code>/runtime/init/staging/`，不写入知识库。
+4. **合并去重**：主运行合并候选、按来源去重，生成待审阅清单与 `draft_hash`。
+5. **逐条审阅**：控制台一次一条打印候选知识卡片与命题（含 `第 N / M` 与完整字段）。单键读取：**Enter 接受**、**Backspace 丢弃**、**Tab 保留并打 `Under review`**；`q` 中止，已决定的立即生效，未决定的留待下次。stdin 不是 TTY 时拒绝进入审阅并提示在控制台窗口中执行。
+6. **写入**：接受项写入知识库；保留项写入并标 `under_review`；丢弃项不写入 Base，但记入 `<code>/runtime/init/decisions.jsonl`（`{draft_id, decision: accept|discard|hold, at, source: console}`）以便追溯与续接。写入后按归一化字段读回校验，不一致报告 `base_readback_mismatch`。
+7. **恢复服务与演练**：恢复正式服务，用刚入库的卡片跑一次标准检索、推送、评分与采纳的真实推送演练；失败则如实报告并保持初始化未完成。
+8. **增量**：重复执行时只读资料目录中尚未登记的文件；不重复整库读取，已存在的卡片不覆盖（ID 冲突时拒绝并保留 Base 原行）。
+
+`Under review` 的状态落在卡片与命题记录的可选布尔字段 `under_review` 与 Base 的「待复核」勾选框：不参与检索、排序与写作，但仍同步、计数、占配额。该字段不作为必备列：缺列时视为未标记，既有 Base 在 `init`/`attach` 时补建，不因缺列判安装失败。用户在 Base 取消勾选后，由控制台每 10 分钟的 `knowledge.cli pull` 拉回本地并生效；该字段不写 `变更日志`。
+
+### 3.8 报告与验收
 
 ```bash
-python -m hostrun.cli smoke start --home <home> --keyword "<用户给的关键词>" --owner <本人 open_id> --yes
-python -m hostrun.cli smoke plan  --home <home>
-python -m hostrun.cli smoke brief --home <home>          # 给宿主 agent 的下一步命令
-python -m hostrun.cli smoke record --home <home> --step retrieved --plan <已存在的计划/候选文件>
-python -m hostrun.cli smoke record --home <home> --step written --paper <选中 paper_id>（可重复）
-python -m writer.cli render --push <push> --out <html>
-python -m archive.cli add-push --file <push json>        # 先登记进推送库
-python -m hostrun.cli smoke record --home <home> --step rendered --push <push_id> --html <渲染文件>
-# ... sent（必须带 --push --message --question；上传文件用 --file，可重复）
-# 用户在飞书卡片本人评分/采纳后（不得代填），先 feedback sync 再记录：
-python -m hostrun.cli smoke record --home <home> --step rated --item <id> --verdict great
-python -m hostrun.cli smoke record --home <home> --step decided --item <id> --decision agree_all
-python -m hostrun.cli smoke record --home <home> --step applied --target <被采纳目标 id> --applied-field <字段>（每字段重复一次）
-python -m hostrun.cli smoke verify --home <home> --target-key cards --target-id <card_id> --field <字段>=<值>（可重复）
+python -m hostrun.cli --code <code> --archive <archive> install report
 ```
 
-- `smoke start --owner` 必填，且必须与当前登录的飞书用户一致：`smoke start` 用记录的 CLI 读取已认证 user 身份核对；缺失 CLI、未登录或身份未就绪返回 `recipient_unverified`，与登录用户不一致返回 `recipient_mismatch`（报告不回显 open_id）。离线模式无法证明收件人身份，会直接拒绝且不生成测试记录。核实后的收件人写入测试记录与 `install/recipient.json`（用户标识原文只留在数据根，不进入安装配置或报告），后续只用该收件人。
-- 只取本次临时卡片的检索式；临时卡片同时写入本地与 Base，ID/标签带测试标记。
-- `retrieved` 必须指向真实存在的计划/候选文件，候选数由该文件得出（可选 `--candidates` 必须与之一致）；`written` 至少一个选中论文 ID（`--paper`）；`rendered` 必须在推送库中已有对应记录（先 `archive.cli add-push`），记录存在、push_id 一致且属于本次选中论文（否则 `push_record_missing` / `push_record_mismatch`），并按 `writer/render.py` 契约校验七段段落和 `原文图`/`生成图` 图注；这些证据与 `sent` 的副作用 ID 一并写入测试记录，供精确清理。
-- `sent` 记录前会核对 `publisher/messages.jsonl`：`--message` 必须是本次推送的 `push_file` 且 `target` 为已核实收件人；没有记录返回 `message_recipient_unverified`，推送/收件人不符返回 `message_mismatch`，均不推进步骤。
-- `rated`/`decided` 只认用户本人在飞书卡片提交的答案：统一问题队列中该题必须已由已核实收件人回答且分/采纳值与 `--verdict`/`--decision` 一致，否则拒绝（`rating_not_submitted`/`rating_not_by_user`/`rating_mismatch`，采纳同理）；agent 不得代填或自证。`feedback submit` 仍用于其他路径，但不是临时闭环的验收动作。
-- `applied` 用 `--target` 与 `--applied-field` 登记被采纳的目标与字段（省略时按临时卡片、只要求至少一个字段）；`verify` 必须覆盖每个已登记目标字段才完整，覆盖不足返回 `verification_incomplete`，字段不一致判失败。
-- 使用标准检索、写作、publisher、统一队列与反馈链路；只推一篇，评分先行，采纳后才写入。
-- 用户在飞书检查展示并提交反馈；agent 处理并读回验证。只有全部步骤 + 读回一致才算通过。
-- 任何失败先核对；发送超时不能确认则暂停，不重发。`publisher` 在真正发送前写入持久发送尝试记录：异常或超时留下未决尝试，之后同一推送的发送会以 `send_status_unknown` 拒绝。必须先核对飞书，再用 `publisher.cli resolve-send --push <id> --message <message_id>`（已送达）或 `--not-sent`（确认未发出，才允许重试）。失败不开启正式初始化或日常推送。
-
-### 3.5 清理测试产物
-
-```bash
-python -m hostrun.cli cleanup plan --home <home>
-python -m hostrun.cli cleanup run  --home <home> --yes
-# 失败测试的产物（明确授权时）
-python -m hostrun.cli cleanup run  --home <home> --yes --abort
-```
-
-- 只按本次测试的卡片 ID、推送 ID、问题 ID、选中论文 ID、文件 token、消息 ID 删除；不用目录/名称匹配或清空整库。
-- 删除 Base 记录、上传文件、临时卡片、推送 JSON、问题与反馈、可撤回消息；正式数据与用户原件不动。
-- 撤回消息与云盘读回只使用记录或显式给出的**绝对且存在**的 `lark-cli`；没有可用绝对路径时该项记 `failed`，不回退 PATH 的 `lark-cli`。
-- 删除后**读回确认**；不可删除或不可撤回的产物如实报告为清理未完成，正式初始化闸门保持关闭。
-- 保留安装环境、配置、空设施与最小验收状态（不含论文内容）。
-
-### 3.6 正式知识初始化
-
-```bash
-python -m hostrun.cli init intake --home <home> --pdf <p1> --text <p2> --index <p3> --requirements "<用户要求>"
-python -m hostrun.cli init propose --home <home> --cards <cards.json>
-python -m hostrun.cli init review  --home <home>
-python -m hostrun.cli init confirm --home <home> --yes
-python -m hostrun.cli init apply   --home <home>
-```
-
-- 仅在临时闭环通过且清理读回通过后开放。
-- `init propose` 需要先完成 `init intake` 且至少有可读全文与用户要求；缺输入、无可读全文或既有卡片快照读取失败时拒绝生成草案。
-- 支持 PDF、文本、索引列表（JSON/JSONL/CSV/逐行标题）加用户直接要求；读不到的文献列为缺口，不编造全文或引文。
-- 候选卡片由宿主 agent 提炼，写出前必须经用户确认；确认与草稿哈希绑定，草案改动后需重新确认。写入后按归一化字段读回校验，不一致即报告 `base_readback_mismatch`。
-- `init apply` **不会覆盖**草案生成前已存在的卡片 ID（没有覆盖开关）；冲突时拒绝并保留 Base 原行，请为新卡片使用新 ID。
-- 重复执行幂等；中断后重跑只补未完成部分。已有库使用 `init adopt-existing` 导入现有卡片，不重建、不清空。
-- 就绪后执行一次标准知识卡片检索（`init retrieve`），不把安装测试关键词当作研究计划。
-
-### 3.7 监听进程
-
-```bash
-python -m hostrun.cli listener install --home <home> --dsh "<dsh 绝对路径>"   # 生成启停脚本，不启动进程
-python -m hostrun.cli listener install --home <home> --dsh "<dsh 绝对路径>" \
-  --dsh-arg=--patch --dsh-arg "<overlay.yml 绝对路径>"   # 本机 headless 缺模型凭据时记录 overlay
-python -m hostrun.cli listener status  --home <home>       # 心跳 / pid / 最近事件
-python -m hostrun.cli --home <home> run --intent listener-check   # 每日巡检（也可由任务调用）
-```
-
-- `listener install` 只生成 `<home>/bin/frontier-listener.cmd` 与 `frontier-listener-stop.cmd`，写入记录的仓库、数据根、解释器与 `dsh` 绝对路径；**不**创建服务、不登录自启、不写注册表。`dsh` 必须显式记录：未给 `--dsh` 且 `paths.dsh` 为空或失效时，脚本仍会生成，但 `listener` 步骤记 `blocked` 并给出可照做的修复命令，派生运行也会拒绝启动。
-- `--dsh-arg`（可重复）记录派生运行在 `--profile headless` 与任务文本之间的额外参数，写入 `listener.dsh_args`。本机实测：`dsh --profile headless` 的出厂层把 `deepseek-account` 与 `credentials` 插件置为 disabled，只留 API-key 路由，因此没有 `DEEPSEEK_API_KEY` 的宿主会报 `MISSING_CREDENTIAL`。用 `--patch` 指定一个启用账号授权路由的 overlay（`authorization`/`deepseek-account`/`credentials` 三个插件 + `agent-default-model.provider: deepseek-account`）即可复用交互会话已有的凭据，无需另配 key。
-- `listener start|stop|serve|health` 同样可用：`serve` 是启停脚本调用的前台进程，`start` 只做一次分离启动，`health` 只读判定、不拉起进程。
-- 启动与停止都由用户完成：双击启动脚本得到标题为 `frontier-listener` 的控制台窗口；停止用停止脚本、`Ctrl+C` 或关闭该窗口。agent 可以指导，但不代为常驻。
-- 监听进程用 bot 身份消费 `im.message.receive_v1`，只接受已核实 owner 的单聊命令（`推一篇` / `处理反馈` / `状态`），群聊与他人消息忽略；每 5 分钟执行一次 `run --intent feedback`。
-- 收到需要判断的工作时，用记录的 `dsh --profile headless` 派生一次有界宿主运行：单飞行、先取执行端租约、≤20 分钟、失败不重试、写 `runs.jsonl` 并标记 `derived`、飞书回执；`install report` 有 `blocked` 项时拒绝派生。
-- 巡检判定不在线（心跳 >10 分钟或进程不存在）时，用记录的启动命令拉起一次并在 30 秒后复查；恢复成功报告一次，仍失败报告具体缺项并停手。巡检证据记为 `listener_health`，不套用 `scheduled_run` 的到点容差。
-
-### 3.8 两个瞬时宿主任务
-
-```bash
-python -m hostrun.cli schedules plan    --home <home> --timezone Asia/Shanghai
-python -m hostrun.cli schedules confirm --home <home> --yes --host-created \
-  --task-id frontier-daily=<宿主任务ID> --task-id frontier-listener-check=<宿主任务ID>
-python -m hostrun.cli schedules trigger --home <home> --task frontier-daily
-python -m hostrun.cli schedules pause   --home <home> --yes
-python -m hostrun.cli schedules resume  --home <home> --yes
-```
-
-- 只创建两个任务：用户时区每日 08:00 推送、每日 09:00 监听巡检；取消每小时反馈检查，反馈由监听进程承担。不建第三个任务。
-- 每个任务保存 `frontier-run`、仓库、数据根、解释器与 CLI 的绝对路径；唤醒时先读 skill 再执行。
-- 每次唤醒都是**一次有界运行**：执行任务命令、完成当前工作后退出，不挂会话、不派生后台作业。巡检本身几十秒内结束。
-- 正式知识未就绪不启用每日推送；允许确认后暂不启用。
-- 任务创建成功只写 `schedules`；真实到点触发才写 `scheduled_run`。运行时间必须与计划时区记录的实际 UTC 偏移一致，并在计划时间后 5 分钟内启动；手动运行、异时区时间、旧成功标记、云任务都不能替代。监听巡检不写 `scheduled_run`，其证据是 `listener_health`。
-- `schedules confirm` 为两个任务各生成一个 proof 并写入实际命令；`run --scheduled` 不带匹配 proof 时只当普通运行，不写入触发证据。确认后请使用 `schedules confirm` 返回的任务命令，不要手写不带 proof 的命令。
-- 暂停会停用配置并要求在宿主里停用实际任务；换机先停旧端，再 `executor handover`。
-
-### 3.9 报告
-
-```bash
-python -m hostrun.cli --home <home> install report
-```
-
-报告分步给出 `working / blocked / untested / pending`、路径、时区、任务、监听进程与真实触发状态。最后按实际结果报告，不把“命令成功”冒充“安装通过”。
+报告分步给出 `working / blocked / untested / pending`、路径、时区、每日时刻、控制台状态与真实运行证据。最后按实际结果报告，不把“命令成功”冒充“安装通过”。真实证据至少覆盖：控制台连续运行、定时到点触发、飞书指令与确认卡片往返、暂停/恢复、关闭控制台即停、init 全流程、update-kb 全流程、既有安装迁移；没测过写“未实测”，缺能力写“阻塞”。
 
 ## 4. 日常运行
 
 | 意图 | 频率 | 由谁执行 | 做什么 | 不做 |
 |---|---|---|---|---|
-| `daily` | 每天 08:00 | 宿主定时任务（瞬时） | 处理反馈/恢复 → 维护（若到期）→ 请求并开始一篇推送 | 不并发多篇 |
-| `feedback` | 每 5 分钟 | 监听进程轮询 | 处理已提交答案与未完成工作；当天首次做维护 | **不创建**检索请求 |
-| `listener-check` | 每天 09:00 | 宿主定时任务（瞬时） | 读心跳与进程、必要时拉起一次监听并复查 | 不做推送、不写 `scheduled_run` |
+| `daily` | 每天用户设定时刻（默认 08:00） | 控制台计时启动一次 agent 运行 | 处理反馈/恢复 → 维护（若到期）→ 请求并开始一篇推送 | 不并发多篇 |
+| `feedback` | 每 5 分钟 | 控制台轮询 | 处理已提交答案与未完成工作；当天首次做维护 | **不创建**检索请求 |
+| `maintenance` | 每天最多一次 | 由 `daily`/`feedback` 触发 | 原文库、推送库与配额维护 | 不删除资料 |
+| `pull` | 每 10 分钟 | 控制台轮询 | 从多维表格拉取文本改动与「待复核」勾选 | 不写变更日志、不改结构列 |
 
 ```bash
-python -m hostrun.cli run --intent daily
-python -m hostrun.cli run --intent feedback
-python -m hostrun.cli run --intent listener-check
-python -m hostrun.cli run --intent daily --finish ok
-python -m hostrun.cli status
-python -m hostrun.cli listener status
+python -m hostrun.cli --code <code> --archive <archive> run --intent daily
+python -m hostrun.cli --code <code> --archive <archive> run --intent feedback
+python -m hostrun.cli --code <code> --archive <archive> run --intent daily --finish ok
+python -m hostrun.cli --code <code> --archive <archive> status
+python -m hostrun.cli console control status
+python -m hostrun.cli console control push
 ```
 
-错过就错过：电脑或客户端关闭时该次不发生；错过的每日请求合并成一次。监听进程不在线时反馈会堆积，直到监听启动或下一次推送运行。
+- agent 运行统一为 `dsh --profile headless --json`：控制台解析事件流、记录 `session_id` 到 `runs.jsonl`，事件流只显示开始/结束/失败摘要，完整输出写 `<code>/runtime/logs/agent-<run_id>.log`；`/frontier-logs` 查看最近一次运行尾部。
+- **补推**：控制台启动或从暂停恢复时，若当天还没有推送请求就立即补一次；错过多天最多合并成一次待推请求，不连续补发。
+- **暂停**：`/frontier-stop` 或飞书 `暂停` 停止定时推送与飞书响应，控制台仍在前台；`/frontier-start` 或飞书 `恢复` 继续。关闭窗口是整个服务停止。
+- **状态恢复**：重开控制台时按上次状态恢复——上次是暂停则保持暂停并提示恢复命令，上次是运行态则自动启动服务。
+- **在飞运行**：关闭控制台时显式终止在飞的 agent 运行，并把当前请求标记为未完成，交由既有「恢复未完成工作」机制续接，不丢单。
+- 错过多天不补发；控制台不在线时反馈会堆积，直到控制台启动或下一次推送运行。
+
+### 飞书入口与两层白名单
+
+- **指令白名单**（trim 后精确匹配）直接执行操作：`推一篇`、`处理反馈`、`状态`、`暂停`、`恢复`、`测试飞书消息`、`修改推送时间`、`修改资料目录`；控制台 slash 指令同样映射到这些操作。
+- **操作白名单**同一集合：状态、再推一篇、处理反馈、暂停、恢复、测试飞书消息、修改每日推送时间、修改资料目录。初始化、更新知识库与停止服务**不在**飞书操作白名单内，飞书端回「请在控制台执行」。操作不能修改 frontier 本身的定义。
+- 未命中指令白名单的文本进入**意图判定运行**：只读、独立于推送运行的单飞行锁、不占执行端租约、强制输出 JSON（`{op, params, reason}`，`op` 必须是操作白名单之一）、60–90 秒上限、同一时刻最多一个、同一文本 10 分钟内复用结果。判定失败回「无法判断」。
+- 判定命中后发**确认卡片**：显示操作、参数与「不修改 frontier 程序本身」，按钮 `执行` / `取消`，10 分钟过期，一次性 nonce，只有 owner 点击有效；点击后执行并回执，拒绝或过期回执说明。
+- 判定无对应操作回「无权限」；不把自由文本直接交给 agent 执行。评分与采纳卡片按钮不走这套流程，仍按既有链路直接生效。
 
 ### 反馈闭环
 
@@ -228,30 +207,31 @@ python -m hostrun.cli executor handover --to <新宿主> --force
 python -m hostrun.cli feedback rebuild
 ```
 
+换机前先关闭旧端控制台；新端完成安装后选择连接已有飞书知识库，再由 `executor handover` 接管。
+
 ## 5. 权限、在线条件与无人值守
 
 - 需要：跑本地命令、读写项目目录、调用飞书 CLI（含 bot 身份的事件长连接）。不需要全局网络代理、管理员权限或开机自启。
-- 24 小时在线由用户启动的监听进程提供；它不是服务，机器重启后要由用户重新启动（或由次日巡检发现并拉起一次）。
-- 自动运行只使用已授予范围；权限模型无法限制时报告 `blocked`，不要用“完全访问”绕过。
-- 电脑开机、客户端运行并登录；否则定时该次不发生（这是设计）。
+- 24 小时在线只由前台控制台提供；它不是服务，机器重启或用户关闭窗口后要由用户重新启动。
+- 控制台运行所在进程必须有：代码目录写入（环境、运行状态、日志、资料登记）、资料目录写入、飞书 CLI 凭据存储写入。受限时按 3.2 提示以完整权限重启控制台，不静默提权。
+- 自动运行只使用已授予范围；权限模型无法限制时报告 `blocked`。
+- 电脑开机、控制台运行并登录；否则定时该次不发生（这是设计）。
 - 状态文件与报告不含 token；`token/secret/password/cookie/key` 字段写 `***`。
 
 ## 6. 暂停、切换与清理
 
-- 暂停：由用户停止监听进程，并在宿主停用两个任务（`schedules pause` 只改配置并要求宿主停用实际任务）。
-- 查看：`install report`、`status`、`listener status`。清理旧 WSL/systemd 安装只在确实装过时执行；删运行配置不等于删飞书知识库或唯一离线备份。
+- 暂停：控制台 `/frontier-stop` 或飞书 `暂停`；关闭控制台窗口即停止整个服务。没有需要另行停用的宿主任务。
+- 查看：`install report`、`status`、`console control status`、`/frontier-logs`。
+- 清理旧 WSL/systemd 安装只在确实装过时执行；删运行配置不等于删飞书知识库或唯一离线备份。
 
 ## 7. 自检与验收
 
 ```bash
 python -m hostrun.cli install report
 python -m hostrun.cli facilities status
-python -m hostrun.cli smoke status
-python -m hostrun.cli cleanup status
 python -m hostrun.cli init status
-python -m hostrun.cli schedules status
-python -m hostrun.cli listener status
+python -m hostrun.cli console control status
 python -m hostrun.cli audit streak
 ```
 
-真实结论只看：宿主到点运行日志、飞书真实推送与反馈、清理读回、正式知识读回、两个任务实际触发、监听进程连续在线的 `listener_health` 证据。没测过写“未实测”，缺能力写“阻塞”。
+真实结论只看：控制台连续运行与日志、定时到点运行、飞书真实推送与反馈、确认卡片点击、关闭控制台后服务确实停止、正式知识读回、`under_review` 过滤生效、迁移读回。没测过写“未实测”，缺能力写“阻塞”。

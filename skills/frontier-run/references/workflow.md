@@ -1,20 +1,23 @@
 # frontier 检索、写作与知识更新参考
 
-由 [frontier 运行时入口](../SKILL.md) 按需加载的完整流程参考；命令路径相对仓库根。agent 负责**排序（editor）与写作（writer）**；脚本负责取数、校验、入队、落盘。所有知识库写入都经过 archive / `KnowledgeStore`，agent 不直接改存储。
+> 状态：控制台化设计已定（[ADR 0009](../../../docs/adr/0009-console-as-service.md)），代码尚未实现。本文件描述目标流程；当前仓库仍按旧流程运行。
 
-文中的 Phase 标签表示能力来源，不能作为当前安装或云端切换已通过的证据。运行前检查安装报告与实际知识库状态；同步由宿主的有界执行承担，不单独安装十分钟定时器。真实验收限制见 [验收记录](../../../docs/acceptance/)。
+由 [frontier 运行时入口](../SKILL.md) 按需加载的完整流程参考；命令以**代码目录**为工作目录执行。agent 负责**排序（editor）与写作（writer）**；脚本负责取数、校验、入队、落盘。所有知识库写入都经过 archive / `KnowledgeStore`，agent 不直接改存储。
 
-## 1. 前置条件与数据根
+文中的 Phase 标签表示能力来源，不能作为当前安装或云端切换已通过的证据。运行前检查安装报告与实际知识库状态；同步由控制台每 10 分钟的有界轮询承担，不单独安装系统定时器。真实验收限制见 [验收记录](../../../docs/acceptance/)。
 
-1. 已按 [安装参考](installation.md) 验证本地宿主、解释器、飞书 CLI 和知识库；定时运行还须验证宿主内置调度。
-2. `lark-cli` 装在私有目录并已登录；登录状态由 `hostrun install` 的 `identity` 步骤验证，不靠 `command -v` 猜。
-3. 定时唤醒是「宿主唤醒 → 一次有界运行 → 退出」，不挂会话；常驻的只有用户手动启停的 `frontier-listener`（[ADR 0008](../../../docs/adr/0008-listener-process.md)），反馈由它每 5 分钟轮询处理。不装 systemd、不写持久环境变量。
+## 1. 前置条件、目录与运行前提
 
-所有命令在**本仓库根**执行，数据根用 `--home` 显式给出（安装默认记录为工作区的 `frontier-archive/`；未配置时回退 `~/knowledge-loop`）：
+1. 已按 [安装参考](installation.md) 验证本地宿主、解释器、飞书 CLI 和知识库；定时运行由控制台计时，不再依赖宿主内置调度。
+2. `lark-cli` 装在代码目录的运行目录并已登录；登录状态由 `hostrun install` 的 `identity` 步骤验证，不靠 `command -v` 猜。
+3. 常驻的只有用户可见、关闭即停的控制台（[ADR 0009](../../../docs/adr/0009-console-as-service.md)）：它按每日时刻启动一次 agent 运行、消费飞书消息与卡片回调、每 5 分钟反馈轮询、每 10 分钟 `knowledge.cli pull`。agent 运行是「一次有界运行 → 退出」，不挂会话。不装 systemd、不写持久环境变量。
+4. 目录拆分：代码、私有环境、配置、运行状态、日志与资料登记在**代码目录**（`<code>`，运行目录 `<code>/runtime/`）；原文 `originals/` 与推送件 `pushes/` 在**资料目录**（`<archive>`），资料目录里没有台账。
+
+所有模块命令显式传入 `--code <代码目录>` 与 `--archive <资料目录>`（控制台化后取代旧的 `--home`；安装记录里保存两者的绝对路径）：
 
 ```bash
-python -m hostrun.cli --home <home> install status
-python -m hostrun.cli --home <home> status
+python -m hostrun.cli --code <code> --archive <archive> install status
+python -m hostrun.cli --code <code> --archive <archive> status
 ```
 
 ```bash
@@ -26,18 +29,20 @@ python -c "import yaml"
 
 ### 知识卡片
 
-`id / label / ontology / annotation`。卡片不存任何链接；连接只存在于命题的 `related_knowledge`。
+`id / label / ontology / annotation`，外加可选布尔 `under_review`。卡片不存任何链接；连接只存在于命题的 `related_knowledge`。
 
 - `ontology` 驱动召回；`annotation` 驱动精确性（定义、排除项、易混项）。
 - id 形如 `card_hmbs`；语义 slug，冲突追加 `_2`。
+- `under_review: true` 表示用户保留但暂不启用：不参与检索计划、排序与写作上下文；仍同步 Base、仍计数、仍占配额。对应用户在多维表格里取消「待复核」勾选后经 pull 清除。
 
 ### 命题
 
-`id / title / review / related_knowledge / evidence / changelog / evidence_updates_since_review`。
+`id / title / review / related_knowledge / evidence / changelog / evidence_updates_since_review`，外加可选布尔 `under_review`。
 
 - `related_knowledge` 至少 2 张已存在卡片。
 - **新建命题必须带 ≥2 条 evidence**；没有证据的命题不入库。
 - `review` 是综述；`evidence` 是证据条目；`changelog` 只记 title / review / related_knowledge 的变更。
+- `under_review` 的命题不进写作上下文；它关联的正常卡片照常使用。
 - 旧 `history[].evidence` 在迁移时拆成 evidence 条目，标 `migrated_from_v2`。
 
 ### 证据条目
@@ -73,11 +78,11 @@ python -c "import yaml"
 
 ### 变更日志 changelog
 
-只记非证据变更：`at / action / field / before / after / rationale / source`。review 的上一版从 changelog 取，用于生成 diff。
+只记非证据变更：`at / action / field / before / after / rationale / source`。review 的上一版从 changelog 取，用于生成 diff。`under_review` 的切换不写 changelog。
 
 ## 3. 主循环
 
-只有运行时入口的 daily 闸门允许后才开始以下正向链路。使用安装配置的解释器，日期由宿主按用户时区生成，所有模块命令显式传 `--home <home>`；下列示例省略该重复参数。先处理已提交反馈，未答问题挡住新推送。
+只有运行时入口的 daily 闸门允许后才开始以下正向链路。使用安装配置的解释器，日期由控制台按用户时区生成，所有模块命令显式传 `--code`/`--archive`；下列示例省略该重复参数。先处理已提交反馈，未答问题挡住新推送。
 
 ### 3.1 检索计划
 
@@ -86,7 +91,7 @@ python -m frontier.cli validate
 python -m frontier.cli plan --date <YYYY-MM-DD> --days 7 --out plan.json
 ```
 
-每张卡片必须有 `id / label / ontology / annotation`。
+每张卡片必须有 `id / label / ontology / annotation`；`under_review` 的卡片与命题在计划与写作上下文中被过滤。
 
 ### 3.2 取原文并入档
 
@@ -146,7 +151,7 @@ python -m library.cli ensure-source --paper <push 里的 paper_id>
 
 ```bash
 python -m publisher.cli send --push outbox/pushes/<push_id>.json --html outbox/<push_id>.html --to ou_xxx
-python -m hostrun.cli --home <home> feedback sync
+python -m hostrun.cli --code <code> --archive <archive> feedback sync
 ```
 
 - `send` 是**对外可见**操作：遵循安装时确认的收件人、文件与条数范围；超出原授权时再确认。
@@ -168,14 +173,14 @@ python -m hostrun.cli --home <home> feedback sync
 ### 3.8 综述题
 
 - 第 10 条证据被采纳 → 队列追加 `proposition_review` 题（`ready=false`），占住闸门。
-- 监听进程在派生的有界运行中处理该题：`writer.cli review-task` → 写 review JSON → `review-check` → `review-render` →
-  `question_queue.cli review-ready` → `publisher.cli deliver`。派生的护栏见 [ADR 0008](../../../docs/adr/0008-listener-process.md)。
+- 控制台在派生的一次 agent 运行中处理该题：`writer.cli review-task` → 写 review JSON → `review-check` → `review-render` →
+  `question_queue.cli review-ready` → `publisher.cli deliver`。derived 运行的单飞行、租约、时限与不重试护栏沿用运行时入口。
 - 综述 HTML + 确认卡推送；`采纳此版` 写入并清零计数，`保持上一版` 保留计数。
 - 综述题不占每篇推送的 2 个实体名额。
 
 ### 3.9 队列清空后
 
-- 队列清空且无 failed → 执行待推请求（手动「再推一篇」或每日 08:00）。
+- 队列清空且无 failed → 执行待推请求（飞书「再推一篇」或控制台的每日时刻）。
 - 有 failed 时队列闸住，用 `question_queue.cli retry/abandon` 处理。
 
 ## 4. 更新契约
@@ -247,7 +252,7 @@ python -m hostrun.cli --home <home> feedback sync
 - 卡片/证据：`同意全部`（左，蓝）/ `拒绝全部`（右，红）；
 - 综述：`采纳此版`（左，蓝）/ `保持上一版`（右，红）。
 
-页脚统一说明：同意后立即写入；拒绝保持原样；答完才发下一题。
+页脚统一说明：同意后立即写入；拒绝保持原样；答完才发下一题。评分与采纳按钮由控制台的事件面直接接收，不经过意图判定与确认卡片。
 
 ## 6. 落盘
 
@@ -255,8 +260,8 @@ python -m hostrun.cli --home <home> feedback sync
 
 - 本地 `archive/` 仍是读与写的权威；Bitable 是镜像。
 - 每次同意更新后，spawn `python -m knowledge.cli sync`：按业务 id 幂等 upsert 卡片 / 命题 / 证据 / 报道 / 变更日志，并重建关联。
-- `frontier-sync.timer` 每 10 分钟：`knowledge.cli pull`（把 Bitable 文本列的手工编辑拉回本地并补 changelog）→ `sync` → `compare`（只记差异，不让 timer 失败）。
-- 首次 `pull` 只建立 `knowledge/state.json` 基线；之后只接受 title / review / annotation / conclusion 的文本改动。
+- 控制台**每 10 分钟**执行：`knowledge.cli pull`（把 Bitable 文本列的手工编辑与「待复核」勾选拉回本地）→ `sync` → `compare`（只记差异，不让轮询失败）。不再有 `frontier-sync.timer`。
+- 首次 `pull` 只建立 `knowledge/state.json` 基线；之后只接受 title / review / annotation / conclusion 的文本改动与 `under_review` 的布尔改动。
 - 非法编辑不落本地：在 Base 的「待修正」列写原因。
 
 **Phase 3b（双读 7 天后）**：
@@ -268,9 +273,9 @@ python -m hostrun.cli --home <home> feedback sync
 
 ## 7. 手工编辑与同步（Phase 3）
 
-- 只动文本列：`title / review / conclusion / annotation`；结构列（id、关联、日期、计数）只读。
+- 只动文本列：`title / review / conclusion / annotation` 与「待复核」勾选框；结构列（id、关联、日期、计数）只读。
 - 编辑视图隐藏结构列；这是约定，不是强制权限。
-- 在宿主授权的有界同步运行中扫描 Bitable 与本地「上次已见」台账（不另装十分钟系统定时器）：文本变化补一条 changelog；校验失败写「待修正」，不静默接受。
+- 控制台的 10 分钟 pull 扫描 Bitable 与本地「上次已见」台账：文本变化补一条 changelog，`under_review` 变化只更新记录；校验失败写「待修正」，不静默接受。取消「待复核」后最多 10 分钟生效，不需要重启控制台。
 
 ## 8. 用户偏好与硬规则
 
@@ -286,17 +291,20 @@ python -m hostrun.cli --home <home> feedback sync
 
 | 现象 | 处理 |
 |---|---|
-| 评分未推进 | 检查持久反馈是否提交，再看监听进程是否在线（`hostrun.cli listener status`）；监听不在线时启动它，或等下一次有界运行 | 
+| 评分未推进 | 检查持久反馈是否提交，再看控制台是否在前台运行（`hostrun.cli console control status`）；控制台不在时启动它，或等下一次有界运行 |
+| 飞书命令没反应 | 控制台窗口关闭时不消费任何消息；重新启动控制台后已提交反馈会继续处理 |
 | 发卡报 `missing scope` | 按 `missing_scope` 重新授权 |
 | 卡片只显示 header | 客户端 < 7.20，升级飞书 |
 | `lark-cli --file` 报 `unsafe file path` | 只传当前工作目录下的相对路径 |
 | 队列闸住 | `question_queue.cli status`，再 `retry` / `abandon` |
 | Bitable 写入部分成功（Phase 3） | 查 group journal，`retry` 从断点继续，不重复写 |
+| 取消「待复核」后检索仍不包含该卡片 | 等下一次 10 分钟 pull，或让控制台立即执行一次 `knowledge.cli pull` |
+| agent 运行没有产出 | 看 `/frontier-logs` 与 `<code>/runtime/logs/agent-<run_id>.log`；确认记录里的 `dsh` 与 `--patch` overlay 有效 |
 
 ## 10. 参考
 
 - `contracts/README.md`：模块文件契约。
 - `contracts/agent-tasks.md`：editor / writer 任务包与校验规则。
 - `contracts/question-queue.md`：队列状态机与闸门。
-- `docs/adr/`：知识卡片、命题 v3、Bitable 权威等决策记录。
+- `docs/adr/`：知识卡片、命题 v3、Bitable 权威、控制台作为服务等决策记录。
 - `fixtures/`：离线数据根与论文。
