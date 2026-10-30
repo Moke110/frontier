@@ -1,16 +1,19 @@
-"""Directory model step 1: ``--code`` / ``--archive`` with ``--home`` compatibility.
+"""Directory model: ``--code`` / ``--archive`` and no legacy ``--home``.
 
 These tests describe the two top-level locations and the unified runtime area
-under the code directory.  Everything runs against temporary directories; no
-command touches a live installation.
+under the code directory.  The retired single data root is refused with a
+migration pointer.  Everything runs against temporary directories; no command
+touches a live installation.
 """
 
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from common import runtime_root
 from hostrun import cli, layout
 from hostrun.base import HostRunError
 
@@ -21,7 +24,6 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_defaults_are_the_repo_root_and_a_sibling_archive():
     resolved = layout.resolve()
 
-    assert resolved["mode"] == "code"
     assert Path(resolved["code"]) == ROOT
     assert Path(resolved["archive"]) == ROOT.parent / layout.ARCHIVE_DIRNAME
     assert Path(resolved["runtime"]) == ROOT / layout.RUNTIME_DIRNAME
@@ -46,30 +48,47 @@ def test_archive_defaults_to_the_code_sibling_when_only_code_is_given(tmp_path):
     assert Path(resolved["archive"]) == code.resolve().parent / layout.ARCHIVE_DIRNAME
 
 
-# ------------------------------------------------------------- --home mapping
-def test_home_maps_to_the_old_data_root_and_its_archive(tmp_path):
-    home = tmp_path / "home"
-
-    resolved = layout.resolve(home=str(home))
-
-    assert resolved["mode"] == "home"
-    assert Path(resolved["runtime"]) == home.resolve()
-    assert Path(resolved["archive"]) == home.resolve() / "archive"
-    # The old layout is the same relative category table as the new one.
-    assert resolved["paths"] == {
-        key: str(home.resolve() / rel) for key, rel in layout.CATEGORY_RELS.items()
-    }
-    assert resolved["archive_paths"] == {
-        key: str(home.resolve() / "archive" / rel)
-        for key, rel in layout.ARCHIVE_RELS.items()
-    }
+# ------------------------------------------------------------- retired --home
+def test_the_resolver_has_no_legacy_home_switch():
+    with pytest.raises(TypeError):
+        layout.resolve(home="legacy")
 
 
-def test_home_and_the_new_flags_cannot_be_combined(tmp_path):
-    with pytest.raises(HostRunError):
-        layout.resolve(home=str(tmp_path / "home"), code=str(tmp_path / "code"))
-    with pytest.raises(HostRunError):
-        layout.resolve(home=str(tmp_path / "home"), archive=str(tmp_path / "papers"))
+def test_the_hostrun_cli_rejects_home_before_the_subcommand(tmp_path, capsys):
+    rc = cli.main(["--home", str(tmp_path / "home"), "status"])
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["ok"] is False
+    assert "--home" in payload["error"]
+    assert "install migrate" in payload["error"]
+
+
+def test_the_hostrun_cli_rejects_home_after_the_subcommand(tmp_path, capsys):
+    rc = cli.main(["status", "--home", str(tmp_path / "home")])
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["ok"] is False
+    assert "install migrate" in payload["error"]
+
+
+def test_the_hostrun_cli_rejects_the_equals_form(tmp_path, capsys):
+    rc = cli.main(["--home=" + str(tmp_path / "home"), "status"])
+
+    assert rc == 1
+    assert "install migrate" in json.loads(capsys.readouterr().err)["error"]
+
+
+def test_a_module_cli_rejects_home_with_the_same_guidance(tmp_path, capsys):
+    from knowledge import cli as knowledge_cli
+
+    rc = knowledge_cli.main(["--home", str(tmp_path / "home"), "config"])
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["ok"] is False
+    assert "install migrate" in payload["error"]
 
 
 # ------------------------------------------------------- out-of-bounds layout
@@ -151,16 +170,6 @@ def test_ensure_is_idempotent_and_keeps_existing_files(tmp_path):
     assert kept.read_text(encoding="utf-8") == "kept"
 
 
-def test_ensure_leaves_a_legacy_home_untouched(tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
-    resolved = layout.resolve(home=str(home))
-
-    layout.ensure(resolved)
-
-    assert list(home.iterdir()) == []
-
-
 # ------------------------------------------------------ bounded write helpers
 def test_entry_joins_only_inside_its_area(tmp_path):
     resolved = layout.resolve(
@@ -187,6 +196,52 @@ def test_the_runtime_area_is_gitignored():
         text=True,
     )
     assert result.returncode == 0, f"{probe} is not gitignored: {result.stderr}"
+
+
+# ---------------------------------------------------- resolved-location handoff
+def test_every_module_cli_uses_the_same_resolved_runtime_area(tmp_path, capsys):
+    from types import SimpleNamespace
+
+    from archive import cli as archive_cli
+
+    code = tmp_path / "checkout"
+    archive = tmp_path / "papers"
+
+    rc = archive_cli.main(
+        ["--code", str(code), "--archive", str(archive), "init"]
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    runtime = code / layout.RUNTIME_DIRNAME
+    assert (runtime / "archive" / "cards").is_dir()
+    # A module command writes no material into the archive by itself.
+    assert [p for p in archive.rglob("*") if p.is_file()] == []
+
+
+def test_the_child_handoff_resolves_the_same_locations(tmp_path):
+    code = tmp_path / "checkout"
+    archive = tmp_path / "papers"
+    resolved = layout.resolve(code=str(code), archive=str(archive))
+
+    layout.export(resolved)
+    child = layout.resolve_for_cli(SimpleNamespace(code=None, archive=None))
+
+    assert child == resolved
+    assert runtime_root() == Path(resolved["runtime"])
+
+
+def test_an_explicit_flag_wins_over_the_child_handoff(tmp_path):
+    layout.export(
+        layout.resolve(code=str(tmp_path / "parent"), archive=str(tmp_path / "papers"))
+    )
+    child = layout.resolve_for_cli(
+        SimpleNamespace(code=str(tmp_path / "other"), archive=None)
+    )
+
+    assert Path(child["code"]) == (tmp_path / "other").resolve()
+    assert Path(child["archive"]) == (tmp_path / "other").resolve().parent / layout.ARCHIVE_DIRNAME
 
 
 # --------------------------------------------------------------- CLI surface
@@ -247,75 +302,6 @@ def test_cli_with_code_and_archive_lands_in_the_runtime_area(tmp_path, capsys):
     assert not (code / "install").exists()
 
 
-def test_cli_with_home_keeps_the_legacy_layout(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
-
-    rc = cli.main(
-        [
-            "--home",
-            str(home),
-            "install",
-            "record",
-            "--step",
-            "workspace",
-            "--status",
-            "ok",
-        ]
-    )
-
-    assert rc == 0
-    assert json.loads(capsys.readouterr().out)["steps"]["workspace"] == "ok"
-    assert (home / "install" / "state.json").is_file()
-    # The mapped legacy layout adds nothing the old contract did not create.
-    assert not (home / layout.RUNTIME_DIRNAME).exists()
-    assert not (home / "archive").exists()
-
-
-def test_cli_home_and_code_place_the_same_runtime_files(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
-    code = tmp_path / "checkout"
-    code.mkdir()
-    archive = tmp_path / "papers"
-
-    assert (
-        cli.main(
-            ["--home", str(home), "install", "record", "--step", "workspace", "--status", "ok"]
-        )
-        == 0
-    )
-    capsys.readouterr()
-    assert (
-        cli.main(
-            [
-                "--code",
-                str(code),
-                "--archive",
-                str(archive),
-                "install",
-                "record",
-                "--step",
-                "workspace",
-                "--status",
-                "ok",
-            ]
-        )
-        == 0
-    )
-    capsys.readouterr()
-
-    legacy = {p.relative_to(home) for p in home.rglob("*") if p.is_file()}
-    new = {
-        p.relative_to(code / layout.RUNTIME_DIRNAME)
-        for p in (code / layout.RUNTIME_DIRNAME).rglob("*")
-        if p.is_file()
-    }
-    # Ticket #76 adds one code-mode marker: the remembered layout.  Everything
-    # else a command writes is the same relative path in both models.
-    assert new - {Path(layout.LAYOUT_FILENAME)} == legacy == {Path("install") / "state.json"}
-
-
 def test_cli_archive_defaults_next_to_the_code_directory(tmp_path, capsys):
     code = tmp_path / "checkout"
     code.mkdir()
@@ -351,23 +337,6 @@ def test_cli_reports_an_unusable_archive_path_as_json(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().err)
     assert payload["ok"] is False
     assert "资料目录" in payload["error"]
-
-
-def test_cli_rejects_home_together_with_code(tmp_path, capsys):
-    rc = cli.main(
-        [
-            "--home",
-            str(tmp_path / "home"),
-            "--code",
-            str(tmp_path / "checkout"),
-            "status",
-        ]
-    )
-
-    assert rc == 1
-    payload = json.loads(capsys.readouterr().err)
-    assert payload["ok"] is False
-    assert "--home" in payload["error"]
 
 
 def test_cli_rejects_an_archive_inside_the_code_directory(tmp_path, capsys):

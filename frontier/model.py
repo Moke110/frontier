@@ -1,6 +1,6 @@
 """frontier: knowledge cards -> retrieval queries, plus rating-driven state.
 
-Cards live in ``$KL_HOME/archive/cards/<card_id>.json`` and carry
+Cards live in ``<运行时区>/archive/cards/<card_id>.json`` and carry
 ``id / label / ontology / annotation``. ``frontier.yaml`` is retired: retrieval
 reads the archive directly. Rating state stays in ``state/checkpoints.yaml`` but
 is keyed by card id.

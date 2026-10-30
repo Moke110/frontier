@@ -1,6 +1,6 @@
 """archive: the only writer of the knowledge store.
 
-Layers (all under $KL_HOME/archive):
+Layers (all under <runtime>/archive):
   1. raw/          original papers (metadata + text + PDF page anchors)
   2. pushes/       generated pushes (long-form PDF payload + proposals)
   3. cards/        knowledge cards (id / label / ontology / annotation)

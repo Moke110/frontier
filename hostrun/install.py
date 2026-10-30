@@ -25,6 +25,7 @@ from pathlib import Path
 
 from common import ensure_dir, now, read_json, write_json
 from hostrun import lark as lark_mod
+from hostrun import layout
 from hostrun import listener as listener_mod
 from hostrun import workspace as workspace_mod
 from hostrun.base import (
@@ -58,12 +59,12 @@ STEPS = (
 )
 STEP_NOTES = {
     "host": "宿主产品、版本、本机执行、内置调度与实际权限",
-    "workspace": "代码目录与数据根分离，已有副本检查与续接",
-    "dependencies": "数据根私有 uv、解释器、PyYAML/PyMuPDF 导入探针与仓库副本",
+    "workspace": "代码目录与资料目录分离（运行时区在代码目录内），已有副本检查与续接",
+    "dependencies": "私有 uv、解释器、PyYAML/PyMuPDF 导入探针与仓库副本",
     "skill": "frontier-run 入口指针及参考文件可读",
     "lark_cli": "飞书 CLI 由显式私有路径解析（仅可执行，未证明已登录）",
     "identity": "飞书 user / bot 身份与登录有效期",
-    "permissions": "数据根与 CLI 凭据目录写入、Base/Drive 资源读取与消息权限的真实预检",
+    "permissions": "运行时区与 CLI 凭据目录写入、Base/Drive 资源读取与消息权限的真实预检",
     "facilities": "Base 本身、各表、原文库与推送库目录的稳定 ID",
     "test_loop": "关键词驱动的临时闭环（推送、评分、采纳、写入）",
     "cleanup": "本次测试副作用的删除与无残留验证",
@@ -280,7 +281,7 @@ def probe_dependencies(
     elif not python_path.is_file():
         notes.append(f"解释器不存在：{python}")
     elif not outside_repo:
-        notes.append(f"解释器位于代码目录内，无法写数据根：{python}")
+        notes.append(f"解释器位于代码目录内，无法写运行时区：{python}")
     else:
         facts = _interpreter_facts(str(python), runner=runner or subprocess.run)
         version = facts["version"]
@@ -368,10 +369,20 @@ def probe_lark_cli(home: Path, spec: str | None, *, names: list[str] | None = No
 
 
 # ------------------------------------------------------ listener (ADR 0008)
-def _listener_repair_command(home: Path) -> str:
+def _location_flags(code: Path) -> str:
+    """The ``--code``/``--archive`` pair a generated command must carry."""
+    code = Path(code).expanduser().resolve()
+    try:
+        archive = layout.resolve(code=code)["archive"]
+    except HostRunError:
+        archive = str(layout.default_archive(code))
+    return f'--code "{code}" --archive "{archive}"'
+
+
+def _listener_repair_command(repo: Path, home: Path) -> str:
     """The command a user can copy to record a usable ``paths.dsh``."""
     return (
-        f'python -m hostrun.cli --home "{home}" listener install '
+        f"python -m hostrun.cli {_location_flags(repo)} listener install "
         f'--dsh "<dsh 的绝对路径>"'
     )
 
@@ -383,7 +394,7 @@ def _listener_script_text(
     return (
         f"title {title}\n"
         f'cd /d "{repo}"\n'
-        f'"{python}" -m hostrun.cli --home "{home}" listener {action}\n'
+        f'"{python}" -m hostrun.cli {_location_flags(repo)} listener {action}\n'
     )
 
 
@@ -513,7 +524,7 @@ def listener_install(
     config = load_config(home)
     repo_path = Path(repo or config["paths"].get("repo") or ".").expanduser().resolve()
     python_path = str(python or config["paths"].get("python") or sys.executable)
-    repair = _listener_repair_command(home_path)
+    repair = _listener_repair_command(repo_path, home_path)
 
     candidate = (
         str(dsh).strip()
@@ -852,11 +863,11 @@ def check(
         if not repo_ok:
             layout_problems.append(f"代码目录不可用：{ws.get('repo') or '<未记录>'}")
         if not home_ok:
-            layout_problems.append(f"数据根不可用：{ws.get('home') or '<未记录>'}")
+            layout_problems.append(f"运行时区不可用：{ws.get('home') or '<未记录>'}")
         results["workspace"] = {
             "status": "ok" if layout_ok else "blocked",
             "note": (
-                "代码目录与数据根已记录且可用"
+                "代码目录与资料目录已记录且可用"
                 if layout_ok
                 else "；".join(layout_problems)
             ),
@@ -898,7 +909,7 @@ def check(
     repair = (
         workspace_mod.repair_command(workspace_root, home)
         if workspace_root
-        else f'python -m hostrun.cli --home "{home}" install toolchain '
+        else f"python -m hostrun.cli {_location_flags(repo_path)} install toolchain "
         f"--root <workspace> --clear"
     )
     results["dependencies"] = probe_dependencies(
@@ -943,7 +954,7 @@ def check(
     write_problems = [
         f"{label} {check['path']}（{check['error']}）"
         for label, check in (
-            ("数据根", write_checks["data_root"]),
+            ("运行时区", write_checks["data_root"]),
             ("飞书 CLI 凭据目录", write_checks["lark_store"]),
         )
         if check["status"] != "ok"

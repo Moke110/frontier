@@ -1,7 +1,7 @@
 """Deliver library alerts as copyable owner DMs.
 
 ``library`` never talks to Feishu: it writes JSON files under
-``$KL_HOME/library/alerts/``. This module is the only sender, so alert wording
+``<运行时区>/library/alerts/``. This module is the only sender, so alert wording
 and delivery live with the rest of the outbound messages.
 """
 

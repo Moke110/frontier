@@ -37,7 +37,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from common import append_jsonl, ensure_dir, file_lock, now
-from hostrun import executor
+from hostrun import executor, layout
 from hostrun.base import HostRunError, load_config, require_dsh
 
 DEFAULT_TIMEOUT_SECONDS = 1200
@@ -267,7 +267,7 @@ def run(
     child_env = (
         dict(env)
         if env is not None
-        else {**os.environ, "KL_HOME": str(home)}
+        else {**os.environ, **layout.handoff(home)}
     )
     started = now()
     result: dict = {

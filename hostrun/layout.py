@@ -1,6 +1,6 @@
 """One resolution of the two top-level locations: code directory and archive.
 
-ADR 0009 splits the retired single data root in two:
+ADR 0009 retired the single data root in two:
 
 - the **code directory** holds the checkout, the private environment,
   configuration, run state, queue, proposals, logs, the executor lease, console
@@ -8,10 +8,11 @@ ADR 0009 splits the retired single data root in two:
 - the **archive directory** holds only ``originals/`` (source documents) and
   ``pushes/`` (push artifacts).
 
-To keep existing installations working, ``--home`` still names one data root.
-It maps onto the new model as ``runtime = <home>`` and ``archive =
-<home>/archive``; the category table below is the same relative layout in both
-modes, so a legacy command reads and writes exactly the files it did before.
+Runtime state always lives in ``<code>/.frontier`` and the archive location is
+the one last resolved for that code directory (``<code>/.frontier/layout.json``),
+so no command or module derives a location on its own.  The legacy ``--home``
+flag and its "data root" are gone: passing it is refused with a migration
+pointer instead of silently mapping one old tree onto the new model.
 
 Nothing here starts a process or reaches a network.  ``ensure`` is the only
 function that creates directories, and it never writes a file.
@@ -19,15 +20,29 @@ function that creates directories, and it never writes a file.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
-from common import now, read_json, write_json
+from common import RUNTIME_DIRNAME, RUNTIME_ENV, now, read_json, write_json
 from hostrun.base import HostRunError
 
-RUNTIME_DIRNAME = ".frontier"
 ARCHIVE_DIRNAME = "frontier-archive"
-LEGACY_ARCHIVE_DIRNAME = "archive"
 LAYOUT_FILENAME = "layout.json"
+
+# Environment handoff for child processes started by a resolved command: the
+# console and publisher spawn module commands without repeating the location
+# flags, and the child must resolve exactly the same two directories.
+ENV_CODE = "FRONTIER_CODE"
+ENV_ARCHIVE = "FRONTIER_ARCHIVE"
+ENV_RUNTIME = RUNTIME_ENV
+
+RETIRED_HOME_FLAG = "--home"
+RETIRED_HOME_MESSAGE = (
+    "--home 已退役：运行时区固定为 <代码目录>/.frontier，资料目录用 --archive 指定。"
+    "既有安装请先运行 python -m hostrun.cli --code <代码目录> --archive <资料目录> "
+    "install migrate 迁移，再用 --code 与 --archive 指定位置"
+)
 
 # One relative path per runtime-state kind.  Config, state, installation
 # records and initialization state physically share ``install/``; the category
@@ -105,12 +120,9 @@ def remembered_archive(code: str | Path) -> Path | None:
 def remember(resolved: dict) -> Path | None:
     """Persist the resolved layout so a custom ``--archive`` survives later runs.
 
-    Only the new two-directory model is recorded; the legacy ``--home`` tree is
-    per-invocation and deliberately leaves no marker.  A read-only checkout must
-    not make a command fail, so an unwritable runtime area is ignored.
+    A read-only checkout must not make a command fail, so an unwritable runtime
+    area is ignored.
     """
-    if resolved.get("mode") != "code":
-        return None
     path = record_path(resolved["code"])
     try:
         write_json(
@@ -128,59 +140,94 @@ def remember(resolved: dict) -> Path | None:
     return path
 
 
-def resolve(
-    *,
-    home: str | Path | None = None,
-    code: str | Path | None = None,
-    archive: str | Path | None = None,
-) -> dict:
+def resolve(*, code: str | Path | None = None, archive: str | Path | None = None) -> dict:
     """Resolve the two locations and every category path.
 
-    ``home`` is the compatibility switch: it may not be combined with the new
-    flags because the two models describe different directory trees.  A code
-    directory and its archive may not contain each other, otherwise a checkout
-    update or archive cleanup could delete the other side.
+    A code directory and its archive may not contain each other, otherwise a
+    checkout update or archive cleanup could delete the other side.
     """
-    if home is not None and (code is not None or archive is not None):
-        raise HostRunError(
-            "--home 不能与 --code/--archive 同时使用；旧安装用 --home，新布局用 --code 与 --archive"
-        )
-
-    if home is not None:
-        runtime = Path(home).expanduser().resolve()
-        archive_root = runtime / LEGACY_ARCHIVE_DIRNAME
-        code_dir = repo_root()
-        mode = "home"
-    else:
-        code_dir = Path(code).expanduser().resolve() if code else repo_root()
-        runtime = code_dir / RUNTIME_DIRNAME
-        remembered = remembered_archive(code_dir) if not archive else None
-        archive_root = (
-            Path(archive).expanduser().resolve()
-            if archive
-            else (remembered.resolve() if remembered else default_archive(code_dir))
-        )
-        mode = "code"
+    code_dir = Path(code).expanduser().resolve() if code else repo_root()
+    runtime = code_dir / RUNTIME_DIRNAME
+    remembered = remembered_archive(code_dir) if not archive else None
+    archive_root = (
+        Path(archive).expanduser().resolve()
+        if archive
+        else (remembered.resolve() if remembered else default_archive(code_dir))
+    )
 
     if archive_root == code_dir:
         raise HostRunError("资料目录不能就是代码目录")
-    if mode == "code":
-        if _is_inside(archive_root, code_dir):
-            raise HostRunError("资料目录不能放在代码目录内，否则更新代码会覆盖研究资料")
-        if _is_inside(code_dir, archive_root):
-            raise HostRunError("代码目录不能放在资料目录内")
+    if _is_inside(archive_root, code_dir):
+        raise HostRunError("资料目录不能放在代码目录内，否则更新代码会覆盖研究资料")
+    if _is_inside(code_dir, archive_root):
+        raise HostRunError("代码目录不能放在资料目录内")
 
     return {
-        "mode": mode,
         "code": str(code_dir),
         "runtime": str(runtime),
-        "home": str(runtime),
         "archive": str(archive_root),
         "paths": {key: str(runtime / rel) for key, rel in CATEGORY_RELS.items()},
         "archive_paths": {
             key: str(archive_root / rel) for key, rel in ARCHIVE_RELS.items()
         },
     }
+
+
+def resolve_for_cli(args) -> dict:
+    """Resolve from parsed ``--code``/``--archive``, else the child-run handoff.
+
+    Explicit flags always win.  The environment is only the way a spawned module
+    command inherits the directories its parent already resolved, so it is read
+    solely when the command was given no location flag at all.
+    """
+    code = getattr(args, "code", None)
+    archive = getattr(args, "archive", None)
+    if code is None and archive is None:
+        code = os.environ.get(ENV_CODE) or None
+        archive = os.environ.get(ENV_ARCHIVE) or None
+    return resolve(code=code, archive=archive)
+
+
+def export(resolved: dict) -> None:
+    """Publish the resolved locations to child processes and in-process lookups."""
+    os.environ[ENV_CODE] = resolved["code"]
+    os.environ[ENV_ARCHIVE] = resolved["archive"]
+    os.environ[ENV_RUNTIME] = resolved["runtime"]
+
+
+def handoff(runtime: str | Path) -> dict[str, str]:
+    """The environment a parent hands a spawned module command.
+
+    Runtime state is by contract ``<code>/.frontier``, so the runtime area's
+    parent is the code directory; the archive is whatever that code directory
+    resolved to.  Used by the listener, the agent-run adapter and the publisher
+    so a child process resolves exactly the same two locations without
+    repeating the flags.
+    """
+    runtime_path = Path(runtime).expanduser().resolve()
+    code = runtime_path.parent
+    try:
+        archive = resolve(code=code)["archive"]
+    except HostRunError:
+        archive = str(default_archive(code))
+    return {
+        ENV_CODE: str(code),
+        ENV_ARCHIVE: str(archive),
+        ENV_RUNTIME: str(runtime_path),
+    }
+
+
+def cli_argv(argv: list[str] | None = None) -> list[str]:
+    """Raw argv, refusing the retired ``--home`` with a migration pointer.
+
+    Both the hostrun CLI and the module CLIs call this before argparse so the
+    old flag never falls through as a generic "unrecognized arguments" error.
+    """
+    raw = list(sys.argv[1:] if argv is None else argv)
+    for arg in raw:
+        if arg == RETIRED_HOME_FLAG or arg.startswith(RETIRED_HOME_FLAG + "="):
+            raise HostRunError(RETIRED_HOME_MESSAGE)
+    return raw
 
 
 def _is_inside(child: Path, parent: Path) -> bool:
@@ -192,15 +239,7 @@ def _is_inside(child: Path, parent: Path) -> bool:
 
 
 def ensure(resolved: dict) -> dict:
-    """Create the runtime categories and the two archive directories.
-
-    A legacy ``--home`` run is left exactly as it was: the old contract created
-    directories only when a command wrote something, so mapping it to the new
-    model must not add empty ones.  Idempotent; never writes a file.
-    """
-    if resolved["mode"] != "code":
-        return {**resolved, "created": False}
-
+    """Create the runtime categories and the two archive directories.  Idempotent."""
     created: list[str] = []
     targets = [Path(resolved["runtime"])]
     targets.extend(Path(resolved["runtime"]) / rel for rel in RUNTIME_DIRS)

@@ -18,7 +18,7 @@
 | 本地缓存 / `raw/*.json` 物化视图 | `archive` | 否，可重建 |
 | 对外消息（含配额提醒） | `publisher` | —— |
 
-`library` 不直接发消息：它只写 `$KL_HOME/library/alerts/<ts>.json`，由 `publisher` 的定时器读取后发送。
+`library` 不直接发消息：它只写 `<运行时区>/library/alerts/<ts>.json`，由 `publisher` 的定时器读取后发送。
 
 ## 2. 云盘布局
 
@@ -137,7 +137,7 @@
 
 `library.resolve(paper_id) -> Path`：
 
-1. `$KL_HOME/cache/raw/<paper_id>.pdf` 存在且 md5 与 Base 一致 → 命中。
+1. `<运行时区>/cache/raw/<paper_id>.pdf` 存在且 md5 与 Base 一致 → 命中。
 2. 否则从云盘下载（有 `分片` 则按 `i` 顺序拼接），校验 md5；不一致 → 删除重下，二次失败报 `corrupt`。
 3. `状态=已离线归档` → 从 `备份位置` 复制并校验 md5；备份也不在 → 报 `missing`，提示用户重下或恢复。
 4. `状态=无原件` → 报 `no_source`，调用方退化为摘要锚定。
@@ -202,7 +202,7 @@
 2. 与 Base 比对，输出 `orphan / broken / duplicate / mismatch` 四类。
 3. 自动动作仅限：孤儿补行（单文件原文与有本地 push JSON 的推送件；下载后算 md5）、断链改状态（原文 `待上传` / 推送件 `回填`）。
 4. `duplicate` 与 `mismatch` 只报告，不自动处理。
-5. 报告写到 `$KL_HOME/library/reports/reconcile-<ts>.json`；有差异时退出码 1。
+5. 报告写到 `<运行时区>/library/reports/reconcile-<ts>.json`；有差异时退出码 1。
 
 ## 10. CLI
 
@@ -218,7 +218,7 @@ python -m library.cli restore --paper <paper_id>
 python -m library.cli cache prune --max-size 2G
 ```
 
-`--dry-run` 对全部写操作可用；全局 `--offline` 把 Drive/Base 换成 `$KL_HOME/library/offline-*.json` 的持久化夹具，不调用 `lark-cli`（`setup --offline` 会建一套假的四表与目录）。
+`--dry-run` 对全部写操作可用；全局 `--offline` 把 Drive/Base 换成 `<运行时区>/library/offline-*.json` 的持久化夹具，不调用 `lark-cli`（`setup --offline` 会建一套假的四表与目录）。
 
 ## 11. 迁移清单
 

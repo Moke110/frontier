@@ -10,6 +10,7 @@ from hostrun.base import HostRunError
 from library.drive import FixtureDrive
 from library.offline import JsonBase
 from writer.render import CAPTION_LABELS, SECTION_LABELS
+from conftest import cli_locations
 
 
 def _plan_file(directory, count: int = 2):
@@ -35,7 +36,7 @@ def _rendered_file(directory, name: str = "push.html"):
 
 def _home(tmp_path) -> Path:
 
-    home = tmp_path / "home"
+    home = tmp_path / "code" / ".frontier"
     (home / "knowledge").mkdir(parents=True)
     (home / "knowledge" / "base.json").write_text(
         json.dumps(
@@ -136,7 +137,7 @@ def _record_rendered(home, directory, *, push="push_1", papers=("paper_1",), htm
 
 
 def _base(tmp_path) -> JsonBase:
-    base = JsonBase(tmp_path / "home" / "library" / "offline-base.json")
+    base = JsonBase(tmp_path / "code" / ".frontier" / "library" / "offline-base.json")
     base.meta = []
     base.fields = {}
     base.tables = {}
@@ -454,7 +455,7 @@ def test_cli_record_accepts_retrieval_and_selection_evidence(tmp_path):
     _start(home, base)
 
     refused = cli.main(
-        ["--home", str(home), "smoke", "record", "--step", "retrieved"]
+        [*cli_locations(home), "smoke", "record", "--step", "retrieved"]
     )
     assert refused == 1
 
@@ -462,8 +463,7 @@ def test_cli_record_accepts_retrieval_and_selection_evidence(tmp_path):
     assert (
         cli.main(
             [
-                "--home",
-                str(home),
+                *cli_locations(home),
                 "smoke",
                 "record",
                 "--step",
@@ -479,8 +479,7 @@ def test_cli_record_accepts_retrieval_and_selection_evidence(tmp_path):
     assert (
         cli.main(
             [
-                "--home",
-                str(home),
+                *cli_locations(home),
                 "smoke",
                 "record",
                 "--step",
@@ -644,8 +643,7 @@ def test_cli_verify_accepts_repeated_field_checks(tmp_path):
 
     code = cli.main(
         [
-            "--home",
-            str(home),
+            *cli_locations(home),
             "--offline",
             "smoke",
             "verify",
@@ -672,8 +670,7 @@ def test_cli_verify_accepts_repeated_field_checks(tmp_path):
     assert (
         cli.main(
             [
-                "--home",
-                str(home),
+                *cli_locations(home),
                 "--offline",
                 "smoke",
                 "verify",
@@ -782,8 +779,7 @@ def test_cli_record_applied_captures_targets_and_fields(tmp_path):
 
     code = cli.main(
         [
-            "--home",
-            str(home),
+            *cli_locations(home),
             "smoke",
             "record",
             "--step",
@@ -903,9 +899,12 @@ def test_brief_uses_the_verified_recipient_and_registers_the_push_first(tmp_path
     assert brief["recipient"] == OWNER
     assert "<owner>" not in text
     assert f"--to {OWNER}" in text
-    # The send command must carry the data root, or the recorded lark-cli path
-    # and the publisher store resolve against the default root instead.
-    assert f'publisher.cli --home "{home}" send' in text
+    # The send command must carry the code directory and archive, or the
+    # recorded lark-cli path and the publisher store resolve against the
+    # default locations instead.
+    assert f'publisher.cli --code "{home.parent}"' in text
+    assert "--archive" in text
+    assert "--home" not in text
     assert text.index("archive.cli add-push") < text.index("--step rendered")
     assert "feedback submit --item" not in text
 
@@ -1086,8 +1085,7 @@ def test_offline_cli_start_refuses_and_never_spawns_the_real_cli(
 
     code = cli.main(
         [
-            "--home",
-            str(home),
+            *cli_locations(home),
             "--offline",
             "smoke",
             "start",

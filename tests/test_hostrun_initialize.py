@@ -9,6 +9,7 @@ from hostrun import cleanup, facilities, initialize, kb
 from hostrun.base import HostRunError
 from library.drive import FixtureDrive
 from library.offline import JsonBase
+from conftest import cli_locations
 
 
 def _fresh_base(tmp_path) -> JsonBase:
@@ -424,7 +425,7 @@ def test_cli_propose_exits_nonzero_when_refused(tmp_path):
     cards_file.write_text(json.dumps([_card()]), encoding="utf-8")
 
     code = cli.main(
-        ["--home", str(home), "init", "propose", "--cards", str(cards_file)]
+        [*cli_locations(home), "init", "propose", "--cards", str(cards_file)]
     )
 
     assert code == 1

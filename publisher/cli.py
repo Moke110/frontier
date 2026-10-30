@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
-from common import emit, home, read_json
+from common import emit, read_json
+from hostrun import layout
+from hostrun.base import HostRunError
 from publisher import alerts as alert_service
 from publisher.cards import build_rating_card
 from publisher.feishu import FeishuError
@@ -25,7 +26,8 @@ from publisher.store import PublisherStore
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="publisher", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument("--code", help="code directory (default: this checkout)")
+    parser.add_argument("--archive", help="archive directory (default: <code>/../frontier-archive)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("send", help="send one push: HTML file + rating card")
@@ -108,12 +110,16 @@ def _emit_result(result: dict) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    root = home(args.home)
-    # The data root the command was given must govern the recorded lark-cli path
-    # and every store path, even when the host passed --home instead of KL_HOME
-    # (the host instruction always passes --home explicitly).
-    os.environ["KL_HOME"] = str(root)
+    try:
+        args = build_parser().parse_args(layout.cli_argv(argv))
+        resolved = layout.resolve_for_cli(args)
+    except HostRunError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    # The locations this command resolved must govern the recorded lark-cli path
+    # and every store path; the export is also what spawned module commands read.
+    layout.export(resolved)
+    root = Path(resolved["runtime"])
     try:
         if args.cmd == "send":
             push = read_json(Path(args.push))

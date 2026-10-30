@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from hostrun import archive_index, cli, layout, migration, workspace
+from conftest import cli_locations
 
 
 PAPER = b"paper-one"
@@ -340,14 +341,13 @@ def test_cli_persists_a_custom_archive(tmp_path, capsys):
 
 
 # ------------------------------------------------------------------- CLI seam
-def test_cli_install_migrate_rejects_the_legacy_home_mode(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+def test_cli_install_migrate_reports_a_missing_legacy_install(tmp_path, capsys):
+    home = tmp_path / "code" / ".frontier"
 
-    rc = cli.main(["--home", str(home), "install", "migrate"])
+    rc = cli.main([*cli_locations(home), "install", "migrate"])
 
     assert rc == 1
-    assert "新布局" in json.loads(capsys.readouterr().err)["error"]
+    assert "--from" in json.loads(capsys.readouterr().err)["error"]
 
 
 def test_cli_install_migrate_reports_its_result(tmp_path, capsys, monkeypatch):

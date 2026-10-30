@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
+from pathlib import Path
 
-from common import emit, home
+from common import emit
+from hostrun import layout
+from hostrun.base import HostRunError
 from knowledge import bitable
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="knowledge", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument("--code", help="code directory (default: this checkout)")
+    parser.add_argument("--archive", help="archive directory (default: <code>/../frontier-archive)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("sync", help="upsert cards/propositions/evidence/logs into Bitable")
@@ -30,9 +33,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    root = home(args.home)
-    os.environ["KL_HOME"] = str(root)
+    try:
+        args = build_parser().parse_args(layout.cli_argv(argv))
+        resolved = layout.resolve_for_cli(args)
+    except HostRunError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    layout.export(resolved)
+    root = Path(resolved["runtime"])
     try:
         if args.cmd == "sync":
             emit(bitable.sync(root, dry_run=args.dry_run))

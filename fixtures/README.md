@@ -4,7 +4,7 @@
 
 | 内容 | 用途 |
 |---|---|
-| `home/`、`papers/` | 离线数据根与论文候选 |
+| `home/`、`papers/` | 离线运行时区与论文候选 |
 | `pdf-manifest.jsonl` | 历史 174 篇唯一原文的清单，供存量核对使用；原 WSL 文件路径可能已失效，清单不等于原件备份 |
 | `theme-inventory.jsonl` | 按标题/类别产生的主题建议与完整论文列表，不是已确认的知识本体 |
 | `theme-inventory.md` | 上述 JSONL 的简短汇总；`python scripts/build_theme_inventory.py` 可重建两者 |

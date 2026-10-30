@@ -11,6 +11,7 @@ import pytest
 from hostrun import cli, install
 from hostrun import workspace as workspace_mod
 from hostrun.base import HostRunError, resolve_executable
+from conftest import cli_locations
 
 
 def _host(**over):
@@ -350,12 +351,11 @@ def test_check_merges_host_and_lark_permissions_once(tmp_path, monkeypatch):
 def test_cli_rejected_layout_records_workspace_blocked(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
-    home = tmp_path / "data-root"
+    home = tmp_path / "code" / ".frontier"
 
     code = cli.main(
         [
-            "--home",
-            str(home),
+            *cli_locations(home),
             "install",
             "workspace",
             "--root",
@@ -368,12 +368,12 @@ def test_cli_rejected_layout_records_workspace_blocked(tmp_path):
     assert code == 1
     entry = install.load_state(home)["steps"]["workspace"]
     assert entry["status"] == "blocked"
-    assert "数据根不能放在代码目录内" in entry["note"]
+    assert "资料目录不能放在代码目录内" in entry["note"]
     assert entry["evidence"]["layout_valid"] is False
     report = install.report(home)
     assert [row["step"] for row in report["blocked"]] == ["workspace"]
     assert report["next"] == "workspace"
-    assert any("数据根不能放在代码目录内" in line for line in report["limitations"])
+    assert any("资料目录不能放在代码目录内" in line for line in report["limitations"])
     assert not (ws / "frontier").exists()
 
 
@@ -398,8 +398,7 @@ def test_cli_install_check_accepts_explicit_read_only_tokens(tmp_path, monkeypat
 
     code = cli.main(
         [
-            "--home",
-            str(tmp_path / "home"),
+            *cli_locations(tmp_path / "home"),
             "install",
             "check",
             "--base-token",
@@ -581,7 +580,7 @@ def test_toolchain_step_blocks_with_a_repair_command_then_recovers(
     }
     monkeypatch.setattr(workspace_mod, "toolchain", lambda *a, **k: blocked)
 
-    assert cli.main(["--home", str(home), "install", "toolchain", "--root", str(root)]) == 1
+    assert cli.main([*cli_locations(home), "install", "toolchain", "--root", str(root)]) == 1
 
     entry = install.load_state(home)["steps"]["dependencies"]
     assert entry["status"] == "blocked"
@@ -605,8 +604,7 @@ def test_toolchain_step_blocks_with_a_repair_command_then_recovers(
     assert (
         cli.main(
             [
-                "--home",
-                str(home),
+                *cli_locations(home),
                 "install",
                 "toolchain",
                 "--root",
@@ -938,8 +936,9 @@ def test_listener_install_writes_scripts_and_records_the_step(tmp_path):
     start_text = start.read_text(encoding="utf-8")
     assert start_text.splitlines()[0] == "title frontier-listener"
     assert sys.executable in start_text
-    assert str(home.resolve()) in start_text
-    assert "--home" in start_text
+    assert f'--code "{repo.resolve()}"' in start_text
+    assert "--archive" in start_text
+    assert "--home" not in start_text
     assert str(repo.resolve()) in start_text
     assert "listener serve" in start_text
     assert "listener stop" in stop.read_text(encoding="utf-8")
@@ -1053,14 +1052,12 @@ def test_listener_install_reuses_the_recorded_dsh(tmp_path):
 
 
 def test_cli_install_record_accepts_the_listener_steps(tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
 
     assert (
         cli.main(
             [
-                "--home",
-                str(home),
+                *cli_locations(home),
                 "install",
                 "record",
                 "--step",
@@ -1076,8 +1073,7 @@ def test_cli_install_record_accepts_the_listener_steps(tmp_path):
     assert (
         cli.main(
             [
-                "--home",
-                str(home),
+                *cli_locations(home),
                 "install",
                 "record",
                 "--step",

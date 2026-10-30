@@ -19,7 +19,8 @@ from typing import Any, Iterable, Iterator
 
 import yaml
 
-DEFAULT_HOME = "~/knowledge-loop"
+RUNTIME_DIRNAME = ".frontier"
+RUNTIME_ENV = "FRONTIER_RUNTIME"
 
 
 def _replace_with_retry(tmp: Path, target: Path, *, attempts: int = 20) -> None:
@@ -41,9 +42,18 @@ def _replace_with_retry(tmp: Path, target: Path, *, attempts: int = 20) -> None:
 
 
 
-def home(override: str | None = None) -> Path:
-    """Data root. Every CLI accepts --home, else KL_HOME, else ~/knowledge-loop."""
-    return Path(override or os.environ.get("KL_HOME") or DEFAULT_HOME).expanduser().resolve()
+def runtime_root() -> Path:
+    """The runtime area for helpers called without an explicit root.
+
+    Commands resolve the two locations through ``hostrun.layout`` and export
+    this path, so in-process helpers such as :func:`recorded_lark_cli` read the
+    same area the command was given.  The fallback is this checkout's own
+    ``.frontier``, which is also what the resolver defaults to.
+    """
+    override = os.environ.get(RUNTIME_ENV)
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parent / RUNTIME_DIRNAME
 
 
 def recorded_lark_cli() -> str:
@@ -55,8 +65,8 @@ def recorded_lark_cli() -> str:
     recorded, so callers can decide whether a PATH lookup is acceptable.
     """
     try:
-        root = home()
-    except Exception:  # noqa: BLE001 - no data root means no recorded path
+        root = runtime_root()
+    except Exception:  # noqa: BLE001 - no runtime area means no recorded path
         return ""
     config = read_json(Path(root) / "install" / "config.json", {}) or {}
     recorded = str((config.get("paths") or {}).get("lark_cli") or "").strip()

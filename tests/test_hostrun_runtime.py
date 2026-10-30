@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from conftest import seed_queue
+from conftest import seed_queue, cli_locations
 from hostrun import audit, cli, executor, feedback, install, intents
 
 
@@ -311,7 +311,7 @@ def test_audit_missing_baseline_file_is_an_error(tmp_path):
 
 # ---------------------------------------------------------------------- cli
 def test_cli_reports_install_status_as_json(tmp_path, capsys):
-    code = cli.main(["--home", str(tmp_path), "install", "status"])
+    code = cli.main([*cli_locations(tmp_path), "install", "status"])
     payload = json.loads(capsys.readouterr().out)
 
     assert code == 0
@@ -319,9 +319,9 @@ def test_cli_reports_install_status_as_json(tmp_path, capsys):
 
 
 def test_cli_feedback_setup_and_status_offline(configured_home, offline_base, capsys):
-    assert cli.main(["--home", str(configured_home), "--offline", "feedback", "setup"]) == 0
+    assert cli.main([*cli_locations(configured_home), "--offline", "feedback", "setup"]) == 0
     capsys.readouterr()
-    assert cli.main(["--home", str(configured_home), "--offline", "feedback", "status"]) == 0
+    assert cli.main([*cli_locations(configured_home), "--offline", "feedback", "status"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["questions"] == 0
@@ -330,7 +330,7 @@ def test_cli_feedback_setup_and_status_offline(configured_home, offline_base, ca
 
 def test_cli_rejects_an_unknown_intent(configured_home, capsys):
     with pytest.raises(SystemExit):
-        cli.main(["--home", str(configured_home), "run", "--intent", "hourly"])
+        cli.main([*cli_locations(configured_home), "run", "--intent", "hourly"])
 
 
 # ---------------------------------------------------------------- schedules
@@ -376,7 +376,8 @@ def test_schedule_commands_are_actually_runnable(configured_home):
         parsed = hostrun_cli.build_parser().parse_args(hostrun_cli._normalize(argv))
         assert parsed.cmd == "run"
         assert parsed.intent == task["intent"]
-        assert parsed.home
+        assert parsed.code
+        assert parsed.archive
         assert parsed.scheduled is True
         assert parsed.task == task["id"]
 
@@ -393,7 +394,7 @@ def test_invalid_clock_is_rejected(configured_home):
 
 def test_schedules_cli_plans_the_two_instant_tasks(configured_home, capsys):
     code = cli.main(
-        ["--home", str(configured_home), "schedules", "plan", "--listener-check", "10:30"]
+        [*cli_locations(configured_home), "schedules", "plan", "--listener-check", "10:30"]
     )
     payload = json.loads(capsys.readouterr().out)
 
@@ -406,12 +407,12 @@ def test_schedules_cli_plans_the_two_instant_tasks(configured_home, capsys):
 
     with pytest.raises(SystemExit):
         cli.main(
-            ["--home", str(configured_home), "schedules", "plan", "--feedback-minute", "5"]
+            [*cli_locations(configured_home), "schedules", "plan", "--feedback-minute", "5"]
         )
 
 
-def test_home_flag_works_after_the_subcommand(configured_home, capsys):
-    code = cli.main(["install", "status", "--home", str(configured_home)])
+def test_location_flags_work_after_the_subcommand(configured_home, capsys):
+    code = cli.main(["install", "status", *cli_locations(configured_home)])
 
     assert code == 0
     assert json.loads(capsys.readouterr().out)["steps"]

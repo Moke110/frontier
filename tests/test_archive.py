@@ -5,6 +5,7 @@ import pytest
 
 from archive import migrate
 from archive.store import Archive, ArchiveError
+from conftest import cli_locations
 
 
 def test_add_paper_dedupes_by_source_id(kl_home):
@@ -239,9 +240,9 @@ def test_apply_group_cli(kl_home, tmp_path, capsys):
     }
     path = tmp_path / "item.json"
     path.write_text(json.dumps(item), encoding="utf-8")
-    assert main(["--home", str(kl_home), "apply-group", "--file", str(path)]) == 0
+    assert main([*cli_locations(kl_home), "apply-group", "--file", str(path)]) == 0
     assert "CLI term" in Archive(kl_home).get_card("card_hmbs")["ontology"]
-    assert main(["--home", str(kl_home), "apply-group", "--file", str(path)]) == 0
+    assert main([*cli_locations(kl_home), "apply-group", "--file", str(path)]) == 0
     again = [p for p in Archive(kl_home).get_card("card_hmbs")["ontology"] if p == "CLI term"]
     assert len(again) == 1
 

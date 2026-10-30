@@ -5,10 +5,10 @@
 
 > editor / writer 的 agent 任务包（`editor-task.json`、`writer-task.json`）与校验规则见 [`agent-tasks.md`](agent-tasks.md)。
 
-数据根由 `--home` 显式指定；安装默认记录为工作区的 `frontier-archive/`，CLI 在未提供时回退环境变量 `KL_HOME` 或 `~/knowledge-loop`：
+两个顶层位置由统一解析（`hostrun.layout`）决定：**代码目录** `--code`（默认仓库根，运行时区为 `<code>/.frontier/`）与**资料目录** `--archive`（默认 `<code>/../frontier-archive`）。资料目录只放 `originals/`（原文）与 `pushes/`（推送件）；运行状态一律在运行时区。子进程通过 `FRONTIER_CODE` / `FRONTIER_ARCHIVE` / `FRONTIER_RUNTIME` 继承同一次解析；旧 `--home` 已退役，传入即报错并提示 `install migrate`：
 
 ```
-$KL_HOME/
+<code>/.frontier/                 # 运行时区（不放进资料目录）
 ├── state/
 │   ├── checkpoints.yaml          # 机器写：按知识卡片 id 存权重 / 命中率 / 最后检索
 │   └── editor.yaml               # 机器写：评分学出的偏好模型
@@ -461,7 +461,7 @@ python -m library.cli restore --paper <id>
 python -m library.cli decisions sync           # 提议级决定写入「决定」表
 ```
 
-全局 `--offline` 用 `$KL_HOME/library/offline-*.json` 的夹具跑完整流程，不碰真实租户。
+全局 `--offline` 用 `<运行时区>/library/offline-*.json` 的夹具跑完整流程，不碰真实租户。
 
 - 「原文」「推送日志」「决定」「配置」四张表的字段与状态机见 spec §3；`papers` 表语义是「报道」，不是论文。
 - 配额默认 5GB（Base「配置」表可改）；100% 时只拦新原文，不拦推送；永不自动删除。
@@ -486,13 +486,13 @@ python -m question_queue.cli try-start
 
 ## 12. 宿主运行（hostrun）
 
-由宿主 agent 驱动的安装、租约与有界运行。**不写持久环境变量、不创建服务或系统定时任务**；唯一允许的常驻组件是用户手动启停的监听进程（[ADR 0008](../docs/adr/0008-listener-process.md)），它不是一个 Windows 服务、不登录自启、也不替代执行端租约。数据根优先用 `--home` 显式给出（`KL_HOME` 仅在未给时生效）。代码目录与数据根分开：工作区默认 `frontier/` 与 `frontier-archive/`。uv 管理的私有环境与解释器属于**数据根**（`<home>/.venv`），代码目录只保留代码；uv 优先从工作区外解析，缺失时才装到 `<home>/bin`。
+由宿主 agent 驱动的安装、租约与有界运行。**不写持久环境变量、不创建服务或系统定时任务**；唯一允许的常驻组件是用户手动启停的监听进程（[ADR 0008](../docs/adr/0008-listener-process.md)），它不是一个 Windows 服务、不登录自启、也不替代执行端租约。位置只由统一解析给出：`--code`（默认仓库根）+ `--archive`（默认 `<code>/../frontier-archive`），运行时区固定为 `<code>/.frontier/`。工作区默认含 `frontier/`（代码目录）与 `frontier-archive/`（资料目录）。uv 管理的私有环境与解释器记录在安装记录里（迁移后在 `<code>/.frontier/.venv`）；代码目录只保留代码，uv 优先从工作区外解析。
 
 ```bash
-# 工作区、数据根私有 uv/解释器、frontier-run 入口指针
+# 工作区、私有 uv/解释器、frontier-run 入口指针
 python -m hostrun.cli install workspace --root <workspace>
-python -m hostrun.cli --home <home> install toolchain --root <workspace>
-python -m hostrun.cli --home <home> install skill --root <workspace> --target <host-skill-dir>/frontier-run
+python -m hostrun.cli --code <code> --archive <archive> install toolchain --root <workspace>
+python -m hostrun.cli --code <code> --archive <archive> install skill --root <workspace> --target <host-skill-dir>/frontier-run
 python -m hostrun.cli install check|report|status|record|locate
 
 # 飞书 CLI：可执行 / 身份 / 授权范围 / 资源读取分项
@@ -526,9 +526,17 @@ python -m hostrun.cli status
 
 ```
 <workspace>/
-├── .frontier/install.json        # 代码 / 数据根 / uv / 私有环境 / 解释器 / 技能绝对路径（技能移动后仍可定位）
-├── frontier/                     # 代码副本（检查来源与改动，不覆盖；不放私有环境）
-└── frontier-archive/             # 数据根
+├── .frontier/install.json        # 代码 / 资料目录 / uv / 私有环境 / 解释器 / 技能绝对路径（技能移动后仍可定位）
+├── frontier/                     # 代码目录；运行时区在 frontier/.frontier/（下列条目）
+└── frontier-archive/             # 资料目录：只有 originals/ 与 pushes/
+    ├── originals/                # 原文
+    └── pushes/                   # 推送件
+```
+
+运行时区（`<code>/.frontier/`）内的安装与运行状态：
+
+```
+<code>/.frontier/
     ├── bin/                      # 缺失时的私有 uv（优先从工作区外解析；不改 PATH）；
     │                             #   frontier-listener.cmd / frontier-listener-stop.cmd（用户手动启停）
     ├── .venv/                    # uv 管理的私有环境与解释器（绝对路径同时写入指针记录与安装配置）
@@ -556,7 +564,7 @@ python -m hostrun.cli status
 约定：
 
 - `install report` 的 `working` / `blocked` / `untested` / `pending` 分项是验收依据；缺能力标 `blocked`，没测过标 `untested`，不得写成通过。
-- 工作区与私有环境：已有副本有未提交改动、origin 不符或不是 git 仓库时阻塞，不拉取、不覆盖；重跑复用已验证组件。依赖步骤只认**记录的解释器**：未记录、不是绝对路径、文件不存在或位于代码目录内时标 `blocked`，并给出可照做的 `install toolchain ... --clear` 修复命令（含先切换到代码目录）；不回退到当前运行进程的解释器。`--clear` 才重建数据根环境，重复运行复用现有环境。
+- 工作区与私有环境：已有副本有未提交改动、origin 不符或不是 git 仓库时阻塞，不拉取、不覆盖；重跑复用已验证组件。依赖步骤只认**记录的解释器**：未记录、不是绝对路径、文件不存在或位于代码目录内时标 `blocked`，并给出可照做的 `install toolchain ... --clear` 修复命令（含先切换到代码目录）；不回退到当前运行进程的解释器。`--clear` 才重建运行时区环境，重复运行复用现有环境。
 - 飞书 CLI 与权限：可执行、登录、授权范围、真实资源读取分别验证；记到文件系统的绝对路径失效时 `blocked`，不静默回退到 PATH。`permissions=ok` 要求授权范围与**真实 Base + Drive 读取**均成功；`messages` 作为独立的 `untested` 子证据保留，不因登录成功或消息未测而伪造；配置中 `permissions.scope` 保存飞书 scope，宿主能力另记 `host_scope`，两者不互相覆盖。
 - 设施：按用户确认的展示名创建；使用稳定 ID，改名不影响读写。`facilities create` 总是新建独立 Base，不按名称复用同名库；`facilities plan` / `create` 把同名 Base 作为 `existing_same_name`（`count`/`names`/`note`）提示报告，查找失败时只留该字段并保持 `count: null`，不冒充已执行的动作；接入已有库必须显式 `facilities attach`（只检查/补缺，不清空）。部分失败如实报告并可从已创建项续接。
 - 临时闭环：临时卡片 ID 与推送/消息/文件/问题/论文 ID 全部归属测试。`frontier.cli validate --include-temporary` 用于在清理前校验临时卡片；普通 `validate`/`plan` 仍排除 `card_smoke_*`。`retrieved` 必须指向真实的 `--plan` 计划/候选文件并由文件得出候选数（可选 `--candidates` 必须一致）；`written` 至少一个 `--paper`；`rendered` 必须带 `--push` 与 `--html`，并按 `writer/render.py` 契约校验七段与 `原文图`/`生成图` 图注；`sent` 带推送、消息、问题 ID，且该消息必须在 `publisher/messages.jsonl` 中登记为本次推送的 `push_file`、`target` 等于测试记录中已核实的收件人（缺失为 `message_recipient_unverified`，不匹配为 `message_mismatch`，均不推进步骤）；`applied` 用 `--target`（被采纳目标 ID）与 `--applied-field`（每个被采纳字段）登记写入意图，省略时按临时卡片、只要求至少一个读回检查。`verify` 的逐字段读回累计在 `steps.verified.checks`，且必须覆盖每个已登记目标与字段才完整；覆盖不足返回 `verification_incomplete` 并保持 `test_loop` 未通过，字段不一致照常失败。成功必须包含完整读回核对，失败不开放正式初始化。
@@ -566,7 +574,7 @@ python -m hostrun.cli status
 - 只创建两个宿主任务：`frontier-daily`（用户时区 08:00，推送）与 `frontier-listener-check`（每日 09:00，监听巡检）。正式知识未就绪时 `confirm` 拒绝创建（包括暂停），不写 `schedules` 任务；就绪后 `confirm` 为每个任务生成 proof 并写入命令。运行日志中的 `scheduled=true`、`task=<id>`、`proof` 匹配、运行时间的 UTC 偏移与计划时区记录的 `utc_offset_seconds` 一致，且落在计划时间内（±5 分钟启动容差）的记录才能写 `scheduled_run`，手动运行、非到点运行、异时区时间与伪造时间不计。**监听巡检不写 `scheduled_run`**，它的证据是 `listener_health`（见下）。
 - 监听进程：单一前台进程、用户手动启停，不装服务、不登录自启、不写注册表。事件面用 bot 身份消费 `im.message.receive_v1`，只接受已核实 owner 的单聊消息；命令白名单为 `推一篇` / `处理反馈` / `状态`，未知文本只回用法提示，群聊与他人消息忽略并记日志。
 - 反馈轮询：监听进程每 5 分钟执行一次 `run --intent feedback`（机械、无模型）；**自动轮询与显式 `处理反馈` 都在后台 daemon 工作线程执行**（复用派生运行的 worker 机制），事件循环继续消费事件、写心跳、调度轮询并回复 `状态`；同一时刻只允许一个反馈轮询在飞行（在飞行时自动轮询跳过本轮，显式命令立即回复"正在处理反馈，稍后再试"）。显式命令两段回执：立即回执"已开始处理反馈"，工作线程结束后仅在有变化/失败/跳过时发送结果回执，无变化保持安静；自动轮询从不发消息。每次轮询取得的执行端租约覆盖**整个运行**（`listener.feedback_lease_minutes`，默认 45 分钟），不是轮询间隔，避免超过一个轮询间隔的运行被下一轮并发启动；执行端租约被占用时跳过本轮，不抢、不重试；worker 异常被捕获并记日志/回执，不向 `serve` 抛出；日志与心跳写入对主循环与工作线程安全（单写/加锁）。
-- 派生运行：监听进程用记录的 `dsh` 绝对路径执行 `dsh --profile headless "<brief>"`（任务为**位置参数**，headless profile 没有 `--prompt`）拉起一次有界宿主运行；记录的可选 `listener.dsh_args`（例如 `--patch <overlay.yml>`，用于本机 headless profile 缺少模型凭据时启用账号授权路由）插在 profile 与任务之间，任务始终是最后一个参数。派生在后台 daemon 工作线程执行，事件消费、心跳与 `状态` 回复不被阻塞；同一时刻的第二个派生命令立即回复"正在运行"。护栏：单飞行锁、**先取执行端租约再准备（request_push/try_start）与派生，准备+派生在同一段连续租约内**（acquire 失败不产生任何队列/卡片副作用）、单次上限 20 分钟、失败不自动重试、写入 `runs.jsonl` 并标记 `derived`、在飞书回执（开始时立即回执"已开始"，结束时回执完成/失败）；派生等待子进程期间**持续续租**（`executor.heartbeat`，20 分钟窗口），准备+子进程等待超过初始窗口也不会让另一宿主中途接管；`install report` 有 `blocked` 项时拒绝派生并如实回复。派生 spawn 使用记录的仓库作为 cwd、环境含 `KL_HOME=<home>`（保留其余环境），brief 前置仓库/数据根/记录解释器与"必须加载 `frontier-run` 技能"的要求；argv 形状已由 2026-10-30 的真实命令验证。
+- 派生运行：监听进程用记录的 `dsh` 绝对路径执行 `dsh --profile headless "<brief>"`（任务为**位置参数**，headless profile 没有 `--prompt`）拉起一次有界宿主运行；记录的可选 `listener.dsh_args`（例如 `--patch <overlay.yml>`，用于本机 headless profile 缺少模型凭据时启用账号授权路由）插在 profile 与任务之间，任务始终是最后一个参数。派生在后台 daemon 工作线程执行，事件消费、心跳与 `状态` 回复不被阻塞；同一时刻的第二个派生命令立即回复"正在运行"。护栏：单飞行锁、**先取执行端租约再准备（request_push/try_start）与派生，准备+派生在同一段连续租约内**（acquire 失败不产生任何队列/卡片副作用）、单次上限 20 分钟、失败不自动重试、写入 `runs.jsonl` 并标记 `derived`、在飞书回执（开始时立即回执"已开始"，结束时回执完成/失败）；派生等待子进程期间**持续续租**（`executor.heartbeat`，20 分钟窗口），准备+子进程等待超过初始窗口也不会让另一宿主中途接管；`install report` 有 `blocked` 项时拒绝派生并如实回复。派生 spawn 使用记录的仓库作为 cwd、环境含 `FRONTIER_CODE` / `FRONTIER_ARCHIVE` / `FRONTIER_RUNTIME`（保留其余环境），brief 前置仓库/运行时区/记录解释器与"必须加载 `frontier-run` 技能"的要求；argv 形状已由 2026-10-30 的真实命令验证。
 - 监听巡检：读取心跳新鲜度（≤10 分钟）、进程存活与最近一次成功事件时间；事件时间以 `last_event_age_seconds` 出现在 `listener_health` 证据与 `listener status` 输出中，心跳新鲜但超过 `listener.event_stale_seconds`（默认 3600）无成功事件时只在 `problems` 给出诊断提示，**在线判定仍为"心跳新鲜 + 进程存活"**；判定不在线时用记录的启动命令拉起一次并在 30 秒后复查，恢复成功报告一次，仍失败报告具体缺项并停手。证据写入独立的 `listener_health` 步骤；到点容差（±5 分钟）只用于证明"调度器真实触发"，不用于巡检。
 - 同一时刻只有一个执行端：另一宿主持有有效租约时返回 `executor_busy`；过期租约可被接管并在 `events.jsonl` 记 `taken_over`；换机必须 `handover`（旧端仍活跃时需 `--force` 并说明）。
 - `feedback rebuild` 从「问题」表重建本地队列，已处理的决定不会被再次应用。

@@ -16,6 +16,7 @@ import pytest
 import hostrun
 from hostrun import cli, executor, install, intents, listener
 from hostrun.base import HostRunError, load_config
+from conftest import cli_locations
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,14 +47,20 @@ def test_parser_accepts_the_six_listener_actions():
         assert args.action == action
 
 
-def test_listener_commands_accept_home_after_the_subcommand():
+def test_listener_commands_accept_the_location_flags_after_the_subcommand():
     parser = cli.build_parser()
 
-    before = parser.parse_args(cli._normalize(["--home", "H", "listener", "status"]))
-    after = parser.parse_args(cli._normalize(["listener", "status", "--home", "H"]))
+    before = parser.parse_args(
+        cli._normalize(["--code", "C", "--archive", "A", "listener", "status"])
+    )
+    after = parser.parse_args(
+        cli._normalize(["listener", "status", "--code", "C", "--archive", "A"])
+    )
 
-    assert before.home == "H"
-    assert after.home == "H"
+    assert before.code == "C"
+    assert before.archive == "A"
+    assert after.code == "C"
+    assert after.archive == "A"
 
 
 def test_install_flags_are_parsed():
@@ -72,16 +79,15 @@ def test_install_flags_are_parsed():
 
 # ------------------------------------------------------------------ install
 def test_listener_install_generates_scripts_through_the_install_helper(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     dsh = _dsh_file(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
 
     code = cli.main(
         [
-            "--home",
-            str(home),
+            *cli_locations(home),
             "listener",
             "install",
             "--dsh",
@@ -108,10 +114,10 @@ def test_listener_install_generates_scripts_through_the_install_helper(tmp_path,
 
 
 def test_listener_install_without_dsh_exits_one_with_json(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
 
-    code = cli.main(["--home", str(home), "listener", "install"])
+    code = cli.main([*cli_locations(home), "listener", "install"])
 
     assert code == 1
     payload = json.loads(capsys.readouterr().out)
@@ -123,8 +129,8 @@ def test_listener_install_without_dsh_exits_one_with_json(tmp_path, capsys):
 
 # -------------------------------------------------------------------- start
 def test_listener_start_spawns_the_recorded_command_once(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     dsh = _dsh_file(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -138,7 +144,7 @@ def test_listener_start_spawns_the_recorded_command_once(tmp_path, monkeypatch, 
 
     monkeypatch.setattr(cli, "_spawn_detached", fake_spawn)
 
-    code = cli.main(["--home", str(home), "listener", "start"])
+    code = cli.main([*cli_locations(home), "listener", "start"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -149,8 +155,8 @@ def test_listener_start_spawns_the_recorded_command_once(tmp_path, monkeypatch, 
 
 
 def test_listener_start_reports_already_running_without_spawning(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     install.listener_install(
         home, dsh=str(_dsh_file(tmp_path)), python=sys.executable, repo=ROOT
     )
@@ -161,7 +167,7 @@ def test_listener_start_reports_already_running_without_spawning(tmp_path, monke
         lambda argv: pytest.fail("an online listener must not be started again"),
     )
 
-    code = cli.main(["--home", str(home), "listener", "start"])
+    code = cli.main([*cli_locations(home), "listener", "start"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -170,13 +176,13 @@ def test_listener_start_reports_already_running_without_spawning(tmp_path, monke
 
 
 def test_listener_start_blocks_without_a_recorded_command(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(
         cli, "_spawn_detached", lambda argv: pytest.fail("nothing recorded to spawn")
     )
 
-    code = cli.main(["--home", str(home), "listener", "start"])
+    code = cli.main([*cli_locations(home), "listener", "start"])
 
     assert code == 1
     payload = json.loads(capsys.readouterr().out)
@@ -185,8 +191,8 @@ def test_listener_start_blocks_without_a_recorded_command(tmp_path, monkeypatch,
 
 
 def test_listener_start_reports_a_spawn_failure_as_json(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     install.listener_install(
         home, dsh=str(_dsh_file(tmp_path)), python=sys.executable, repo=ROOT
     )
@@ -196,7 +202,7 @@ def test_listener_start_reports_a_spawn_failure_as_json(tmp_path, monkeypatch, c
 
     monkeypatch.setattr(cli, "_spawn_detached", failing_spawn)
 
-    code = cli.main(["--home", str(home), "listener", "start"])
+    code = cli.main([*cli_locations(home), "listener", "start"])
 
     assert code == 1
     payload = json.loads(capsys.readouterr().out)
@@ -224,13 +230,13 @@ def _fake_health_sequence(monkeypatch, states):
 
 
 def test_listener_stop_writes_the_sentinel_and_waits_for_exit(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     _fake_health_sequence(monkeypatch, ["online", "offline"])
     slept = []
     monkeypatch.setattr(cli, "_listener_sleep", lambda seconds: slept.append(seconds))
 
-    code = cli.main(["--home", str(home), "listener", "stop"])
+    code = cli.main([*cli_locations(home), "listener", "stop"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -240,14 +246,14 @@ def test_listener_stop_writes_the_sentinel_and_waits_for_exit(tmp_path, monkeypa
 
 
 def test_listener_stop_reports_not_running_without_a_sentinel(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     _fake_health_sequence(monkeypatch, ["offline"])
     monkeypatch.setattr(
         cli, "_listener_sleep", lambda seconds: pytest.fail("nothing to wait for")
     )
 
-    code = cli.main(["--home", str(home), "listener", "stop"])
+    code = cli.main([*cli_locations(home), "listener", "stop"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -256,13 +262,13 @@ def test_listener_stop_reports_not_running_without_a_sentinel(tmp_path, monkeypa
 
 
 def test_listener_stop_reports_timeout_after_the_bounded_wait(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     _fake_health_sequence(monkeypatch, ["online"])
     slept = []
     monkeypatch.setattr(cli, "_listener_sleep", lambda seconds: slept.append(seconds))
 
-    code = cli.main(["--home", str(home), "listener", "stop"])
+    code = cli.main([*cli_locations(home), "listener", "stop"])
 
     assert code == 1
     payload = json.loads(capsys.readouterr().out)
@@ -273,8 +279,8 @@ def test_listener_stop_reports_timeout_after_the_bounded_wait(tmp_path, monkeypa
 
 
 def test_listener_stop_waits_for_a_stale_but_live_process(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     answers = [("stale", True), ("offline", False)]
     calls = {"count": 0}
 
@@ -293,7 +299,7 @@ def test_listener_stop_waits_for_a_stale_but_live_process(tmp_path, monkeypatch,
     slept = []
     monkeypatch.setattr(cli, "_listener_sleep", lambda seconds: slept.append(seconds))
 
-    code = cli.main(["--home", str(home), "listener", "stop"])
+    code = cli.main([*cli_locations(home), "listener", "stop"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -303,13 +309,13 @@ def test_listener_stop_waits_for_a_stale_but_live_process(tmp_path, monkeypatch,
 
 
 def test_listener_status_survives_an_unreadable_heartbeat(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     heartbeat = listener.heartbeat_path(home)
     heartbeat.parent.mkdir(parents=True)
     heartbeat.write_text("{not json", encoding="utf-8")
 
-    code = cli.main(["--home", str(home), "listener", "status"])
+    code = cli.main([*cli_locations(home), "listener", "status"])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -320,13 +326,13 @@ def test_listener_status_survives_an_unreadable_heartbeat(tmp_path, capsys):
 
 
 def test_listener_status_survives_a_non_object_heartbeat(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     heartbeat = listener.heartbeat_path(home)
     heartbeat.parent.mkdir(parents=True)
     heartbeat.write_text("[]", encoding="utf-8")
 
-    code = cli.main(["--home", str(home), "listener", "status"])
+    code = cli.main([*cli_locations(home), "listener", "status"])
 
     captured = capsys.readouterr()
     assert code == 0
@@ -335,10 +341,10 @@ def test_listener_status_survives_a_non_object_heartbeat(tmp_path, capsys):
 
 
 def test_listener_status_accepts_home_after_the_subcommand(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
 
-    code = cli.main(["listener", "status", "--home", str(home)])
+    code = cli.main(["listener", "status", *cli_locations(home)])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -347,10 +353,10 @@ def test_listener_status_accepts_home_after_the_subcommand(tmp_path, capsys):
 
 # ------------------------------------------------------------- status/health
 def test_listener_status_reports_offline_without_creating_a_heartbeat(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
 
-    code = cli.main(["--home", str(home), "listener", "status"])
+    code = cli.main([*cli_locations(home), "listener", "status"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -361,11 +367,11 @@ def test_listener_status_reports_offline_without_creating_a_heartbeat(tmp_path, 
 
 
 def test_listener_status_reports_a_live_pid(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     _fresh_heartbeat(home)
 
-    code = cli.main(["--home", str(home), "listener", "status"])
+    code = cli.main([*cli_locations(home), "listener", "status"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -377,14 +383,14 @@ def test_listener_status_reports_a_live_pid(tmp_path, capsys):
 
 def test_listener_status_reports_event_recency_and_the_no_success_hint(tmp_path, capsys):
     """#72 item 6: ``listener status`` surfaces the successful-event age."""
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     old = (datetime.now().astimezone() - timedelta(hours=2)).isoformat()
     listener.write_heartbeat(
         home, pid=os.getpid(), last_event_at=old, last_success_at=old
     )
 
-    code = cli.main(["--home", str(home), "listener", "status"])
+    code = cli.main([*cli_locations(home), "listener", "status"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -394,13 +400,13 @@ def test_listener_status_reports_event_recency_and_the_no_success_hint(tmp_path,
 
 
 def test_listener_health_is_read_only_and_exits_by_online_state(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(
         cli, "_spawn_detached", lambda argv: pytest.fail("health never restarts")
     )
 
-    offline_code = cli.main(["--home", str(home), "listener", "health"])
+    offline_code = cli.main([*cli_locations(home), "listener", "health"])
     offline = json.loads(capsys.readouterr().out)
     assert offline_code == 1
     assert offline["ok"] is False
@@ -408,7 +414,7 @@ def test_listener_health_is_read_only_and_exits_by_online_state(tmp_path, monkey
     assert offline["action"] == "none"
 
     _fresh_heartbeat(home)
-    online_code = cli.main(["--home", str(home), "listener", "health"])
+    online_code = cli.main([*cli_locations(home), "listener", "health"])
     online = json.loads(capsys.readouterr().out)
     assert online_code == 0
     assert online["ok"] is True
@@ -416,8 +422,8 @@ def test_listener_health_is_read_only_and_exits_by_online_state(tmp_path, monkey
 
 
 def test_listener_health_does_not_restart_even_with_a_recorded_command(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     install.listener_install(
         home, dsh=str(_dsh_file(tmp_path)), python=sys.executable, repo=ROOT
     )
@@ -425,7 +431,7 @@ def test_listener_health_does_not_restart_even_with_a_recorded_command(tmp_path,
         cli, "_spawn_detached", lambda argv: pytest.fail("health never restarts")
     )
 
-    code = cli.main(["--home", str(home), "listener", "health"])
+    code = cli.main([*cli_locations(home), "listener", "health"])
 
     assert code == 1
     assert json.loads(capsys.readouterr().out)["action"] == "none"
@@ -433,8 +439,8 @@ def test_listener_health_does_not_restart_even_with_a_recorded_command(tmp_path,
 
 # ------------------------------------------------------------------- serve
 def test_listener_serve_runs_the_foreground_loop(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     seen = {}
 
     def fake_serve(home_arg, **kwargs):
@@ -443,7 +449,7 @@ def test_listener_serve_runs_the_foreground_loop(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(listener, "serve", fake_serve)
 
-    code = cli.main(["--home", str(home), "listener", "serve"])
+    code = cli.main([*cli_locations(home), "listener", "serve"])
 
     assert code == 0
     assert seen["home"] == home.resolve()
@@ -452,15 +458,15 @@ def test_listener_serve_runs_the_foreground_loop(tmp_path, monkeypatch, capsys):
 
 
 def test_listener_serve_exits_one_on_a_fatal_consume_failure(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(
         listener,
         "serve",
         lambda home_arg, **kwargs: {"ok": False, "reason": "app_scope_not_applied"},
     )
 
-    code = cli.main(["--home", str(home), "listener", "serve"])
+    code = cli.main([*cli_locations(home), "listener", "serve"])
 
     assert code == 1
     assert json.loads(capsys.readouterr().out)["ok"] is False
@@ -468,15 +474,15 @@ def test_listener_serve_exits_one_on_a_fatal_consume_failure(tmp_path, monkeypat
 
 # ----------------------------------------------------------------- failures
 def test_dispatch_errors_are_json_not_tracebacks(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
 
     def exploding_serve(home_arg, **kwargs):
         raise HostRunError("boom")
 
     monkeypatch.setattr(listener, "serve", exploding_serve)
 
-    code = cli.main(["--home", str(home), "listener", "serve"])
+    code = cli.main([*cli_locations(home), "listener", "serve"])
 
     captured = capsys.readouterr()
     assert code == 1
@@ -488,12 +494,12 @@ def test_dispatch_errors_are_json_not_tracebacks(tmp_path, monkeypatch, capsys):
 
 # ------------------------------------------------- run --intent listener-check
 def test_run_listener_check_is_available_without_the_executor_lease(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     lease = executor.acquire(home, host="other-host", minutes=45)
     assert lease["ok"] is True
 
-    code = cli.main(["--home", str(home), "run", "--intent", "listener-check"])
+    code = cli.main([*cli_locations(home), "run", "--intent", "listener-check"])
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 1  # offline listener: honest failure
@@ -504,11 +510,11 @@ def test_run_listener_check_is_available_without_the_executor_lease(tmp_path, ca
 
 
 def test_run_listener_check_records_listener_health_evidence(tmp_path, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     _fresh_heartbeat(home)
 
-    code = cli.main(["--home", str(home), "run", "--intent", "listener-check"])
+    code = cli.main([*cli_locations(home), "run", "--intent", "listener-check"])
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
@@ -541,15 +547,15 @@ def test_listener_stop_reports_not_running_when_the_fresh_heartbeat_pid_is_dead(
     tmp_path, monkeypatch, capsys
 ):
     """#70 call point 2: a fresh heartbeat must not keep a dead pid "alive"."""
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     _fresh_heartbeat(home, pid=4242)
     monkeypatch.setattr(listener, "pid_alive", lambda pid: False)
     monkeypatch.setattr(
         cli, "_listener_sleep", lambda seconds: pytest.fail("a dead pid must not be waited for")
     )
 
-    code = cli.main(["--home", str(home), "listener", "stop"])
+    code = cli.main([*cli_locations(home), "listener", "stop"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -559,12 +565,12 @@ def test_listener_stop_reports_not_running_when_the_fresh_heartbeat_pid_is_dead(
 
 
 def test_listener_status_uses_the_shared_pid_judgement(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True, exist_ok=True)
     _fresh_heartbeat(home, pid=4242)
     monkeypatch.setattr(listener, "pid_alive", lambda pid: False)
 
-    code = cli.main(["--home", str(home), "listener", "status"])
+    code = cli.main([*cli_locations(home), "listener", "status"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)

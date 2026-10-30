@@ -5,6 +5,7 @@ import pytest
 
 from publisher.cards import build_approval_card, build_confirmation_card, build_rating_card
 from publisher.service import handle_event, send_push, send_rating
+from conftest import cli_locations
 
 
 PUSH = {
@@ -178,8 +179,7 @@ def test_send_cli_exits_non_zero_on_duplicate(kl_home, tmp_path):
 
     code = main(
         [
-            "--home",
-            str(kl_home),
+            *cli_locations(kl_home),
             "send",
             "--push",
             str(push_path),
@@ -451,17 +451,17 @@ def test_cli_resolve_send_not_sent_clears_the_attempt(kl_home, tmp_path, monkeyp
     send_push(kl_home, _retry_push(), html, "ou_demo")
 
     code = main(
-        ["--home", str(kl_home), "resolve-send", "--push", push_id, "--not-sent"]
+        [*cli_locations(kl_home), "resolve-send", "--push", push_id, "--not-sent"]
     )
 
     assert code == 0
-    assert main(["--home", str(kl_home), "resolve-send", "--push", push_id, "--not-sent"]) == 1
+    assert main([*cli_locations(kl_home), "resolve-send", "--push", push_id, "--not-sent"]) == 1
 
 # ------------------------------------------------------- recorded lark-cli path
 def test_feishu_prefers_the_recorded_cli_path(monkeypatch, tmp_path):
     from publisher import feishu
 
-    root = tmp_path / "home"
+    root = tmp_path / "code" / ".frontier"
     (root / "install").mkdir(parents=True)
     executable = tmp_path / "bin" / "lark-cli.exe"
     executable.parent.mkdir()
@@ -469,7 +469,7 @@ def test_feishu_prefers_the_recorded_cli_path(monkeypatch, tmp_path):
     (root / "install" / "config.json").write_text(
         json.dumps({"paths": {"lark_cli": str(executable)}}), encoding="utf-8"
     )
-    monkeypatch.setattr(feishu, "data_home", lambda *args, **kwargs: root)
+    monkeypatch.setattr(feishu, "runtime_area", lambda *args, **kwargs: root)
     calls = []
 
     class Proc:
@@ -492,13 +492,13 @@ def test_feishu_prefers_the_recorded_cli_path(monkeypatch, tmp_path):
 def test_feishu_refuses_a_stale_recorded_cli_path(monkeypatch, tmp_path):
     from publisher import feishu
 
-    root = tmp_path / "home"
+    root = tmp_path / "code" / ".frontier"
     (root / "install").mkdir(parents=True)
     (root / "install" / "config.json").write_text(
         json.dumps({"paths": {"lark_cli": str(tmp_path / "retired" / "lark-cli.exe")}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(feishu, "data_home", lambda *args, **kwargs: root)
+    monkeypatch.setattr(feishu, "runtime_area", lambda *args, **kwargs: root)
     monkeypatch.setattr(
         feishu.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not spawn")
     )
@@ -519,11 +519,11 @@ def test_publisher_cli_exposes_deliver():
 
 
 # ----------------------------------------- data-root wiring for the CLI record
-def test_cli_home_reaches_the_recorded_cli_lookup(monkeypatch, tmp_path):
+def test_cli_code_reaches_the_recorded_cli_lookup(monkeypatch, tmp_path):
     from publisher import cli as publisher_cli
     from publisher import feishu
 
-    root = tmp_path / "home"
+    root = tmp_path / "code" / ".frontier"
     (root / "install").mkdir(parents=True)
     executable = tmp_path / "bin" / "lark-cli.exe"
     executable.parent.mkdir()
@@ -531,7 +531,6 @@ def test_cli_home_reaches_the_recorded_cli_lookup(monkeypatch, tmp_path):
     (root / "install" / "config.json").write_text(
         json.dumps({"paths": {"lark_cli": str(executable)}}), encoding="utf-8"
     )
-    monkeypatch.delenv("KL_HOME", raising=False)
     seen = {}
 
     def fake_resolve_send(home_path, *args, **kwargs):
@@ -542,19 +541,19 @@ def test_cli_home_reaches_the_recorded_cli_lookup(monkeypatch, tmp_path):
     monkeypatch.setattr(publisher_cli, "resolve_send", fake_resolve_send)
 
     code = publisher_cli.main(
-        ["--home", str(root), "resolve-send", "--push", "p1", "--not-sent"]
+        [*cli_locations(root), "resolve-send", "--push", "p1", "--not-sent"]
     )
 
     assert code == 0
     assert seen["home"] == root
     assert seen["recorded"] == str(executable)
-    assert os.environ["KL_HOME"] == str(root)
+    assert os.environ["FRONTIER_RUNTIME"] == str(root)
 
 
 def test_get_message_uses_the_recorded_cli_path(monkeypatch, tmp_path):
     from publisher import feishu
 
-    root = tmp_path / "home"
+    root = tmp_path / "code" / ".frontier"
     (root / "install").mkdir(parents=True)
     executable = tmp_path / "bin" / "lark-cli.exe"
     executable.parent.mkdir()
@@ -562,7 +561,7 @@ def test_get_message_uses_the_recorded_cli_path(monkeypatch, tmp_path):
     (root / "install" / "config.json").write_text(
         json.dumps({"paths": {"lark_cli": str(executable)}}), encoding="utf-8"
     )
-    monkeypatch.setattr(feishu, "data_home", lambda *args, **kwargs: root)
+    monkeypatch.setattr(feishu, "runtime_area", lambda *args, **kwargs: root)
     calls = []
 
     class Proc:
@@ -585,13 +584,13 @@ def test_get_message_uses_the_recorded_cli_path(monkeypatch, tmp_path):
 def test_available_reports_a_stale_recorded_path_as_unavailable(monkeypatch, tmp_path):
     from publisher import feishu
 
-    root = tmp_path / "home"
+    root = tmp_path / "code" / ".frontier"
     (root / "install").mkdir(parents=True)
     (root / "install" / "config.json").write_text(
         json.dumps({"paths": {"lark_cli": str(tmp_path / "retired" / "lark-cli.exe")}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(feishu, "data_home", lambda *args, **kwargs: root)
+    monkeypatch.setattr(feishu, "runtime_area", lambda *args, **kwargs: root)
     monkeypatch.setattr(feishu.shutil, "which", lambda name: "C:/somewhere/lark-cli.exe")
 
     assert feishu.available() is False
