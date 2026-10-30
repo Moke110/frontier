@@ -30,6 +30,7 @@ from common import emit, read_json
 from hostrun import audit as audit_mod
 from hostrun import cleanup as cleanup_mod
 from hostrun import console as console_mod
+from hostrun import console_events
 from hostrun import executor, facilities, feedback, initialize, install, intents, kb, lark, listener, schedules, smoke
 from hostrun import layout as layout_mod
 from hostrun import workspace as workspace_mod
@@ -490,7 +491,9 @@ def _dispatch(args, root: Path, offline: bool, resolved: dict | None = None) -> 
     if args.cmd == "listener":
         return _listener(args, root)
     if args.cmd == "console":
-        result = console_mod.serve(root, resolved=resolved)
+        result = console_mod.serve(
+            root, resolved=resolved, events=console_events.live
+        )
         return (0 if result.get("ok") else 1), result
     if args.cmd == "audit":
         return _audit(args, root, offline)

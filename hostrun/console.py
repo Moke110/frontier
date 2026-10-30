@@ -4,9 +4,12 @@ This module is the frontend only.  It owns the process-level shell — the
 single-instance lock, the heartbeat, the rolling log, the linear event stream,
 the slash prompt and the command dispatcher — and nothing else:
 
-- scheduling, Feishu events and service pause/resume belong to later tickets;
-  the commands that need them are registered here as explicit stubs, so an
-  unknown instruction is never mistaken for an unimplemented one;
+- the Feishu event surface (two subscriptions plus the 5/10-minute mechanical
+  ticks) lives in :mod:`hostrun.console_events`; ``serve(events=...)`` starts and
+  stops it around the prompt loop (#80);
+- scheduling and service pause/resume belong to later tickets; the commands that
+  need them are registered here as explicit stubs, so an unknown instruction is
+  never mistaken for an unimplemented one;
 - ``/frontier-status`` reads the persisted runtime area (``intents.status`` plus
   the console state file) instead of probing the system again;
 - ``/frontier-logs`` tails the most recent ``logs/agent-<run_id>.log`` written by
@@ -574,6 +577,7 @@ def serve(
     status=None,
     heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
     start_worker=None,
+    events=None,
 ) -> dict:
     """Run the resident console shell until ``/exit``, EOF or Ctrl+C.
 
@@ -582,6 +586,12 @@ def serve(
     lock.  Once running, every command is dispatched, rendered on the terminal,
     recorded in the rolling log, and mirrored in the heartbeat/state files.  The
     lock is always released and the heartbeat is left as ``stopped``.
+
+    ``events`` is the Feishu event surface (#80).  It may be an already-built
+    object with ``start()``/``stop()``, or a factory called as
+    ``events(home, out=out)``.  The default is ``None``: the shell then runs
+    without an event surface, which keeps offline shell tests free of every
+    subprocess and lets the CLI decide when the live surface is wanted.
     """
     home = Path(home)
     ensure_dir(console_dir(home))
@@ -689,6 +699,35 @@ def serve(
                     out=out,
                 )
 
+        surface = None
+        if events is not None:
+            built = None
+            try:
+                built = events(home, out=out) if callable(events) else events
+                built.start()
+                surface = built
+                emit_event(
+                    home,
+                    "INFO",
+                    "console",
+                    "飞书事件面已启动（消息与卡片订阅、反馈轮询与知识库拉取）",
+                    out=out,
+                )
+            except Exception as exc:  # noqa: BLE001 - the shell survives a failed surface
+                surface = None
+                if built is not None and hasattr(built, "stop"):
+                    try:
+                        built.stop()
+                    except Exception:  # noqa: BLE001 - a failed start is already reported
+                        pass
+                emit_event(
+                    home,
+                    "WARN",
+                    "console",
+                    f"飞书事件面启动失败：{type(exc).__name__}: {exc}",
+                    out=out,
+                )
+
         stop_event = threading.Event()
         worker = None
         try:
@@ -742,6 +781,24 @@ def serve(
                     reason = "stopped"
                     break
         finally:
+            if surface is not None:
+                try:
+                    surface.stop()
+                    emit_event(
+                        home,
+                        "INFO",
+                        "console",
+                        "飞书事件面已停止（两条订阅已结束）",
+                        out=out,
+                    )
+                except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+                    emit_event(
+                        home,
+                        "WARN",
+                        "console",
+                        f"飞书事件面停止失败：{type(exc).__name__}: {exc}",
+                        out=out,
+                    )
             stop_event.set()
             if worker is not None and hasattr(worker, "join"):
                 try:
