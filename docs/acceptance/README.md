@@ -2,6 +2,37 @@
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下按日期归并证据；规格 [#51](https://github.com/Moke110/frontier/issues/51) 的历史离线实现与本轮文档修订分开记录。历史阻塞须在目标宿主重新探测，不能直接当作当前结果。代码通过离线测试不等于产品通过真实验收。
 
+## 2026-10-30 监听进程真实验收（进行中：机制证据已取得，命令 e2e 与到点触发待补）
+
+本轮在目标宿主启动 spec [#61 监听进程：24 小时飞书操作，宿主定时任务改为两个瞬时运行](https://github.com/Moke110/frontier/issues/61) 的真实验收。机制证据（安装、任务集迁移、在线判定、杀进程恢复、停止、派生运行凭据）已取得；**真实飞书命令、反馈时延、08:00/09:00 到点触发与 ≥24 小时连续运行仍为 `untested`，不得据此宣称监听能力通过。**
+
+| 项目 | 实测结果 |
+|---|---|
+| 监听进程安装 | `listener install` 生成 `<home>/bin/frontier-listener.cmd` 与停止脚本，`listener` 步骤 `ok`；`paths.dsh` = `D:\dsh\resources\runtime\cli\bin\dsh.cmd` |
+| 任务集迁移 | `frontier-daily` 08:00 + `frontier-listener-check` 09:00（Asia/Shanghai）；`frontier-feedback` 移入 `schedules.retired_tasks`（旧宿主任务 `schedule-cb01bbc9-11f3-424e-abc1-7c39e98fadaf` 已于 2026-10-29 14:10 删除）；新 DSH 会话任务 daily `schedule-21ecfc84-7b7b-42ea-ac95-b94740972646`、listener-check `schedule-bb98dbf2-32af-45c7-971c-da2583682a82`；`schedules status` `created=true enabled=true`；`scheduled_run` 仍 `untested`（daily 尚未到点） |
+| 在线判定 | 真实 `run --intent listener-check`：心跳新鲜，`state=online action=none` |
+| 杀进程恢复 | 硬杀监听进程（pid 21816，`taskkill /F`）后，第二次真实 `listener-check` 返回 `action=restart_ok`，新 pid 在线 |
+| 停止 | `listener stop` 返回 `state=stopped` |
+| 派生运行凭据 | `dsh --profile headless --patch <home>/install/dsh-headless-account.patch.yml "..."` 真实运行成功并回答“可用测试”；`listener.dsh_args` 已记录该 patch |
+
+### 本轮真实验收发现并修复的缺陷（`c3262a0`..`7e16203`，已并入 `main` `b046cb1`）
+
+- 派生运行参数错误：传 `--prompt`，而 headless profile 以位置参数接收任务（`c3262a0`）。
+- `event consume` 在飞书 i/o 超时后返回退出码 3，被误判为致命并杀掉健康监听进程；现仅 stderr 含 `app_scope_not_applied` 才致命，裸退出码 3 退避重试（`9b557dd`；日志 2026-10-30T16:19:20 记录崩溃与修复依据）。
+- `listener stop` 等待 10 秒，而事件循环只在 30 秒分块之间检查停止哨兵；现改为 35 秒（`e9e6a0d`）。
+- headless profile 无模型凭据（`MISSING_CREDENTIAL`，account/credentials 插件被禁用）；以通用方式记录 `listener.dsh_args = ["--patch", "<home>/install/dsh-headless-account.patch.yml"]` 修复并真实验证（`7e16203`）。
+
+离线全量：**584 passed, 3 skipped**（修复后）。
+
+### 仍缺（全部 `untested`，本轮不宣称通过）
+
+1. 真实飞书命令端到端：`状态` 立即回复、`推一篇` 成功派生并回执或如实排队；
+2. 反馈提交后 ≤10 分钟被处理至少一次；
+3. `frontier-daily` 08:00 与 `frontier-listener-check` 09:00 的真实到点触发（手工 `run --intent listener-check` 的判定已取得，不计为到点证据）；
+4. 监听进程连续运行 ≥24 小时、心跳覆盖全程、日志无崩溃重启。
+
+因上述修复需重启进程，≥24 小时连续运行时钟从最终重启 **2026-10-30T16:45:52+08:00** 重新起算；16:12–16:19 那段运行因退出码 3 缺陷崩溃，仅记为缺陷依据，不计为干净运行。`listener_health` 的 09:00 到点证据与 `scheduled_run` 均保持 `untested`。
+
 ## 2026-10-29 监听进程方案（设计已定；当轮仅改文档）
 
 用户要求：24 小时都能通过飞书操作 frontier，同时宿主定时任务只做瞬时运行、不长期挂着会话。决策见 [ADR 0008](../adr/0008-listener-process.md)。当轮**只改设计与文档/契约，未改代码**，未启动监听进程、未改动 DSH 现有调度、未写入飞书。
