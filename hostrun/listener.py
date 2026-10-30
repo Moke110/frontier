@@ -19,9 +19,10 @@ Command routing (decision D12):
   group / other sender / non-message -> one log line, no reply, no action
 
 All time, sleep, subprocess, messaging, install-report and event-source calls
-are injectable, so the whole module is tested offline. The live lark-cli
-envelope and the ``dsh --profile headless --prompt`` argv contract are
-documented but ``untested`` against a real host here.
+are injectable, so the whole module is tested offline. The live lark-cli event
+envelope and the ``dsh --profile headless "<task>"`` argv were verified against
+a real host on 2026-10-30 (the headless profile takes the task positionally and
+has no ``--prompt`` flag).
 """
 
 from __future__ import annotations
@@ -595,13 +596,20 @@ def _feedback_result_text(polled: dict) -> str | None:
 
 
 # ------------------------------------------------------------ derived runs
-def derived_argv(dsh: str, brief: str) -> list[str]:
+def derived_argv(dsh: str, brief: str, extra_args=()) -> list[str]:
     """The recorded-``dsh`` argv for one bounded host run (decisions D5).
 
-    The live prompt/argv contract is unverified; tests inject the spawner and
-    the live acceptance stays ``untested`` until one real run is recorded.
+    Verified live on 2026-10-30 against DeepSeek Harness 0.2.1-rc.3: the
+    headless profile takes the task as a positional argument (``dsh
+    --profile headless "task"``) and has no ``--prompt`` flag.  Tests inject
+    the spawner; the argv shape is asserted offline.
+
+    ``extra_args`` are the host-recorded ``listener.dsh_args`` (for example an
+    overlay path when the headless profile has no model credential).  They stay
+    between the profile and the task so the task remains the last argument.
     """
-    return [str(dsh), "--profile", "headless", "--prompt", str(brief)]
+    extras = [str(arg) for arg in (extra_args or ())]
+    return [str(dsh), "--profile", "headless", *extras, str(brief)]
 
 
 def derived_brief(home: Path, brief: str, *, repo: str, python: str = "") -> str:
@@ -827,6 +835,7 @@ def run_derived(
             argv = derived_argv(
                 dsh_path,
                 derived_brief(home, str(result["brief"]), repo=repo_dir, python=interpreter),
+                listener_config.get("dsh_args") or (),
             )
             env = {**os.environ, "KL_HOME": str(home)}
             # The prepare step above may itself have consumed minutes; renew the

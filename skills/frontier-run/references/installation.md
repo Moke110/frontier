@@ -145,11 +145,14 @@ python -m hostrun.cli init apply   --home <home>
 
 ```bash
 python -m hostrun.cli listener install --home <home> --dsh "<dsh 绝对路径>"   # 生成启停脚本，不启动进程
+python -m hostrun.cli listener install --home <home> --dsh "<dsh 绝对路径>" \
+  --dsh-arg=--patch --dsh-arg "<overlay.yml 绝对路径>"   # 本机 headless 缺模型凭据时记录 overlay
 python -m hostrun.cli listener status  --home <home>       # 心跳 / pid / 最近事件
 python -m hostrun.cli --home <home> run --intent listener-check   # 每日巡检（也可由任务调用）
 ```
 
 - `listener install` 只生成 `<home>/bin/frontier-listener.cmd` 与 `frontier-listener-stop.cmd`，写入记录的仓库、数据根、解释器与 `dsh` 绝对路径；**不**创建服务、不登录自启、不写注册表。`dsh` 必须显式记录：未给 `--dsh` 且 `paths.dsh` 为空或失效时，脚本仍会生成，但 `listener` 步骤记 `blocked` 并给出可照做的修复命令，派生运行也会拒绝启动。
+- `--dsh-arg`（可重复）记录派生运行在 `--profile headless` 与任务文本之间的额外参数，写入 `listener.dsh_args`。本机实测：`dsh --profile headless` 的出厂层把 `deepseek-account` 与 `credentials` 插件置为 disabled，只留 API-key 路由，因此没有 `DEEPSEEK_API_KEY` 的宿主会报 `MISSING_CREDENTIAL`。用 `--patch` 指定一个启用账号授权路由的 overlay（`authorization`/`deepseek-account`/`credentials` 三个插件 + `agent-default-model.provider: deepseek-account`）即可复用交互会话已有的凭据，无需另配 key。
 - `listener start|stop|serve|health` 同样可用：`serve` 是启停脚本调用的前台进程，`start` 只做一次分离启动，`health` 只读判定、不拉起进程。
 - 启动与停止都由用户完成：双击启动脚本得到标题为 `frontier-listener` 的控制台窗口；停止用停止脚本、`Ctrl+C` 或关闭该窗口。agent 可以指导，但不代为常驻。
 - 监听进程用 bot 身份消费 `im.message.receive_v1`，只接受已核实 owner 的单聊命令（`推一篇` / `处理反馈` / `状态`），群聊与他人消息忽略；每 5 分钟执行一次 `run --intent feedback`。

@@ -234,7 +234,6 @@ def test_listen_events_keeps_only_the_tail_of_stderr(monkeypatch):
 @pytest.mark.parametrize(
     "code,kind,fatal,retryable",
     [
-        (3, "app_scope_not_applied", True, False),
         (4, "transient", False, True),
         (5, "token_storage_lock", False, True),
         (1, "unknown", True, False),
@@ -256,17 +255,55 @@ def test_listen_events_classifies_nonzero_exit_codes(
     assert "boom" in result["stderr_tail"]
 
 
-def test_classify_exit_distinguishes_3_4_5_from_other_codes():
-    codes = [feishu.classify_exit(code) for code in (0, 3, 4, 5, 1)]
+def test_listen_events_treats_a_bare_exit_3_as_a_lost_connection(monkeypatch):
+    """Live 2026-10-30: exit 3 after a network i/o timeout, no scope marker."""
+    _fake_popen(monkeypatch, _FakeProc(stderr_lines=["dial tcp i/o timeout\n"], returncode=3))
+
+    result = feishu.listen_events()
+
+    assert result["kind"] == "consume_lost"
+    assert result["fatal"] is False
+    assert result["retryable"] is True
+
+
+def test_listen_events_keeps_the_scope_marker_exit_3_fatal(monkeypatch):
+    _fake_popen(
+        monkeypatch, _FakeProc(stderr_lines=["app_scope_not_applied\n"], returncode=3)
+    )
+
+    result = feishu.listen_events()
+
+    assert result["kind"] == "app_scope_not_applied"
+    assert result["fatal"] is True
+    assert result["retryable"] is False
+
+
+def test_classify_exit_distinguishes_scope_marker_from_a_lost_connection():
+    codes = [
+        feishu.classify_exit(0),
+        feishu.classify_exit(3),
+        feishu.classify_exit(3, detail="failed: app_scope_not_applied"),
+        feishu.classify_exit(4),
+        feishu.classify_exit(5),
+        feishu.classify_exit(1),
+    ]
 
     assert codes[0]["kind"] == "ok"
-    assert [row["kind"] for row in codes[1:4]] == [
+    assert [row["kind"] for row in codes[1:]] == [
+        "consume_lost",
         "app_scope_not_applied",
         "transient",
         "token_storage_lock",
+        "unknown",
     ]
-    assert codes[4]["kind"] == "unknown"
-    assert [row["retryable"] for row in codes] == [False, False, True, True, False]
+    assert [row["retryable"] for row in codes] == [
+        False,
+        True,
+        False,
+        True,
+        True,
+        False,
+    ]
 
 
 # ------------------------------------------------------------ bounded stopping

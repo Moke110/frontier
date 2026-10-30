@@ -1073,13 +1073,31 @@ def test_automatic_feedback_worker_exception_does_not_kill_serve(tmp_path, monke
 
 # ------------------------------------------------------------- derived-run guards
 def test_derived_argv_is_the_documented_dsh_contract():
+    # Verified against DeepSeek Harness 0.2.1-rc.3 on 2026-10-30: the headless
+    # profile takes the task positionally and has no --prompt flag.
     assert listener.derived_argv("C:/dsh/dsh.cmd", "do the push") == [
         "C:/dsh/dsh.cmd",
         "--profile",
         "headless",
-        "--prompt",
         "do the push",
     ]
+
+
+def test_derived_argv_keeps_host_args_between_the_profile_and_the_task():
+    """listener.dsh_args (e.g. a credential overlay) never displaces the task."""
+    argv = listener.derived_argv(
+        "C:/dsh/dsh.cmd", "the task", ["--patch", "C:/overlay.yml"]
+    )
+
+    assert argv == [
+        "C:/dsh/dsh.cmd",
+        "--profile",
+        "headless",
+        "--patch",
+        "C:/overlay.yml",
+        "the task",
+    ]
+    assert argv[-1] == "the task"
 
 
 def test_derived_brief_names_the_repo_home_interpreter_and_skill():
@@ -1353,7 +1371,8 @@ def test_derived_daily_run_spawns_dsh_and_records_a_derived_row(tmp_path):
 
     assert result["ok"] is True
     argv, kwargs = spawns[0]
-    assert argv[:4] == [str(dsh), "--profile", "headless", "--prompt"]
+    assert argv[:3] == [str(dsh), "--profile", "headless"]
+    assert len(argv) == 4
     assert "BRIEF-TEXT" in argv[-1] and "frontier-run" in argv[-1]
     assert kwargs["stdin"] is not None
     assert sent and "派生" in sent[0][1]
@@ -1363,6 +1382,52 @@ def test_derived_daily_run_spawns_dsh_and_records_a_derived_row(tmp_path):
     ]
     assert rows[-1]["derived"] is True and rows[-1]["ok"] is True
     assert executor.status(home)["state"] == "free"
+
+
+def test_derived_run_passes_recorded_dsh_args_before_the_task(tmp_path):
+    """A host with no headless model credential records an overlay via dsh_args."""
+    home = _home(tmp_path)
+    dsh = tmp_path / "dsh.cmd"
+    dsh.write_text("", encoding="utf-8")
+    _config(
+        home,
+        dsh=str(dsh),
+        listener_config={"dsh_args": ["--patch", "C:/overlay.yml"]},
+    )
+    clock = FakeClock()
+    spawns = []
+
+    def spawn(argv, **kwargs):
+        spawns.append(argv)
+        return FakeProc(clock, exit_after=5.0, returncode=0)
+
+    result = listener.run_derived(
+        home,
+        "daily",
+        send=lambda target, text: None,
+        run=lambda home_path, intent, **kwargs: {
+            "ok": True,
+            "brief": "BRIEF-TEXT",
+            "next": "finish",
+            "actions": [],
+        },
+        spawn=spawn,
+        report=_report(),
+        clock=clock.clock,
+        sleep=clock.sleep,
+        timeout_seconds=30,
+    )
+
+    assert result["ok"] is True
+    argv = spawns[0]
+    assert argv[:5] == [
+        str(dsh),
+        "--profile",
+        "headless",
+        "--patch",
+        "C:/overlay.yml",
+    ]
+    assert argv[-1] and "BRIEF-TEXT" in argv[-1]
 
 
 def test_derived_run_times_out_kills_the_child_and_never_retries(tmp_path):

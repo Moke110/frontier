@@ -322,8 +322,19 @@ def build_parser() -> argparse.ArgumentParser:
     li.add_argument("--dsh", help="absolute dsh path the listener derives runs with")
     li.add_argument("--python", dest="python_path", help="recorded private interpreter")
     li.add_argument("--repo", help="code checkout the scripts cd into")
+    li.add_argument(
+        "--dsh-arg",
+        dest="dsh_args",
+        action="append",
+        default=None,
+        metavar="ARG",
+        help=(
+            "extra argv for a derived run, inserted before the task text "
+            "(repeat per token, e.g. --dsh-arg --patch --dsh-arg <overlay.yml>)"
+        ),
+    )
     lsub.add_parser("start", help="spawn the recorded start command detached")
-    lsub.add_parser("stop", help="write the stop sentinel and wait up to 10 s")
+    lsub.add_parser("stop", help="write the stop sentinel and wait one event-chunk window")
     lsub.add_parser("status", help="read-only online/stale/offline snapshot")
     lsub.add_parser("serve", help="run the foreground loop (used by the start script)")
     lsub.add_parser("health", help="read-only health judgement, never restarts")
@@ -1138,7 +1149,11 @@ def _schedules(args, root: Path) -> tuple[int, dict]:
     return 0, schedules.status(root)
 
 
-LISTENER_STOP_WAIT_SECONDS = 10.0
+# The foreground loop only checks the stop sentinel between bounded event
+# chunks, and those chunks run for 30 s (listener.CONSUME_TIMEOUT).  Waiting
+# only 10 s therefore reported a false ``stop_timeout`` for a listener that was
+# exiting normally at the end of its current chunk (live, 2026-10-30).
+LISTENER_STOP_WAIT_SECONDS = 35.0
 LISTENER_STOP_POLL_SECONDS = 1.0
 
 
@@ -1237,7 +1252,12 @@ def _listener_alive(health: dict) -> bool:
 
 
 def _listener_stop(root: Path) -> tuple[int, dict]:
-    """Request a stop and wait up to ~10 s for the heartbeat to go not-online."""
+    """Request a stop and wait one event-chunk window for the process to exit.
+
+    The loop honours the sentinel at the top of each 30 s event chunk, so the
+    wait covers that window plus a margin instead of claiming a live listener
+    ignored the request.
+    """
     health = intents.listener_health(root)
     if not _listener_alive(health):
         return 0, {
@@ -1275,7 +1295,11 @@ def _listener(args, root: Path) -> tuple[int, dict]:
     """Dispatch the six listener actions; results always carry ``ok``."""
     if args.action == "install":
         result = install.listener_install(
-            root, dsh=args.dsh, python=args.python_path, repo=args.repo
+            root,
+            dsh=args.dsh,
+            python=args.python_path,
+            repo=args.repo,
+            dsh_args=args.dsh_args,
         )
         return (0 if result.get("ok") else 1), result
     if args.action == "start":

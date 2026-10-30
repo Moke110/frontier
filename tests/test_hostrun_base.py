@@ -48,6 +48,7 @@ def test_default_config_records_dsh_and_listener_defaults(tmp_path):
         "recovery_recheck_seconds": 30,
         "start_command": "",
         "stop_command": "",
+        "dsh_args": [],
     }
 
 
