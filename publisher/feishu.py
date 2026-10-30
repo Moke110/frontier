@@ -34,6 +34,13 @@ _EXIT_KINDS = {
     **_TRANSIENT_EXIT_KINDS,
 }
 
+# Live acceptance on 2026-10-30 showed exit 3 also arriving when the bot event
+# long connection was dropped by a transient network failure (an i/o timeout
+# immediately preceded it).  Treating every exit 3 as fatal killed a healthy
+# listener and would break the 24 h uptime gate, so only the explicit scope
+# marker is fatal; a bare exit 3 is retried with the same backoff as 4 and 5.
+_SCOPE_NOT_APPLIED_MARKERS = ("app_scope_not_applied", "app scope not applied")
+
 # A read-back proves a message is gone only through a documented not-found or
 # recalled answer.  Anything else is unverifiable and must not be reported as
 # clean.
@@ -60,17 +67,33 @@ class FeishuError(RuntimeError):
         self.returncode = returncode
 
 
-def classify_exit(returncode: int | None) -> dict:
+def classify_exit(returncode: int | None, *, detail: str = "") -> dict:
     """Classify one ``event consume`` exit code (ADR 0008 decision D9).
 
-    ``3`` = app/permission scope not applied: fatal, a human must fix grants.
-    ``4``/``5`` = transient (5 is the token storage lock): retry with backoff.
+    ``3`` with the explicit ``app_scope_not_applied`` marker = app/permission
+    scope not applied: fatal, a human must fix grants.  ``3`` without it =
+    the long connection died (transient network failure): retry with backoff,
+    same as ``4``/``5``.  ``5`` is the token storage lock: also transient.
     Any other non-zero code is unclassified: report it and do not invent a retry.
-    The live exit-code meanings themselves are documented, not exercised here.
     """
     code = 0 if returncode is None else int(returncode)
     if code == 0:
         return {"returncode": 0, "kind": "ok", "fatal": False, "retryable": False}
+    if code == EXIT_APP_SCOPE_NOT_APPLIED:
+        text = str(detail or "").lower()
+        if any(marker in text for marker in _SCOPE_NOT_APPLIED_MARKERS):
+            return {
+                "returncode": code,
+                "kind": "app_scope_not_applied",
+                "fatal": True,
+                "retryable": False,
+            }
+        return {
+            "returncode": code,
+            "kind": "consume_lost",
+            "fatal": False,
+            "retryable": True,
+        }
     kind = _EXIT_KINDS.get(code, "unknown")
     retryable = code in EXIT_TRANSIENT
     return {"returncode": code, "kind": kind, "fatal": not retryable, "retryable": retryable}
@@ -499,17 +522,17 @@ def _consume_lines(
 
 def _consume_result(state: dict) -> dict:
     returncode = state["returncode"]
+    tail = "\n".join(state["stderr_tail_lines"])[-STDERR_TAIL_CHARS:]
     if state["timed_out"]:
         ok, kind, fatal, retryable = False, "timeout", False, True
     elif state["stopped"]:
         ok, kind, fatal, retryable = True, "stopped", False, False
     else:
-        classification = classify_exit(returncode)
+        classification = classify_exit(returncode, detail=tail)
         kind = classification["kind"]
         ok = kind == "ok"
         fatal = classification["fatal"]
         retryable = classification["retryable"]
-    tail = "\n".join(state["stderr_tail_lines"])[-STDERR_TAIL_CHARS:]
     return {
         "ok": ok,
         "reason": kind,

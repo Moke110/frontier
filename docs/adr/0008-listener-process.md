@@ -98,3 +98,12 @@
 - `tests/test_hostrun_listener.py` 等离线用例，不依赖真实飞书或真实 `dsh`。
 
 上述代码通过离线测试（#69：538 passed / 3 skipped），**不代表真实验收通过**；本文件"验收标准"的 5 项真实证据仍全部为 `untested`，见 `docs/acceptance/README.md`。
+
+## 2026-10-30 真实验收修订
+
+真实运行暴露两处与实现假设不符的事实，已在实现与离线用例中修正：
+
+1. **派生运行的 argv**：本机 `dsh`（DeepSeek Harness 0.2.1-rc.3）的 headless profile 把任务作为**位置参数**（`dsh --profile headless "<task>"`），没有 `--prompt` 选项。原实现按 `--prompt <brief>` 构造，真实派生会在参数解析阶段失败；现已改为位置参数并通过真实命令确认用法。
+2. **`event consume` 退出码 3 的语义**：真实运行中一次到 `open.feishu.cn` 的 i/o 超时之后，事件长连接以退出码 3 退出，且 stderr 不含 `app_scope_not_applied`。原实现把所有退出码 3 判为 FATAL 会直接终止一个健康的监听进程，与"连续 ≥24 小时"的验收门槛冲突。现改为：**只有 stderr 出现 `app_scope_not_applied` 才是 FATAL**（需要人工修授权）；裸退出码 3 视为长连接掉线，按 4/5 的退避重试（5 s → 15 s → 30 s → 60 s 上限），连续失败只把心跳标为 `degraded`，不退出进程。
+
+这两条都是实测优先于设计假设的修订，不改变本 ADR 的其他决策。
