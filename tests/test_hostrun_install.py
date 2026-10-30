@@ -920,6 +920,29 @@ def test_listener_steps_are_appended_after_scheduled_run():
     assert "listener_health" in install.STEP_NOTES
 
 
+def test_retired_smoke_steps_no_longer_gate_the_install_report(tmp_path):
+    """The keyword smoke loop is retired (#86): its records never block install."""
+    for name in install.STEPS:
+        install.record(tmp_path, name, "ok", note="ok")
+    install.record(tmp_path, "test_loop", "blocked", note="retired")
+    install.record(tmp_path, "cleanup", "blocked", note="retired")
+
+    summary = install.summary(tmp_path)
+    report = install.report(tmp_path)
+
+    assert "test_loop" not in install.STEPS
+    assert "cleanup" not in install.STEPS
+    assert "test_loop" not in report["steps"]
+    assert "cleanup" not in report["steps"]
+    assert summary["ok"] is True
+    assert summary["blocked"] == []
+    assert summary["pending"] == []
+    assert report["ok"] is True
+    assert report["next"] is None
+    # Existing install records stay readable for a later cleanup/migration.
+    assert install.load_state(tmp_path)["steps"]["test_loop"]["status"] == "blocked"
+
+
 def test_listener_install_writes_scripts_and_records_the_step(tmp_path):
     home = tmp_path / "home"
     home.mkdir()

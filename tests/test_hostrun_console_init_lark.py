@@ -199,6 +199,25 @@ def reader(*answers):
     return read
 
 
+def transport_send(*, owner, html, card):
+    """A fake transport sender: no message is ever sent in a test."""
+    return {"ok": True, "html_message_id": "om_test_html", "card_message_id": "om_test_card"}
+
+
+def transport_events(**_kwargs):
+    return {
+        "ok": True,
+        "reason": "ok",
+        "events": [
+            {
+                "message_id": "om_test_card",
+                "operator_id": "ou_user",
+                "action_name": console_init.TRANSPORT_ACTION,
+            }
+        ],
+    }
+
+
 def lark_run(home, answers, *, fake=None, clock=None, **kwargs):
     out = io.StringIO()
     clock = clock or Clock()
@@ -207,6 +226,8 @@ def lark_run(home, answers, *, fake=None, clock=None, **kwargs):
     kwargs.setdefault("lark_runner", fake or FakeLark())
     kwargs.setdefault("clock", clock)
     kwargs.setdefault("sleep", clock.sleep)
+    kwargs.setdefault("transport_send", transport_send)
+    kwargs.setdefault("transport_events", transport_events)
     result = console_init.run(home, reader=reader(*answers), out=out, **kwargs)
     return result, out.getvalue()
 
@@ -266,7 +287,7 @@ def test_a_configured_and_logged_in_cli_is_reused_without_install_or_login(tmp_p
     result, rendered = lark_run(home, [], fake=fake)
 
     assert result["ok"] is True
-    assert result["completed"] == ["archive", "agent", "lark"]
+    assert result["completed"] == ["archive", "agent", "lark", "transport"]
     assert fake.install_calls() == []
     assert fake.auth_login_calls() == []
     assert str(cli) in rendered
@@ -436,7 +457,7 @@ def test_login_timeout_abort_keeps_progress_and_resumes_at_the_lark_step(tmp_pat
 
     resumed, rendered = lark_run(home, [], fake=FakeLark())
     assert resumed["ok"] is True
-    assert resumed["completed"] == ["archive", "agent", "lark"]
+    assert resumed["completed"] == ["archive", "agent", "lark", "transport"]
     assert "使用默认资料目录" not in rendered
 
 
@@ -543,16 +564,15 @@ def test_aborting_a_failed_install_leaves_the_step_unfinished(tmp_path):
 
 
 # ------------------------------------------------------------- step registration
-def test_the_lark_step_is_implemented_and_the_next_not_yet_step_is_transport(tmp_path):
+def test_the_lark_step_is_implemented_and_the_next_not_yet_step_is_naming(tmp_path):
     home, _code, _cli = make_home(tmp_path)
 
     result, _rendered = lark_run(home, [], fake=FakeLark())
 
     assert console_init.STEPS[2]["id"] == "lark"
     assert console_init.STEPS[2]["implemented"] is True
-    assert result["next_step"] == "transport"
+    assert result["next_step"] == "naming"
     assert [item["step"] for item in result["not_yet"]] == [
-        "transport",
         "naming",
         "push_time",
         "knowledge",

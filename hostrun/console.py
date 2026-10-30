@@ -84,7 +84,7 @@ COMMANDS = {
         "implemented": True,
     },
     "/frontier-init": {
-        "summary": "初始化资料目录与执行 Agent（已实现前两步，后续步骤逐步接入）",
+        "summary": "初始化资料目录、执行 Agent、Lark CLI 与飞书测试消息（后续步骤逐步接入）",
         "implemented": True,
     },
     "/frontier-update-kb": {
@@ -928,6 +928,11 @@ def serve(
                     reader=read,
                     out=out,
                     isatty=detect_tty,
+                    # The console's own card subscription is the single event
+                    # consumer; a transport test must not spawn a second one.
+                    transport_events=(
+                        getattr(surface, "wait_card", None) if surface is not None else None
+                    ),
                 )
         review_runner = review
         if review_runner is None:
