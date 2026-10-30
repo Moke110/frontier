@@ -954,6 +954,45 @@ def test_listener_install_writes_scripts_and_records_the_step(tmp_path):
     assert entry["evidence"]["processes_started"] is False
 
 
+def test_listener_install_records_extra_dsh_args_for_derived_runs(tmp_path):
+    """A host without a headless model credential records an overlay argv."""
+    home = tmp_path / "home"
+    home.mkdir()
+    dsh = _dsh_file(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = install.listener_install(
+        home,
+        dsh=str(dsh),
+        python=sys.executable,
+        repo=repo,
+        dsh_args=["--patch", "C:/overlay.yml"],
+    )
+
+    assert result["ok"] is True
+    config = json.loads((home / "install" / "config.json").read_text(encoding="utf-8"))
+    assert config["listener"]["dsh_args"] == ["--patch", "C:/overlay.yml"]
+    entry = install.load_state(home)["steps"]["listener"]
+    assert entry["evidence"]["dsh_args"]["recorded"] == ["--patch", "C:/overlay.yml"]
+
+
+def test_listener_install_rejects_empty_dsh_args(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    dsh = _dsh_file(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = install.listener_install(
+        home, dsh=str(dsh), python=sys.executable, repo=repo, dsh_args=[" "]
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert result["dsh_args"] == []
+
+
 def test_listener_install_blocks_without_dsh_but_still_writes_scripts(tmp_path):
     home = tmp_path / "home"
     home.mkdir()

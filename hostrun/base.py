@@ -62,6 +62,10 @@ def default_config(home: Path, *, repo: Path | None = None) -> dict:
             "recovery_recheck_seconds": 30,
             "start_command": "",
             "stop_command": "",
+            # Extra argv inserted between ``--profile headless`` and the task
+            # text for a derived run (e.g. ["--patch", "<overlay.yml>"] when a
+            # host's headless profile has no model credential of its own).
+            "dsh_args": [],
         },
     }
 

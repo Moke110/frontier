@@ -494,6 +494,7 @@ def listener_install(
     dsh: str | None = None,
     python: str | None = None,
     repo: str | Path | None = None,
+    dsh_args: list[str] | None = None,
 ) -> dict:
     """Generate the user-run listener scripts and record the ``listener`` step.
 
@@ -501,6 +502,11 @@ def listener_install(
     can start/stop (or regenerate) the listener after fixing ``paths.dsh``; the
     step itself stays ``blocked`` with a copyable repair command. Never starts
     the listener.
+
+    ``dsh_args`` are the extra argv a derived run passes between the headless
+    profile and the task text (for example ``["--patch", "<overlay.yml>"]`` when
+    this host's headless profile has no model credential of its own). They are
+    recorded only when supplied, so a re-install never silently drops them.
     """
     home = Path(home).expanduser()
     home_path = home.resolve()
@@ -530,19 +536,37 @@ def listener_install(
         update_config(home, paths={"dsh": recorded_dsh})
 
     scripts = _write_listener_scripts(home_path, repo_path, python_path)
-    update_config(
-        home,
-        listener={
-            "start_command": str(scripts["start"]),
-            "stop_command": str(scripts["stop"]),
-        },
-    )
+    listener_update = {
+        "start_command": str(scripts["start"]),
+        "stop_command": str(scripts["stop"]),
+    }
+    recorded_args: list[str] = []
+    args_problem = ""
+    if dsh_args is not None:
+        if isinstance(dsh_args, str) or not all(
+            isinstance(arg, str) for arg in dsh_args
+        ):
+            args_problem = "dsh_args 必须是字符串列表"
+        else:
+            recorded_args = [arg for arg in dsh_args if arg.strip()]
+            if not recorded_args:
+                args_problem = "dsh_args 为空"
+    if dsh_args is not None and not args_problem:
+        listener_update["dsh_args"] = recorded_args
+    update_config(home, listener=listener_update)
 
     probe = probe_listener(home)
     evidence = {**probe["evidence"], "repair": repair if dsh_problem else ""}
+    if args_problem:
+        evidence["dsh_args"] = {"recorded": [], "problem": args_problem}
+    elif dsh_args is not None:
+        evidence["dsh_args"] = {"recorded": recorded_args}
     if dsh_problem:
         status = "blocked"
         note = f"{dsh_problem}；修复：{repair}"
+    elif args_problem and dsh_args is not None:
+        status = "blocked"
+        note = f"{args_problem}；派生运行需要合法的 --dsh-arg 序列"
     else:
         status = probe["status"]
         note = probe["note"]
@@ -553,6 +577,7 @@ def listener_install(
         "note": note,
         "scripts": {"start": str(scripts["start"]), "stop": str(scripts["stop"])},
         "dsh": recorded_dsh,
+        "dsh_args": recorded_args,
         "repair": "" if status == "ok" else repair,
         "evidence": evidence,
     }

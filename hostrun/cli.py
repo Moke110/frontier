@@ -322,6 +322,17 @@ def build_parser() -> argparse.ArgumentParser:
     li.add_argument("--dsh", help="absolute dsh path the listener derives runs with")
     li.add_argument("--python", dest="python_path", help="recorded private interpreter")
     li.add_argument("--repo", help="code checkout the scripts cd into")
+    li.add_argument(
+        "--dsh-arg",
+        dest="dsh_args",
+        action="append",
+        default=None,
+        metavar="ARG",
+        help=(
+            "extra argv for a derived run, inserted before the task text "
+            "(repeat per token, e.g. --dsh-arg --patch --dsh-arg <overlay.yml>)"
+        ),
+    )
     lsub.add_parser("start", help="spawn the recorded start command detached")
     lsub.add_parser("stop", help="write the stop sentinel and wait one event-chunk window")
     lsub.add_parser("status", help="read-only online/stale/offline snapshot")
@@ -1284,7 +1295,11 @@ def _listener(args, root: Path) -> tuple[int, dict]:
     """Dispatch the six listener actions; results always carry ``ok``."""
     if args.action == "install":
         result = install.listener_install(
-            root, dsh=args.dsh, python=args.python_path, repo=args.repo
+            root,
+            dsh=args.dsh,
+            python=args.python_path,
+            repo=args.repo,
+            dsh_args=args.dsh_args,
         )
         return (0 if result.get("ok") else 1), result
     if args.action == "start":
