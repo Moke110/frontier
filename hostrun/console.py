@@ -451,6 +451,7 @@ def dispatch(
     service=None,
     init=None,
     update_kb=None,
+    review=None,
 ) -> dict:
     """Route one prompt line to one bounded action and return its text.
 
@@ -463,6 +464,10 @@ def dispatch(
     reader/out/TTY seams.  ``/frontier-update-kb`` delegates to the segmented
     read (:mod:`hostrun.update_kb`), which pauses and restores the service around
     the read; ``update_kb`` is an injectable runner with the same call shape.
+    When the read completed, the per-item review (:mod:`hostrun.update_kb_review`)
+    consumes the candidate area through the injectable ``review`` runner; the
+    console shell binds it to the prompt's output/TTY seams.  An interrupted read
+    is not reviewed (its pending shards resume first).
     A registered-but-not-yet-implemented command reports that explicitly.
     """
     parsed = parse_command(line)
@@ -591,13 +596,34 @@ def dispatch(
                 "command": name,
                 "text": f"知识库读取失败：{type(exc).__name__}: {exc}",
             }
+        review_outcome = None
+        if (
+            review is not None
+            and outcome.get("ok")
+            and not outcome.get("pending_shards")
+        ):
+            try:
+                review_outcome = review(home, service=service)
+            except Exception as exc:  # noqa: BLE001 - review must not kill the console
+                review_outcome = {
+                    "ok": False,
+                    "reason": "review_failed",
+                    "text": f"逐条审阅失败：{type(exc).__name__}: {exc}",
+                }
+        text = outcome.get("text") or "知识库更新已结束。"
+        if isinstance(review_outcome, dict) and review_outcome.get("text"):
+            text = f"{text}\n{review_outcome['text']}"
         return {
-            "ok": bool(outcome.get("ok")),
+            "ok": bool(outcome.get("ok"))
+            and (review_outcome is None or bool(review_outcome.get("ok"))),
             "action": "update_kb",
-            "reason": outcome.get("reason") or "",
+            "reason": (review_outcome or {}).get("reason")
+            or outcome.get("reason")
+            or "",
             "command": name,
-            "text": outcome.get("text") or "知识库更新已结束。",
+            "text": text,
             "update_kb": outcome,
+            "review": review_outcome,
         }
     if name == "/exit":
         return {
@@ -675,6 +701,7 @@ def serve(
     events=None,
     service=None,
     init=None,
+    review=None,
 ) -> dict:
     """Run the resident console shell until ``/exit``, EOF or Ctrl+C.
 
@@ -698,6 +725,11 @@ def serve(
     ``init`` is an optional zero-argument runner for ``/frontier-init``.  The
     default binds the interactive step machine to the same reader/out/TTY seams
     as the prompt, so tests can drive a whole initialization through ``serve``.
+
+    ``review`` is an optional runner for ``/frontier-update-kb``'s per-item
+    review.  The default binds the single-key review to the same out/TTY seams as
+    the prompt; the key source stays the review module's live reader unless a
+    test injects one.
     """
     home = Path(home)
     ensure_dir(console_dir(home))
@@ -897,6 +929,17 @@ def serve(
                     out=out,
                     isatty=detect_tty,
                 )
+        review_runner = review
+        if review_runner is None:
+            def review_runner(runtime, *, service=None):
+                from hostrun import update_kb_review
+
+                return update_kb_review.run(
+                    runtime,
+                    out=out,
+                    isatty=detect_tty,
+                    service=service,
+                )
         try:
             while True:
                 try:
@@ -919,7 +962,12 @@ def serve(
                 emit_event(home, "INFO", "command", text, out=out)
                 events += 1
                 result = dispatch(
-                    home, text, status=status, service=lifecycle, init=init_runner
+                    home,
+                    text,
+                    status=status,
+                    service=lifecycle,
+                    init=init_runner,
+                    review=review_runner,
                 )
                 if result.get("text"):
                     try:
