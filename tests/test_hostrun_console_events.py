@@ -26,7 +26,6 @@ from hostrun import console, console_events, executor
 
 # ------------------------------------------------------------------ fixtures
 OWNER = "ou_owner"
-ACK_TEXT = console_events.MESSAGE_ACK_TEXT
 
 
 def _home(tmp_path: Path) -> Path:
@@ -108,6 +107,8 @@ def _surface(
     start_worker=None,
     poll_feedback=None,
     pull=None,
+    execute=None,
+    judge=None,
     out=None,
 ):
     events: list[tuple[str, str, str]] = []
@@ -122,6 +123,8 @@ def _surface(
         handle_card=card,
         owner=owner,
         paused=paused,
+        execute=execute,
+        judge=judge,
         emit=emit,
         out=out,
         clock=clock or (lambda: 0.0),
@@ -150,19 +153,142 @@ def _lost() -> dict:
 
 
 # -------------------------------------------------------- message event surface
-def test_an_owner_direct_message_is_recorded_and_gets_a_minimal_receipt(tmp_path):
+def test_an_owner_instruction_executes_and_gets_the_operation_receipt(tmp_path):
     home = _home(tmp_path)
     _recipient(home)
     sent: list[tuple[str, str]] = []
-    surface, events = _surface(home, send=lambda target, text: sent.append((target, text)))
+    executed: list[tuple[str, dict]] = []
+
+    def fake_execute(home, operation, params, **kwargs):
+        executed.append((operation, params))
+        return {"ok": True, "reason": "", "text": "状态快照：运行中"}
+
+    surface, events = _surface(
+        home,
+        send=lambda target, text: sent.append((target, text)),
+        execute=fake_execute,
+    )
 
     result = surface.handle_line(console_events.MESSAGE_EVENT_KEY, json.dumps(_wrapped(_event("状态"))))
 
     assert result["action"] == "received"
+    assert result["route_action"] == "execute"
+    assert result["operation"] == "status"
     assert result["replied"] is True
-    assert sent == [(OWNER, ACK_TEXT)]
+    assert executed == [("status", {})]
+    assert sent == [(OWNER, "状态快照：运行中")]
     assert ("INFO", "feishu") in [(level, source) for level, source, _ in events]
     assert any("收到" in message and "状态" in message for _, _, message in events)
+
+
+def test_an_unmatched_message_is_handed_to_intent_judgement_without_executing(tmp_path):
+    home = _home(tmp_path)
+    _recipient(home)
+    sent: list[tuple[str, str]] = []
+    executed: list[str] = []
+    judged: list[str] = []
+
+    def fake_execute(home, operation, params, **kwargs):
+        executed.append(operation)
+        return {"ok": True, "text": "不该执行"}
+
+    def fake_judge(home, text, **kwargs):
+        judged.append(text)
+        return {"ok": True, "reason": "judged", "text": "意图判定中，稍后发送确认卡片。"}
+
+    surface, _ = _surface(
+        home,
+        send=lambda target, text: sent.append((target, text)),
+        execute=fake_execute,
+        judge=fake_judge,
+    )
+
+    result = surface.handle_line(
+        console_events.MESSAGE_EVENT_KEY, json.dumps(_wrapped(_event("请帮我推一下")))
+    )
+
+    assert result["route_action"] == "intent_judgement"
+    assert result["operation"] is None
+    assert executed == []
+    assert judged == ["请帮我推一下"]
+    assert sent == [(OWNER, "意图判定中，稍后发送确认卡片。")]
+
+
+def test_an_unmatched_message_without_a_judge_seam_only_acknowledges(tmp_path):
+    home = _home(tmp_path)
+    _recipient(home)
+    sent: list[tuple[str, str]] = []
+    surface, _ = _surface(home, send=lambda target, text: sent.append((target, text)))
+
+    result = surface.handle_line(
+        console_events.MESSAGE_EVENT_KEY, json.dumps(_wrapped(_event("请帮我推一下")))
+    )
+
+    assert result["route_action"] == "intent_judgement"
+    assert result["replied"] is True
+    assert sent == [(OWNER, console_events.INTENT_PENDING_TEXT)]
+
+
+def test_an_excluded_instruction_is_refused_without_executing(tmp_path):
+    home = _home(tmp_path)
+    _recipient(home)
+    sent: list[tuple[str, str]] = []
+    executed: list[str] = []
+    surface, _ = _surface(
+        home,
+        send=lambda target, text: sent.append((target, text)),
+        execute=lambda home, op, params, **kw: executed.append(op) or {"ok": True, "text": "x"},
+    )
+
+    result = surface.handle_line(
+        console_events.MESSAGE_EVENT_KEY, json.dumps(_wrapped(_event("初始化")))
+    )
+
+    assert result["route_action"] == "refused"
+    assert executed == []
+    assert sent == [(OWNER, console_events.operations.CONSOLE_ONLY_TEXT)]
+
+
+def test_a_failed_operation_still_receipts_the_reason(tmp_path):
+    home = _home(tmp_path)
+    _recipient(home)
+    sent: list[tuple[str, str]] = []
+    surface, _ = _surface(
+        home,
+        send=lambda target, text: sent.append((target, text)),
+        execute=lambda home, op, params, **kw: {
+            "ok": False,
+            "reason": "invalid_parameters",
+            "text": "参数不合法：缺少参数 time",
+        },
+    )
+
+    result = surface.handle_line(
+        console_events.MESSAGE_EVENT_KEY, json.dumps(_wrapped(_event("推一篇")))
+    )
+
+    assert result["replied"] is True
+    assert sent == [(OWNER, "参数不合法：缺少参数 time")]
+
+
+def test_an_empty_owner_message_executes_nothing(tmp_path):
+    home = _home(tmp_path)
+    _recipient(home)
+    sent: list[tuple[str, str]] = []
+    executed: list[str] = []
+    surface, _ = _surface(
+        home,
+        send=lambda target, text: sent.append((target, text)),
+        execute=lambda home, op, params, **kw: executed.append(op) or {"ok": True, "text": "x"},
+    )
+
+    result = surface.handle_line(
+        console_events.MESSAGE_EVENT_KEY, json.dumps(_wrapped(_event("   ")))
+    )
+
+    assert result["route_action"] == "empty"
+    assert executed == []
+    assert sent == [(OWNER, console_events.EMPTY_MESSAGE_TEXT)]
 
 
 @pytest.mark.parametrize(
