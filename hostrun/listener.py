@@ -35,8 +35,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common import append_jsonl, ensure_dir, file_lock, now, read_json, write_json
-from hostrun import executor, intents
+from common import ensure_dir, file_lock, now, read_json, write_json
+from hostrun import agent_run, executor, intents
 from hostrun.base import HostRunError, listener_dir, load_config, require_dsh
 from publisher import feishu
 
@@ -599,17 +599,18 @@ def _feedback_result_text(polled: dict) -> str | None:
 def derived_argv(dsh: str, brief: str, extra_args=()) -> list[str]:
     """The recorded-``dsh`` argv for one bounded host run (decisions D5).
 
-    Verified live on 2026-10-30 against DeepSeek Harness 0.2.1-rc.3: the
-    headless profile takes the task as a positional argument (``dsh
-    --profile headless "task"``) and has no ``--prompt`` flag.  Tests inject
-    the spawner; the argv shape is asserted offline.
+    The argv contract now lives in :mod:`hostrun.agent_run` (the Console's Agent
+    run adapter) so there is exactly one construction site; the listener keeps
+    its historical shape without ``--json`` while it still exists.  Verified
+    live on 2026-10-30 against DeepSeek Harness 0.2.1-rc.3/rc.5: the headless
+    profile takes the task as the last positional argument (``dsh --profile
+    headless "task"``) and has no ``--prompt`` flag.
 
     ``extra_args`` are the host-recorded ``listener.dsh_args`` (for example an
     overlay path when the headless profile has no model credential).  They stay
     between the profile and the task so the task remains the last argument.
     """
-    extras = [str(arg) for arg in (extra_args or ())]
-    return [str(dsh), "--profile", "headless", *extras, str(brief)]
+    return agent_run.agent_argv(dsh, brief, extra_args, json_stream=False)
 
 
 def derived_brief(home: Path, brief: str, *, repo: str, python: str = "") -> str:
@@ -637,14 +638,13 @@ def record_derived_run(home: Path, row: dict) -> dict:
     """Append a derived-run row to ``hostrun/runs.jsonl`` (decisions D4).
 
     Same schema as ``intents._runlog``: ``{schema_version, at, ...}`` plus the
-    ``derived``/``parent`` markers, so schedules/history readers stay safe.
+    ``derived``/``parent`` markers, so schedules/history readers stay safe.  The
+    append itself is :func:`hostrun.agent_run.record_run`, the adapter the
+    Console uses for the same log.
     """
-    home = Path(home)
-    entry = {"schema_version": 1, "at": now(), **row}
-    entry["derived"] = True
-    entry["parent"] = "listener"
-    append_jsonl(home / intents.RUNS_REL, entry)
-    return entry
+    return agent_run.record_run(
+        Path(home), {**row, "derived": True, "parent": "listener"}
+    )
 
 
 def _install_report(home: Path) -> dict:
