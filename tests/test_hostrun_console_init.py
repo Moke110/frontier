@@ -130,7 +130,7 @@ def reader(*answers: str):
     return read
 
 
-def transport_send(*, owner, html, card):
+def transport_send(*, owner, html, card, html_file=None):
     """A fake transport sender: no message is ever sent in a test."""
     return {"ok": True, "html_message_id": "om_test_html", "card_message_id": "om_test_card"}
 

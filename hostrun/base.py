@@ -269,7 +269,14 @@ def run_json(argv: list[str], *, runner=subprocess.run, timeout: int = 30) -> di
     if not argv:
         return {"ok": False, "error": "empty argv"}
     try:
-        proc = runner(argv, capture_output=True, text=True, timeout=timeout)
+        proc = runner(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     out = (proc.stdout or "").strip()

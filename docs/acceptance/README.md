@@ -33,6 +33,8 @@
 
 - 控制台默认每日运行器签名错误：`_default_run_daily(home, **kwargs)` 被以 `(home, "daily", ...)` 调用，真实补推时报 `TypeError`；离线测试一直注入假运行器所以未暴露。已修并新增 `tests/test_hostrun_console_service.py::test_default_daily_runner_matches_the_injected_seam`。
 - 迁移生成的 launcher 未转发参数，`frontier-console control ...` 在迁移后不可用；已补 `%*`（#81 曾记录为跨票据遗留）。
+- **2026-10-30 23:20 真实验收（迁移后 `/frontier-init`）**：用户看到传输测试发的是 HTML **文本**而不是 HTML 文件——已改为把测试 HTML 写入代码目录运行时区 `<runtime>/install/transport-test.html` 并以**文件消息**发送（`hostrun/console_init.py`）；新增默认发送器回归测试。
+- **2026-10-30 23:20**：创建知识库设施时 lark-cli 输出被按 GBK 解码，`UnicodeDecodeError: 'gbk' codec can't decode byte 0xa2` 导致真实初始化失败。根因是 6 处 `subprocess` 使用 `text=True` 却未指定编码；已统一为 `encoding="utf-8", errors="replace"`（`publisher/feishu.py`、`library/admin.py`、`hostrun/lark.py`、`hostrun/base.py`、`hostrun/install.py`、`trigger/service.py`），并新增 `tests/test_lark_utf8_decoding.py` 回归。修复后离线全量 **739 passed, 3 skipped**。
 
 > 原始命令输出与临时目录摘要保留在工作区外 `.spec74-notes/impl/91/acceptance-evidence.md`。未取得真实证据前，**不得**据本节宣称控制台化已验收。
 

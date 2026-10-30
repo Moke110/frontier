@@ -199,6 +199,8 @@ def run_agent(config: Config, prompt: str) -> subprocess.CompletedProcess:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         **session_kwargs,
     )
     try:
