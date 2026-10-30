@@ -16,7 +16,8 @@ retired listener:
   executed and is handed to the intent-judgement seam (#83).
 - card callbacks are normalised and handed to the existing
   ``publisher.service.handle_event`` route, so rating/approval buttons keep
-  their current semantics.  Confirmation-card ownership belongs to #83.
+  their current semantics.  A #83 intent-confirmation callback is routed to the
+  intent-judgement handler first; its operation never touches the publisher.
 - the 5-minute feedback poll and the 10-minute knowledge pull run beside the
   event loops on workers; a tick that is still in flight or blocked by the
   executor lease is skipped and logged, never queued or retried.
@@ -37,7 +38,7 @@ import threading
 import time
 from pathlib import Path
 
-from hostrun import console, executor, intents, operations
+from hostrun import console, executor, intent_judgement, intents, operations
 from hostrun.base import load_config
 from publisher import feishu
 
@@ -453,11 +454,15 @@ def handle_card(
     handle=None,
     emit=None,
     paused=None,
+    confirm=None,
 ) -> dict:
-    """Hand one normalised card callback to the existing publisher route.
+    """Hand one normalised card callback to its owner route.
 
-    Paused service: the callback is logged and skipped, because pause means no
-    Feishu response and no derived run (ADR 0009 §6).
+    A #83 confirmation callback (``kind``/``nonce`` in its action value) is
+    offered to ``confirm`` first; when that handler returns a result the
+    publisher route is not touched, so rating/approval buttons keep their
+    current semantics.  Paused service: the callback is logged and skipped,
+    because pause means no Feishu response and no derived run (ADR 0009 §6).
     """
     log = emit or (lambda level, source, message: None)
     if not event:
@@ -466,6 +471,23 @@ def handle_card(
     if _service_paused(Path(home), paused):
         log("INFO", "feishu", "服务已暂停，忽略卡片回调（不派生任何运行）")
         return {"ok": True, "skipped": "service_paused"}
+    if confirm is not None:
+        try:
+            confirmed = confirm(Path(home), event)
+        except Exception as exc:  # noqa: BLE001 - one bad callback must not kill the surface
+            log("WARN", "feishu", f"确认卡片回调处理失败：{type(exc).__name__}: {exc}")
+            return {
+                "ok": False,
+                "reason": "confirmation_failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        if confirmed is not None:
+            if not isinstance(confirmed, dict):
+                confirmed = {"ok": False, "reason": "confirmation_result_invalid"}
+            action = confirmed.get("action") or confirmed.get("reason") or "handled"
+            level = "INFO" if confirmed.get("ok") else "WARN"
+            log(level, "feishu", f"确认卡片回调：{action}")
+            return confirmed
     handler = handle or _publisher_handle_event
     try:
         result = handler(Path(home), event)
@@ -570,6 +592,8 @@ class EventSurface:
         host: str | None = None,
         identity: str = "bot",
         start_push=None,
+        confirm=None,
+        intent_judgement=None,
     ):
         self.home = Path(home)
         self.out = out
@@ -583,6 +607,12 @@ class EventSurface:
         self._execute = execute
         self._judge = judge
         self._start_push = start_push
+        self._confirm = confirm
+        self._intent_judgement = intent_judgement
+        if intent_judgement is not None:
+            # The production #83 owner: one judgement cache and its cards.
+            self._judge = intent_judgement.judge
+            self._confirm = intent_judgement.handle_card
         self._emit = emit or console.emit_event
         self._clock = clock or time.monotonic
         self._sleep = sleep
@@ -611,6 +641,9 @@ class EventSurface:
         starter = getattr(service, "request_push", None)
         if callable(starter):
             self._start_push = starter
+        judge = self._intent_judgement
+        if judge is not None and callable(getattr(judge, "bind_lifecycle", None)):
+            judge.bind_lifecycle(service)
 
     # -- logging ---------------------------------------------------------
     def _log(self, level: str, source: str, message: str) -> None:
@@ -747,6 +780,7 @@ class EventSurface:
                 handle=self._handle_card,
                 emit=self._log,
                 paused=self._paused,
+                confirm=self._confirm,
             )
         self._log("WARN", "feishu", f"未知事件键 {event_key}，已丢弃")
         return {"ok": False, "action": "ignored", "reason": "unknown_event_key"}
@@ -862,5 +896,17 @@ class EventSurface:
 
 
 def live(home: Path, *, out=None) -> EventSurface:
-    """The production surface: real lark-cli consume, real receipts and ticks."""
-    return EventSurface(home, out=out)
+    """The production surface: real lark-cli consume, real receipts and ticks.
+
+    Also builds the #83 intent judge: a whitelist miss starts one read-only
+    Agent run whose hit becomes a one-time confirmation card.
+    """
+
+    def emit(level: str, message: str) -> None:
+        try:
+            console.emit_event(Path(home), level, "feishu", message, out=out)
+        except Exception:  # noqa: BLE001 - judgement logging never kills the surface
+            pass
+
+    judge = intent_judgement.IntentJudge(Path(home), emit=emit)
+    return EventSurface(home, out=out, intent_judgement=judge)
