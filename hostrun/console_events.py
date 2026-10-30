@@ -10,8 +10,10 @@ retired listener:
 - only the verified owner's direct message is actionable; a group chat, another
   sender, a bot message or a non-message event gets one log line and no receipt
   (``intents.verified_owner`` is the only owner source);
-- message handling here is deliberately minimal: record it in the Console event
-  stream and send a short receipt.  Instruction routing is #82/#83's scope.
+- owner message handling is the two-layer whitelist (#82): a phrase in the exact
+  instruction whitelist executes one registered operation and answers with that
+  operation's receipt; an excluded action is refused; anything else is *not*
+  executed and is handed to the intent-judgement seam (#83).
 - card callbacks are normalised and handed to the existing
   ``publisher.service.handle_event`` route, so rating/approval buttons keep
   their current semantics.  Confirmation-card ownership belongs to #83.
@@ -35,7 +37,7 @@ import threading
 import time
 from pathlib import Path
 
-from hostrun import console, executor, intents
+from hostrun import console, executor, intents, operations
 from hostrun.base import load_config
 from publisher import feishu
 
@@ -49,8 +51,9 @@ FEEDBACK_INTERVAL_SECONDS = 300
 PULL_INTERVAL_SECONDS = 600
 #: Reconnect delays for a broken subscription; the last value repeats.
 BACKOFF_SECONDS = (5, 15, 30, 60)
-#: Immediate receipt for a recorded owner message; operation routing is #82/#83.
-MESSAGE_ACK_TEXT = "已收到（消息已记录）。"
+#: Receipt for a message outside both whitelists; #83 replaces it with a card.
+INTENT_PENDING_TEXT = operations.INTENT_PENDING_TEXT
+EMPTY_MESSAGE_TEXT = operations.EMPTY_MESSAGE_TEXT
 
 SUBSCRIPTION_NAMES = {
     MESSAGE_EVENT_KEY: "消息订阅",
@@ -269,6 +272,21 @@ def _preview(text: str, limit: int = 80) -> str:
     return value if len(value) <= limit else value[:limit] + "…"
 
 
+def _send_receipt(
+    sender, target: str, text: str, *, log
+) -> dict:
+    """Send one receipt; a failed send is reported, never raised."""
+    try:
+        result = sender(target, text)
+    except Exception as exc:  # noqa: BLE001 - a failed receipt must not kill the surface
+        log("WARN", "feishu", f"回执发送失败：{type(exc).__name__}: {exc}")
+        return {"sent": False, "reason": "send_failed", "reply": None, "reply_text": text}
+    if isinstance(result, dict) and result.get("ok") is False:
+        log("WARN", "feishu", f"回执未送达（{result.get('reason') or 'failed'}）")
+        return {"sent": False, "reason": "send_failed", "reply": result, "reply_text": text}
+    return {"sent": True, "reason": "", "reply": result, "reply_text": text}
+
+
 def handle_message(
     home: Path,
     event: dict | None,
@@ -276,11 +294,28 @@ def handle_message(
     send=None,
     owner: str | None = None,
     emit=None,
+    execute=None,
+    judge=None,
 ) -> dict:
-    """Record one message and send the minimal owner receipt, or log-and-ignore."""
+    """Route one owner message through the instruction whitelist.
+
+    A whitelisted phrase executes its registered operation and returns that
+    operation's receipt.  An excluded phrase is refused.  Every other message is
+    handed to ``judge`` (the #83 intent-judgement seam) or, when that seam is not
+    wired yet, answered with ``INTENT_PENDING_TEXT`` — it is never executed and
+    never guessed at.  Non-owner messages keep the owner gate and get no receipt.
+    """
     log = emit or (lambda level, source, message: None)
     decision = classify_message(home, event, owner=owner)
-    outcome = {**decision, "replied": False, "reply": None, "reply_text": None}
+    outcome = {
+        **decision,
+        "replied": False,
+        "reply": None,
+        "reply_text": None,
+        "route_action": None,
+        "operation": None,
+        "execute_result": None,
+    }
     if decision["action"] == "ignored":
         log("INFO", "feishu", f"忽略消息（{decision['reason']}）：{_preview(decision['text'])}")
         return outcome
@@ -288,18 +323,77 @@ def handle_message(
     log("INFO", "feishu", f"收到 owner 消息：{_preview(decision['text']) or '（空）'}")
     sender = send or feishu.send_text
     target = str(decision.get("target") or "")
-    try:
-        result = sender(target, MESSAGE_ACK_TEXT)
-    except Exception as exc:  # noqa: BLE001 - a failed receipt must not kill the surface
-        log("WARN", "feishu", f"回执发送失败：{type(exc).__name__}: {exc}")
-        outcome.update(reason="send_failed", reply_text=MESSAGE_ACK_TEXT)
-        return outcome
-    if isinstance(result, dict) and result.get("ok") is False:
-        log("WARN", "feishu", f"回执未送达（{result.get('reason') or 'failed'}）")
-        outcome.update(reason="send_failed", reply=result, reply_text=MESSAGE_ACK_TEXT)
-        return outcome
-    log("INFO", "feishu", f"已回执 owner（{target}）")
-    outcome.update(replied=True, reply=result, reply_text=MESSAGE_ACK_TEXT)
+    route = operations.route_text(decision["text"])
+    outcome["route_action"] = route["action"]
+
+    if route["action"] == "execute":
+        runner = execute or operations.execute
+        executed = runner(
+            home,
+            route["operation"],
+            route["params"],
+            source="feishu",
+            context={"send": sender, "target": target},
+        )
+        if not isinstance(executed, dict):
+            executed = {
+                "ok": False,
+                "reason": "execute_result_invalid",
+                "text": operations.DEFAULT_FAILURE_TEXT,
+            }
+        outcome["operation"] = route["operation"]
+        outcome["execute_result"] = executed
+        text = str(executed.get("text") or operations.DEFAULT_FAILURE_TEXT)
+        level = "INFO" if executed.get("ok") else "WARN"
+        log(
+            level,
+            "feishu",
+            f"执行操作 {route['operation']} -> "
+            f"{'ok' if executed.get('ok') else executed.get('reason') or 'failed'}",
+        )
+    elif route["action"] == "refused":
+        text = str(route["text"])
+        level = "WARN"
+        log(level, "feishu", f"拒绝操作（{route['reason']}）：{_preview(decision['text'])}")
+    elif route["action"] == "empty":
+        text = EMPTY_MESSAGE_TEXT
+        level = "INFO"
+        log(level, "feishu", "空消息未执行任何操作")
+    else:
+        judged: dict | None = None
+        text = ""
+        if judge is not None:
+            try:
+                judged = judge(home, route["text"], target=target, send=sender)
+            except Exception as exc:  # noqa: BLE001 - judgement failure is a receipt
+                log("WARN", "feishu", f"意图判定失败：{type(exc).__name__}: {exc}")
+                text = "意图判定失败，请稍后再试。"
+                judged = {"ok": False, "reason": "judge_failed"}
+            if judged is not None and not isinstance(judged, dict):
+                judged = {"ok": False, "reason": "judge_result_invalid"}
+        if judged is None:
+            log("INFO", "feishu", "指令未命中，交由意图判定（#83）")
+            text = INTENT_PENDING_TEXT
+        elif judged.get("skip_reply"):
+            outcome.update(reason=str(judged.get("reason") or "judged"))
+            log("INFO", "feishu", "意图判定已自行回执，未重复发送")
+            return outcome
+        elif not text:
+            text = str(judged.get("text") or INTENT_PENDING_TEXT)
+        if judged is not None:
+            level = "INFO" if judged.get("ok", True) else "WARN"
+            log(level, "feishu", f"意图判定结果：{judged.get('reason') or 'delivered'}")
+
+    receipt = _send_receipt(sender, target, text, log=log)
+    outcome.update(
+        replied=bool(receipt["sent"]),
+        reply=receipt["reply"],
+        reply_text=receipt["reply_text"],
+    )
+    if not receipt["sent"]:
+        outcome["reason"] = receipt["reason"]
+    elif receipt["sent"]:
+        log("INFO", "feishu", f"已回执 owner（{target}）")
     return outcome
 
 
@@ -413,6 +507,8 @@ class EventSurface:
         owner=None,
         paused=None,
         emit=None,
+        execute=None,
+        judge=None,
         out=None,
         clock=None,
         sleep=None,
@@ -433,6 +529,8 @@ class EventSurface:
         self._handle_card = handle_card
         self._owner = owner
         self._paused = paused
+        self._execute = execute
+        self._judge = judge
         self._emit = emit or console.emit_event
         self._clock = clock or time.monotonic
         self._sleep = sleep
@@ -569,6 +667,8 @@ class EventSurface:
                 send=self._send,
                 owner=self._owner,
                 emit=self._log,
+                execute=self._execute,
+                judge=self._judge,
             )
         if event_key == CARD_EVENT_KEY:
             event = parse_card_event(raw)

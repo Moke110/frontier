@@ -14,6 +14,7 @@ Modules:
   ``listener``    the user-started resident loop: Feishu events and feedback polls
   ``console``     the Console shell: single instance, heartbeat, event stream, slash commands
   ``console_events`` the Console's Feishu event surface: two subscriptions, owner gate, 5/10-minute ticks
+  ``operations``  the operation registry + exact instruction whitelist and their executors
   ``agent_run``   the Console's Agent run adapter: headless dsh, JSON events, log, lease
   ``facilities``  create/attach Base, tables and Drive folders by confirmed names
   ``smoke``       tagged keyword-driven temporary acceptance
