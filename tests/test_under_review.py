@@ -230,11 +230,14 @@ def test_review_column_is_not_required_and_its_absence_is_not_an_error(
 
 def test_attach_adds_the_review_column_to_an_existing_base(offline_home, offline_base):
     assert REVIEW_FIELD not in offline_base.field_names("tblcards")
+    offline_base.create("tblcards", [{"卡片 ID": "card_old", "label": "旧卡片"}])
 
     result = kb.attach(offline_home, "bascnABC123", client=offline_base)
 
     assert REVIEW_FIELD in offline_base.field_names("tblcards")
     assert result["columns_added"]["cards"] == [REVIEW_FIELD]
+    # Adding a column must not touch existing rows.
+    assert offline_base.list("tblcards")[0]["fields"]["卡片 ID"] == "card_old"
 
 
 def test_create_tables_adds_a_missing_review_column_without_recreating_the_table(
