@@ -191,6 +191,7 @@ def test_run_parses_the_stream_records_the_session_and_writes_the_full_log(tmp_p
     assert kwargs["cwd"] == str(home)
 
     log = Path(result["log_path"]).read_text(encoding="utf-8")
+    assert Path(result["log_path"]).name == f"agent-{result['run_id']}.log"
     for fragment in ('"sessionId": "session-abc"', '"text": "working"', '"type": "final"', "noisy provider"):
         assert fragment in log
 
