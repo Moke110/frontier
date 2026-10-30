@@ -100,6 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
     isub.add_parser("status")
     r = isub.add_parser("report")
     r.add_argument("--out")
+    mig = isub.add_parser("migrate", help="move a legacy --home installation into code + archive")
+    mig.add_argument("--from", dest="legacy_home", help="old --home data root (default: recorded home)")
+    mig.add_argument("--uv", dest="uv_path", help="uv executable used to rebuild the private environment")
+    mig.add_argument("--no-environment", action="store_true", help="skip the private environment rebuild")
     rec = isub.add_parser("record")
     rec.add_argument("--step", required=True, choices=install.STEPS)
     rec.add_argument("--status", required=True, choices=install.STATE_STATUSES)
@@ -424,6 +428,9 @@ def main(argv: list[str] | None = None) -> int:
         # Establishing the new layout is idempotent and writes no file; the
         # legacy --home tree keeps creating only what a command needs.
         layout_mod.ensure(resolved)
+        # Remember the two locations so a custom --archive survives later runs
+        # that pass no location flag; the legacy --home mode records nothing.
+        layout_mod.remember(resolved)
     except HostRunError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
@@ -434,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["KL_HOME"] = str(root)
     offline = bool(args.offline)
     try:
-        code, payload = _dispatch(args, root, offline)
+        code, payload = _dispatch(args, root, offline, resolved)
     except HostRunError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
@@ -443,9 +450,9 @@ def main(argv: list[str] | None = None) -> int:
     return code
 
 
-def _dispatch(args, root: Path, offline: bool) -> tuple[int, dict | None]:
+def _dispatch(args, root: Path, offline: bool, resolved: dict | None = None) -> tuple[int, dict | None]:
     if args.cmd == "install":
-        return _install(args, root)
+        return _install(args, root, resolved)
     if args.cmd == "kb":
         return _kb(args, root, offline)
     if args.cmd == "feedback":
@@ -493,9 +500,34 @@ def _dispatch(args, root: Path, offline: bool) -> tuple[int, dict | None]:
     raise HostRunError(f"unknown command {args.cmd}")
 
 
-def _install(args, root: Path) -> tuple[int, dict]:
+def _install(args, root: Path, resolved: dict | None = None) -> tuple[int, dict]:
     from common import ensure_dir
     from hostrun.base import update_config
+
+    if args.action == "migrate":
+        from hostrun import migration as migration_mod
+
+        layout = resolved or layout_mod.resolve()
+        if layout.get("mode") != "code":
+            raise HostRunError(
+                "install migrate 只适用于新布局；请用 --code 与 --archive 指定代码目录和资料目录"
+            )
+        environment = None
+        if args.no_environment:
+            environment = {
+                "ok": True,
+                "status": "untested",
+                "skipped": True,
+                "note": "按 --no-environment 跳过私有环境重建；重建结果未验证",
+            }
+        result = migration_mod.migrate(
+            code=layout["code"],
+            archive=layout["archive"],
+            legacy_home=args.legacy_home,
+            environment=environment,
+            uv_path=args.uv_path,
+        )
+        return (0 if result["ok"] else 1), result
 
     if args.action == "workspace":
         result = workspace_mod.acquire(
