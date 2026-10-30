@@ -339,7 +339,7 @@ def probe_lark_cli(home: Path, spec: str | None, *, names: list[str] | None = No
     """
     found = lark_mod.resolve_cli(
         spec,
-        private_dirs=[Path(home) / "bin"],
+        private_dirs=[Path(home) / "bin", Path(home) / "lark-cli" / "bin"],
         names=names or ["lark-cli"],
     )
     if not found["found"]:

@@ -17,7 +17,7 @@ Modules:
   ``operations``  the operation registry + exact instruction whitelist and their executors
   ``intent_judgement`` the read-only intent judgement run and its one-time confirmation card
   ``console_service`` the Console's service lifecycle: daily slot, catch-up, pause/resume, control file, shutdown
-  ``console_init`` the Console's ``/frontier-init`` step machine: archive directory, executing agent, resume
+  ``console_init`` the Console's ``/frontier-init`` step machine: archive, agent, Lark CLI, resume
   ``update_kb``   ``/frontier-update-kb`` read side: archive copy, shards, read-only sub-runs, unread report
   ``agent_run``   the Console's Agent run adapter: headless dsh, JSON events, log, lease
   ``facilities``  create/attach Base, tables and Drive folders by confirmed names

@@ -1,7 +1,7 @@
 """Console ``/frontier-init`` step machine (ADR 0009 §7).
 
 The initialization is an ordered, resumable state machine executed inside the
-Console.  This ticket delivers its skeleton and the first two steps:
+Console.  This module currently delivers three steps:
 
 1. **archive directory** — confirm the default archive (``Y``/Enter) or open the
    system folder dialog (``N``); a cancelled dialog falls back to the default.
@@ -11,10 +11,20 @@ Console.  This ticket delivers its skeleton and the first two steps:
 2. **executing agent** — show the recorded absolute ``dsh`` path, its ``--patch``
    credential overlay and the authorization scope, and continue only after the
    user confirms.
+3. **Lark CLI** — the three-level detection of ADR 0009 §7: an already
+   configured, working CLI is reused (ADR 0007); a CLI installed elsewhere is
+   adopted only after an explicit confirmation, and a missing one is privately
+   installed into the code directory's runtime area; a CLI that is present but
+   not logged in runs the split device-code login inside the Console (the
+   verification link and device code are printed, the login is polled, and the
+   flow continues automatically); a logged-in CLI with a scope gap prints the
+   Feishu developer-console link and the missing list and waits for a re-check.
+   The login wait is capped at 15 minutes, a failure offers "retry / abort
+   (progress preserved)" and never a skip, and no system terminal is opened.
 
-The remaining ADR §7 steps (Lark CLI, transport test, facility naming, push time,
-knowledge-base gate) are registered as explicit not-yet steps owned by #85/#86/
-#87; they are shown, never silently skipped.
+The remaining ADR §7 steps (transport test, facility naming, push time,
+knowledge-base gate) are registered as explicit not-yet steps owned by
+#86/#87; they are shown, never silently skipped.
 
 State lives in the code directory's runtime area at
 ``<runtime>/install/initial/state.json`` — the ``layout`` category ``init``.
@@ -23,30 +33,42 @@ probes and console initialization are different state machines (other tests
 assert ``install.STEPS``), and the knowledge-card initialization
 (:mod:`hostrun.initialize`) already uses sibling files in the same directory.
 Every completed step is persisted immediately, so an interruption resumes at the
-first unfinished step and never leaves a half-created facility behind (this
-ticket creates none).
+first unfinished step and never leaves a half-created facility behind.
 
 Everything interactive is injectable (``reader``, ``out``, ``isatty``,
-``pick_folder``, ``write_probe``), so the whole flow is offline-testable.  The
-real Windows folder dialog and a real folder outside the DSH workspace stay
-``untested`` until recorded live.
+``pick_folder``, ``write_probe``, ``lark_runner``, ``lark_install``, ``clock``,
+``sleep``), so the whole flow is offline-testable.  The real Windows folder
+dialog, a real folder outside the DSH workspace, a real device-code login and
+the real browser authorization stay ``untested`` until recorded live.
 """
 
 from __future__ import annotations
 
+import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
-from common import ensure_dir, now, read_json, write_json
-from hostrun import layout
-from hostrun.base import HostRunError, dsh_bin, load_config
+from common import RUNTIME_DIRNAME, ensure_dir, now, read_json, write_json
+from hostrun import lark, layout
+from hostrun.base import HostRunError, dsh_bin, load_config, update_config
 
 #: ``layout`` already declares ``install/initial`` as the code-directory
 #: initialization-state category (#76); the console's step state is one file in
 #: it, next to — never inside — ``install.STEPS``.
 STATE_REL = layout.CATEGORY_RELS["init"] / "state.json"
 SCHEMA_VERSION = 1
+
+#: ADR 0009 §7: the login wait is capped at 15 minutes and re-checked every 5 s.
+LARK_WAIT_SECONDS = 15 * 60
+LARK_POLL_SECONDS = 5
+#: One ``auth login --device-code`` call may block until the user authorizes;
+#: a poll never asks for more than this at once.
+LARK_COMPLETE_TIMEOUT = 300
+LARK_REQUIRED_SCOPES = tuple(
+    dict.fromkeys(scope for scopes in lark.REQUIRED_SCOPES.values() for scope in scopes)
+)
 
 #: The ADR §7 order.  ``implemented`` flips in later tickets without reordering.
 STEPS = (
@@ -65,7 +87,7 @@ STEPS = (
     {
         "id": "lark",
         "title": "Lark CLI 检测与登录",
-        "implemented": False,
+        "implemented": True,
         "ticket": "#85",
     },
     {
@@ -386,6 +408,317 @@ def _step_agent(home: Path, *, code: Path, archive: Path, reader, out) -> dict:
     return {"ok": True, "facts": facts}
 
 
+# -------------------------------------------------------------- Lark CLI step
+def lark_cli_facts(home: Path, *, code: Path, runtime: Path) -> dict:
+    """Resolve the CLI without installing or logging in (ADR 0007 first).
+
+    A recorded absolute path wins and is reused.  A recorded path that no longer
+    exists is *stale*: this function also looks for another installed CLI, but
+    the step must ask before adopting it — never a silent downgrade.
+    """
+    config = load_config(Path(home))
+    recorded = str((config.get("paths") or {}).get("lark_cli") or "").strip()
+    found = lark.discover_cli(code, spec=recorded or None, home=runtime)
+    if found.get("ok"):
+        source = "recorded" if (recorded and found.get("source") == "explicit") else "installed"
+        return {"status": "found", "source": source, "path": found["path"], "recorded": recorded}
+    if found.get("stale"):
+        other = lark.discover_cli(code, spec=None, home=runtime)
+        return {
+            "status": "stale",
+            "recorded": recorded,
+            "note": found.get("note") or "",
+            "other": {"path": other["path"], "source": other.get("source") or ""}
+            if other.get("ok")
+            else None,
+        }
+    return {"status": "missing", "recorded": recorded, "note": found.get("note") or ""}
+
+
+def _confirm_cli_adoption(found: dict, *, recorded: str, reader, out) -> bool:
+    """Ask before reusing a CLI that is not the recorded one (ADR 0007)."""
+    if recorded:
+        _say(out, f"安装记录中的飞书 CLI 已失效：{recorded}（不会自动降级到其他版本）")
+    _say(out, f"检测到已安装的飞书 CLI：{found['path']}（来源 {found.get('source') or '未记录'}）")
+    answer = _ask(
+        reader,
+        out,
+        "采用该 CLI 并写入安装记录？[Y] 采用（回车）/ [N] 私有安装一份新的：",
+    )
+    return answer.lower() in ("", "y", "yes")
+
+
+def _failure_choice(reader, out, *, what: str) -> str:
+    """The ADR §7 failure menu: retry or abort, never skip."""
+    while True:
+        answer = _ask(
+            reader,
+            out,
+            f"{what}未完成：[R] 重试 / [A] 中止（进度保留，不允许跳过本步骤）：",
+        )
+        choice = answer.lower()
+        if choice in ("r", "retry"):
+            return "retry"
+        if choice in ("a", "abort"):
+            return "abort"
+        _say(out, "请输入 R 重试或 A 中止；本步骤不能跳过。")
+
+
+def _lark_abort(what: str) -> dict:
+    return {
+        "ok": False,
+        "reason": "lark_aborted",
+        "text": (
+            f"{what}未完成，已中止；进度已保留（已完成的初始化步骤已保存）。"
+            "下次 /frontier-init 会从 Lark CLI 步骤继续（不允许跳过）。"
+        ),
+    }
+
+
+def _lark_aim(code: Path) -> Path:
+    return Path(code) / RUNTIME_DIRNAME
+
+
+def _install_private_cli(home: Path, *, code: Path, reader, out, runner, install) -> dict:
+    """Private ``@larksuite/cli`` under the code-directory runtime area."""
+    while True:
+        _say(out, f"正在私有安装 @larksuite/cli 到代码目录运行时区：{_lark_aim(code)}")
+        result = install(code, runner=runner)
+        path = str(result.get("path") or "")
+        if result.get("ok") and path and Path(path).is_file():
+            update_config(home, paths={"lark_cli": path})
+            _say(out, f"[完成] 已私有安装飞书 CLI：{path}（不装全局包，不写 PATH 或注册表）")
+            return {
+                "ok": True,
+                "path": path,
+                "source": "private-install",
+                "version": result.get("version") or "",
+            }
+        note = result.get("note") or result.get("reason") or "未知原因"
+        _say(out, f"私有安装失败：{note}")
+        if _failure_choice(reader, out, what="私有安装") == "abort":
+            return _lark_abort("Lark CLI 私有安装")
+
+
+def _ensure_lark_cli(home: Path, *, code: Path, reader, out, runner, install) -> dict:
+    facts = lark_cli_facts(home, code=code, runtime=Path(home))
+    if facts["status"] == "found" and facts["source"] == "recorded":
+        _say(out, f"[复用] 已记录的飞书 CLI：{facts['path']}（ADR 0007：不重复安装）")
+        return {"ok": True, "path": facts["path"], "source": "recorded"}
+    if facts["status"] == "found":
+        if _confirm_cli_adoption(facts, recorded="", reader=reader, out=out):
+            update_config(home, paths={"lark_cli": facts["path"]})
+            _say(out, f"[完成] 已记录飞书 CLI：{facts['path']}")
+            return {"ok": True, "path": facts["path"], "source": "adopted"}
+        return _install_private_cli(home, code=code, reader=reader, out=out, runner=runner, install=install)
+    if facts["status"] == "stale":
+        _say(out, facts.get("note") or "记录的飞书 CLI 路径已失效。")
+        other = facts.get("other")
+        if other and _confirm_cli_adoption(
+            other, recorded=facts.get("recorded") or "", reader=reader, out=out
+        ):
+            update_config(home, paths={"lark_cli": other["path"]})
+            _say(out, f"[完成] 已记录飞书 CLI：{other['path']}")
+            return {"ok": True, "path": other["path"], "source": "adopted"}
+        if not other:
+            _say(out, "没有找到其他可用的飞书 CLI；将私有安装一份新的。")
+    else:
+        _say(out, f"未找到可用的飞书 CLI：{facts.get('note') or '未安装'}")
+    return _install_private_cli(home, code=code, reader=reader, out=out, runner=runner, install=install)
+
+
+def _identity_facts(cli: str, *, runner) -> dict:
+    """Booleans only: never a token, an open id or a raw credential payload."""
+    result = lark.identity(cli, runner=runner)
+    evidence = result.get("evidence") or {}
+    ready = [str(item) for item in (evidence.get("ready") or [])]
+    return {
+        "status": result.get("status") or "blocked",
+        "note": result.get("note") or "",
+        "user_ready": "user" in ready,
+        "bot_ready": "bot" in ready,
+        "missing": [str(item) for item in (evidence.get("missing") or [])],
+        "expired": bool(evidence.get("expired")),
+        "refresh_pending": [str(item) for item in (evidence.get("refresh_pending") or [])],
+        "dpop_key_status": str(evidence.get("dpop_key_status") or ""),
+        "dpop_mode": str(evidence.get("dpop_mode") or ""),
+        "scopes": list(result.get("scopes") or []),
+    }
+
+
+def _authorization(scopes: list[str]) -> dict:
+    return lark.authorization(list(scopes or []), required=list(LARK_REQUIRED_SCOPES))
+
+
+def _device_login(*, cli: str, reader, out, runner, clock, sleep) -> dict:
+    """Split device-code login: show the link + code, poll, continue by itself."""
+    attempt = 0
+    while True:
+        attempt += 1
+        request = lark.request_login(cli, runner=runner)
+        if not request.get("ok"):
+            _say(out, request.get("note") or "无法取得登录链接与设备码。")
+            if _failure_choice(reader, out, what="Lark 登录") == "abort":
+                return _lark_abort("Lark 登录")
+            continue
+        _say(out, f"授权链接：{request['verification_url']}")
+        _say(out, f"设备码：{request['device_code']}")
+        _say(
+            out,
+            "请在浏览器打开上面的链接完成授权；控制台会自动继续"
+            f"（等待上限 {LARK_WAIT_SECONDS // 60} 分钟，不新开终端）。",
+        )
+        deadline = clock() + LARK_WAIT_SECONDS
+        polls = 0
+        last_report = clock()
+        while clock() < deadline:
+            polls += 1
+            remaining = max(1, int(deadline - clock()))
+            result = lark.complete_login(
+                cli,
+                request["device_code"],
+                runner=runner,
+                timeout=min(LARK_COMPLETE_TIMEOUT, remaining),
+            )
+            if result.get("ok"):
+                identity = _identity_facts(cli, runner=runner)
+                if identity["user_ready"]:
+                    _say(out, "[完成] 飞书 user 身份已登录。")
+                    return {
+                        "ok": True,
+                        "identity": identity,
+                        "login": {"device": True, "polls": polls, "attempts": attempt},
+                    }
+            moment = clock()
+            if moment - last_report >= 60:
+                _say(
+                    out,
+                    "等待授权中…剩余约 "
+                    f"{max(0, int(deadline - moment)) // 60} 分钟（设备码登录，未跳过）。",
+                )
+                last_report = moment
+            remaining = deadline - clock()
+            if remaining <= 0:
+                break
+            sleep(min(LARK_POLL_SECONDS, remaining))
+        _say(out, f"登录等待已超过 {LARK_WAIT_SECONDS // 60} 分钟，尚未完成授权。")
+        if _failure_choice(reader, out, what="Lark 登录") == "abort":
+            return _lark_abort("Lark 登录")
+
+
+def _permission_guidance(
+    *, cli: str, identity: dict, authorization: dict, reader, out, runner, clock
+) -> dict:
+    """Scope/bot gap: print the developer-console link and wait for a re-check."""
+    deadline = clock() + LARK_WAIT_SECONDS
+    while True:
+        _say(out, f"飞书开发者后台：{lark.DEVELOPER_CONSOLE_URL}")
+        missing = list(authorization.get("missing") or [])
+        if missing:
+            _say(out, "缺失授权范围：" + "、".join(missing))
+        elif authorization.get("status") == "untested":
+            _say(
+                out,
+                authorization.get("note")
+                or "登录状态未报告授权范围；权限由后续测试消息步骤验证。",
+            )
+        if not identity["bot_ready"]:
+            _say(out, "bot 身份未就绪：bot scope 只能在飞书开发者后台开通，auth login 不用于 bot。")
+        if clock() >= deadline:
+            _say(out, f"权限复检等待已超过 {LARK_WAIT_SECONDS // 60} 分钟。")
+            if _failure_choice(reader, out, what="权限复检") == "abort":
+                return _lark_abort("飞书权限复检")
+            deadline = clock() + LARK_WAIT_SECONDS
+            continue
+        answer = _ask(reader, out, "在开发者后台完成配置后按回车重新检查 / [A] 中止（进度保留）：")
+        if answer.lower() in ("a", "abort"):
+            return _lark_abort("飞书权限复检")
+        identity = _identity_facts(cli, runner=runner)
+        authorization = _authorization(identity["scopes"])
+        if (
+            identity["user_ready"]
+            and identity["bot_ready"]
+            and authorization.get("status") != "blocked"
+        ):
+            _say(out, "[完成] 飞书授权范围已齐全。")
+            return {"ok": True, "identity": identity, "authorization": authorization}
+
+
+def _step_lark(
+    home: Path,
+    *,
+    code: Path,
+    reader,
+    out,
+    runner,
+    install,
+    clock,
+    sleep,
+) -> dict:
+    _say(out, "步骤 3/7：Lark CLI 三级检测（复用已配置 / 采用已安装 / 私有安装）")
+    ensured = _ensure_lark_cli(
+        home, code=code, reader=reader, out=out, runner=runner, install=install
+    )
+    if not ensured.get("ok"):
+        return ensured
+    cli = ensured["path"]
+
+    identity = _identity_facts(cli, runner=runner)
+    login = {"device": False, "polls": 0, "attempts": 0}
+    if not identity["user_ready"]:
+        _say(out, "飞书身份未登录；开始设备码登录（在控制台内完成）。")
+        outcome = _device_login(cli=cli, reader=reader, out=out, runner=runner, clock=clock, sleep=sleep)
+        if not outcome.get("ok"):
+            return outcome
+        identity = outcome["identity"]
+        login = outcome["login"]
+    authorization = _authorization(identity["scopes"])
+    if authorization.get("status") == "blocked" or not identity["bot_ready"]:
+        _say(out, "飞书权限或 scope 不足；等待你在开发者后台补齐后复检。")
+        outcome = _permission_guidance(
+            cli=cli,
+            identity=identity,
+            authorization=authorization,
+            reader=reader,
+            out=out,
+            runner=runner,
+            clock=clock,
+        )
+        if not outcome.get("ok"):
+            return outcome
+        identity = outcome["identity"]
+        authorization = outcome["authorization"]
+
+    value = {
+        "cli": {"path": cli, "source": ensured["source"]},
+        "identity": {
+            "user_ready": identity["user_ready"],
+            "bot_ready": identity["bot_ready"],
+            "missing": identity["missing"],
+            "expired": identity["expired"],
+            "refresh_pending": identity["refresh_pending"],
+            "dpop_key_status": identity["dpop_key_status"],
+            "dpop_mode": identity["dpop_mode"],
+        },
+        "authorization": {
+            "status": authorization.get("status") or "",
+            "missing": list(authorization.get("missing") or []),
+            "required_count": len(authorization.get("required") or []),
+            "granted_count": len(authorization.get("granted") or []),
+            "note": authorization.get("note") or "",
+        },
+        "login": login,
+    }
+    note = "飞书 CLI 已复用，身份与授权范围已检查"
+    if ensured["source"] == "private-install":
+        note = "飞书 CLI 已私有安装到代码目录运行时区，身份与授权范围已检查"
+    elif ensured["source"] == "adopted":
+        note = "已采用并记录已有飞书 CLI，身份与授权范围已检查"
+    record_step(home, "lark", value, note=note)
+    _say(out, f"[完成] Lark CLI：{cli}")
+    return {"ok": True, "value": value}
+
+
 # --------------------------------------------------------------------- run
 def console_launcher_path(code: Path) -> Path:
     return Path(code) / "bin" / "frontier-console.cmd"
@@ -416,18 +749,32 @@ def run(
     isatty=None,
     pick_folder=None,
     write_probe=None,
+    lark_runner=None,
+    lark_install=None,
+    clock=None,
+    sleep=None,
 ) -> dict:
     """Run the initialization step machine from the first unfinished step.
 
     The order of guards is deliberate: a running service is refused before any
     prompt or write, then a non-interactive stdin is refused with the launcher
     hint.  Each completed step is persisted before the next question is asked.
+
+    The Lark step's subprocess calls go through ``lark_runner`` (default
+    ``subprocess.run``), its private installer through ``lark_install`` (default
+    :func:`hostrun.lark.install_cli`), and its 15-minute wait through ``clock``
+    and ``sleep``.  Every one of them is injectable so no test ever spawns a real
+    ``lark-cli``, npm or a system terminal.
     """
     home = Path(home)
     out = sys.stdout if out is None else out
     reader = reader or (lambda prompt="": input())
     pick = pick_folder or folder_dialog
     probe = write_probe or probe_write
+    lark_runner = lark_runner or subprocess.run
+    lark_install = lark_install or lark.install_cli
+    clock = clock or time.monotonic
+    sleep = sleep or time.sleep
     code = _code_dir(home, resolved)
     default_archive = _default_archive(home, resolved)
     state = read_state(home)
@@ -492,12 +839,23 @@ def run(
                     pick_folder=pick,
                     write_probe=probe,
                 )
-            else:
+            elif step_id == "agent":
                 archive = Path(
                     (state["steps"].get("archive") or {}).get("value", {}).get("path")
                     or default_archive
                 )
                 outcome = _step_agent(home, code=code, archive=archive, reader=reader, out=out)
+            else:
+                outcome = _step_lark(
+                    home,
+                    code=code,
+                    reader=reader,
+                    out=out,
+                    runner=lark_runner,
+                    install=lark_install,
+                    clock=clock,
+                    sleep=sleep,
+                )
             if not outcome.get("ok"):
                 return {
                     **base,
@@ -544,7 +902,7 @@ def run(
     reason = "not_yet" if not_yet else ""
     if next_step:
         text = (
-            "前两步已完成并保存；后续步骤尚未接入："
+            "已完成的步骤已保存；后续步骤尚未接入："
             + "、".join(f"{item['title']}（{item['ticket']}）" for item in not_yet)
             + "。再次运行 /frontier-init 会跳过已完成的步骤。"
         )
@@ -574,4 +932,11 @@ def _completed_line(step_id: str, value: dict) -> str:
         return f"{value.get('path') or '未知'}{suffix}"
     if step_id == "agent":
         return f"{value.get('dsh') or '未记录'}（profile {value.get('profile') or 'headless'}）"
+    if step_id == "lark":
+        cli = value.get("cli") or {}
+        identity = value.get("identity") or {}
+        sides = "、".join(
+            name for name in ("user", "bot") if identity.get(f"{name}_ready")
+        ) or "未就绪"
+        return f"{cli.get('path') or '未记录'}（身份：{sides}）"
     return "已完成"
