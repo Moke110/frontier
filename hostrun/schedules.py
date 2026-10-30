@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 from common import now, read_json, read_jsonl, write_json
+from hostrun import layout
 from hostrun.base import HostRunError, load_config, update_config
 from hostrun.install import default_timezone, record
 
@@ -66,12 +67,24 @@ def _quote(value: str) -> str:
     return shlex.quote(text)
 
 
+def _archive_for(code: str) -> str:
+    """The archive the code directory resolves to, for the generated command."""
+    if not code:
+        return ""
+    try:
+        return str(layout.resolve(code=code)["archive"])
+    except HostRunError:
+        return ""
+
+
 def _paths(home: Path, *, repo=None, python=None, skill=None) -> dict:
     config = load_config(Path(home), repo=Path(repo) if repo else None)
     paths = config.get("paths") or {}
+    code = str(repo or paths.get("repo") or "")
     return {
-        "repo": str(repo or paths.get("repo") or ""),
+        "repo": code,
         "home": str(Path(home).resolve()),
+        "archive": _archive_for(code),
         "python": str(python or paths.get("python") or ""),
         "lark_cli": str(paths.get("lark_cli") or ""),
         "skill": str(
@@ -99,7 +112,7 @@ def _path_problem(paths: dict) -> dict | None:
             not str(paths.get("python") or "").strip()
             or not python_path.is_absolute(),
             "interpreter_not_absolute",
-            "未记录解释器的绝对路径；先运行 install toolchain 并把数据根解释器"
+            "未记录解释器的绝对路径；先运行 install toolchain 并把解释器"
             "写入安装配置 paths.python，再重新生成任务",
         ),
         (
@@ -120,7 +133,7 @@ def _path_problem(paths: dict) -> dict | None:
             or not home_path.is_absolute()
             or not home_path.is_dir(),
             "home_missing",
-            "数据根未记录或不可用；先完成 install workspace 创建数据根",
+            "运行时区未记录或不可用；先完成 install workspace 创建运行时区",
         ),
         (
             not str(paths.get("skill") or "").strip()
@@ -160,8 +173,10 @@ def plan(
         _quote(paths["python"]),
         "-m",
         "hostrun.cli",
-        "--home",
-        _quote(paths["home"]),
+        "--code",
+        _quote(paths["repo"]),
+        "--archive",
+        _quote(paths["archive"]),
         "run",
         "--repo",
         _quote(paths["repo"]),
@@ -205,7 +220,7 @@ def plan(
         "host_instructions": [
             "只创建上面两个任务；不要另建维护任务、系统任务或另一个常驻进程",
             "每个任务唤醒时先加载 load_skill 指向的 frontier-run，再以 cwd 为工作目录执行 command",
-            "命令已包含解释器、仓库与数据根的绝对路径；含空格的参数已按平台引用",
+            "命令已包含解释器、代码目录与资料目录的绝对路径；含空格的参数已按平台引用",
             "只在用户确认时区、频率与启用状态后创建；创建成功不等于真实触发成功",
             "每日巡检失败不推送内容：它只检查监听进程在线并记录 listener_health",
         ],

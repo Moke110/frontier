@@ -1113,7 +1113,7 @@ def test_derived_brief_names_the_repo_home_interpreter_and_skill():
     assert "D:/frontier" in text
     assert "D:/frontier-archive" in text
     assert "D:/frontier-archive/.venv/Scripts/python.exe" in text
-    assert "KL_HOME" in text
+    assert "FRONTIER_RUNTIME" in text
     assert text.rstrip().endswith("ORIGINAL BRIEF")
 
 
@@ -1563,7 +1563,8 @@ def test_derived_spawn_uses_the_repo_cwd_and_the_kl_home_environment(tmp_path, m
     assert str(home) in prompt
     assert str(sys.executable) in prompt
     assert kwargs["cwd"] == str(home)  # _config records repo == home
-    assert kwargs["env"]["KL_HOME"] == str(home)
+    assert kwargs["env"]["FRONTIER_RUNTIME"] == str(home)
+    assert kwargs["env"]["FRONTIER_CODE"] == str(home.parent)
     assert kwargs["env"]["FRONTIER_TEST_MARKER"] == "kept"  # the rest of the env is kept
 
 

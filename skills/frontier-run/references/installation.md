@@ -46,7 +46,7 @@ python -m hostrun.cli --code <code> install skill --root <workspace> --target <h
 - `install toolchain` 先在**工作区外**解析 `uv`（记录过的或系统 PATH 中的），都没有才把 `uv` 装进代码目录内的运行目录并由安装记录保存绝对路径；由它在代码目录建私有环境 `<code>/.venv` 并安装 `requirements.txt`（含 PDF 初始化需要的 PyMuPDF），安装后跑一次 `yaml`/`fitz` 导入探针。解释器的绝对路径同时写入入口指针与安装配置；重跑复用现有环境，不重建。
 - 解释器缺失或损坏时 `dependencies` 为 `blocked` 并给出可执行的修复命令（`install toolchain --root <workspace> --clear`）；按命令加 `--clear` 重跑才重建环境，不会静默重建。
 - `install skill` 写入的是**入口指针**，不是仓库副本；指针包含绝对代码目录、资料目录、uv、私有环境与解释器路径，技能目录移动后仍能定位代码。步骤可重复执行，已完成的组件不重做。
-- **既有安装迁移**：对旧流程安装（数据根承载环境与运行状态）执行一次迁移，把环境、配置、运行状态、日志与资料登记移入代码目录的运行目录，原文与推送件留在资料目录，并读回确认：
+- **既有安装迁移**：对旧流程安装（运行状态与私有环境都放在一个目录）执行一次迁移，把环境、配置、运行状态、日志与资料登记移入代码目录的运行时区，原文与推送件留在资料目录，并读回确认：
 
 ```bash
 python -m hostrun.cli install migrate --root <workspace> --code <code> --archive <archive>

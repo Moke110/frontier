@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 from common import emit, paper_id, read_json, write_jsonl
+from hostrun import layout
+from hostrun.base import HostRunError
 from retriever.adapters import RetrieverError, fetch
 
 
@@ -70,7 +72,8 @@ def run(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="retriever", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument("--code", help="code directory (default: this checkout)")
+    parser.add_argument("--archive", help="archive directory (default: <code>/../frontier-archive)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("fetch")
     p.add_argument("--plan", required=True)
@@ -83,7 +86,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    try:
+        args = build_parser().parse_args(layout.cli_argv(argv))
+        resolved = layout.resolve_for_cli(args)
+    except HostRunError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    layout.export(resolved)
     plan = read_json(Path(args.plan))
     if not plan:
         print(json.dumps({"ok": False, "error": f"no plan at {args.plan}"}), file=sys.stderr)

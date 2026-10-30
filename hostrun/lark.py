@@ -656,7 +656,7 @@ def status(
             runner=runner,
         )
     else:
-        resources = {"status": "untested", "note": "未提供数据根，跳过资源预检"}
+        resources = {"status": "untested", "note": "未提供运行时区，跳过资源预检"}
     ok = (
         identity_result["status"] == "ok"
         and authz["status"] == "ok"

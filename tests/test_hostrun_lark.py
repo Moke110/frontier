@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from hostrun import cli, lark, workspace
+from conftest import cli_locations
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -385,8 +386,7 @@ def test_cli_status_accepts_explicit_tokens(tmp_path, monkeypatch):
 
     code = cli.main(
         [
-            "--home",
-            str(home),
+            *cli_locations(home),
             "lark",
             "status",
             "--root",
@@ -513,7 +513,7 @@ def test_discover_cli_persists_the_absolute_path(tmp_path, monkeypatch, capsys):
     binary = _cli_file(tmp_path / "tools")
 
     code = cli.main(
-        ["--home", str(home), "lark", "discover", "--root", str(root), "--cli", str(binary)]
+        [*cli_locations(home), "lark", "discover", "--root", str(root), "--cli", str(binary)]
     )
 
     assert code == 0
@@ -531,7 +531,7 @@ def test_discover_uses_the_recorded_path_when_cli_is_omitted(tmp_path, monkeypat
 
     update_config(home, paths={"lark_cli": str(binary)})
 
-    code = cli.main(["--home", str(home), "lark", "discover", "--root", str(root)])
+    code = cli.main([*cli_locations(home), "lark", "discover", "--root", str(root)])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -546,7 +546,7 @@ def test_cli_discover_blocks_a_stale_recorded_path(tmp_path, monkeypatch, capsys
 
     update_config(home, paths={"lark_cli": str(stale)})
 
-    code = cli.main(["--home", str(home), "lark", "discover", "--root", str(root)])
+    code = cli.main([*cli_locations(home), "lark", "discover", "--root", str(root)])
 
     assert code == 1
     payload = json.loads(capsys.readouterr().out)

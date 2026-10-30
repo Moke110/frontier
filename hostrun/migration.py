@@ -1,4 +1,4 @@
-"""One-time migration from the legacy ``--home`` tree to code + archive.
+"""One-time migration from the legacy single data root to code + archive.
 
 ADR 0009 keeps run state in the code directory and only originals/pushes in the
 archive directory.  An existing installation still has one data root that mixes
@@ -329,7 +329,7 @@ def migrate(
         legacy = _infer_legacy_home(code_path)
         if legacy is None:
             raise HostRunError(
-                "找不到旧安装位置；请用 --from 指定原 --home 数据根（例如 <workspace>/frontier-archive）"
+                "找不到旧安装位置；请用 --from 指定原安装目录（例如 <workspace>/frontier-archive）"
             )
     else:
         legacy = Path(legacy_home).expanduser().resolve()

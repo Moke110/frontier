@@ -26,7 +26,7 @@
 ## 2. 文件与所有权
 
 ```
-$KL_HOME/
+<运行时区>/
 ├── queue/
 │   ├── state.json          # 队列唯一真相（queue 模块写）
 │   ├── events.jsonl        # 只追加：enqueue/activate/send/answer/drop/fail/retry/request

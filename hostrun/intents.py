@@ -40,7 +40,7 @@ RUNS_REL = Path("hostrun") / "runs.jsonl"
 PIPELINE_BRIEF = """frontier 有界运行（{intent}）：请在**当前会话**中完成一篇论文推送，只处理一篇。
 
 硬约束：
-- 工作目录 {repo}；数据根 {home}；
+- 工作目录 {repo}；运行时区 {home}（沿用环境变量 FRONTIER_CODE/FRONTIER_ARCHIVE/FRONTIER_RUNTIME，模块命令不要再传位置参数）；
 - 只走「检索 → 排序 → 写作 → 渲染 → 推送」这一条正向链路；不另起 OpenCode 或脱离本宿主的 agent；
 - 评分题与更新题由统一队列发送，不要手写审批卡；不要运行 frontier record / editor fit；
 - 论文必须来自本次检索候选，不得编造；没有新候选就输出「今天没有新的」并结束；
@@ -58,7 +58,7 @@ PIPELINE_BRIEF = """frontier 有界运行（{intent}）：请在**当前会话**
 9. python -m writer.cli render --push ... --out {tmp}/<push_id>.html
 10. python -m archive.cli add-push --file ...
 11. python -m library.cli ensure-source --paper <push 里的 paper_id>
-12. python -m publisher.cli --home "{home}" send --push ... --html ... --to {owner}
+12. python -m publisher.cli send --push ... --html ... --to {owner}
 13. python -m hostrun.cli feedback sync（把新题持久化到飞书）
 {extra}"""
 

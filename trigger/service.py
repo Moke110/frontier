@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from common import append_jsonl, file_lock, now, read_json, read_jsonl, temp_dir, today
+from hostrun import layout
 from publisher import feishu
 from question_queue.store import LEASE_MINUTES, QueueStore
 from trigger.keywords import parse, resolve_checkpoint
@@ -24,7 +25,7 @@ from trigger.keywords import parse, resolve_checkpoint
 PROMPT = """使用 frontier-run skill（{repo}/skills/frontier-run/SKILL.md）执行一次检索推送，只处理一篇论文。
 
 硬约束：
-- 工作目录 {repo}；数据根 KL_HOME={home}；
+- 工作目录 {repo}；运行时区 FRONTIER_RUNTIME={home}（模块命令沿用该环境变量，不要再传位置参数）；
 - 只允许执行「检索 → 排序 → 写作 → 渲染 → 推送」这一条正向链路；
 - 评分题与更新题由统一队列发送，不要手写审批卡；不要运行 frontier record / editor fit；
 - 收件人固定为 {owner}，推送前不用再次询问；
@@ -53,7 +54,7 @@ CHECKPOINT_LINE = "- 本次只处理知识卡片：{checkpoint}"
 REVIEW_PROMPT = """使用 frontier-run skill（{repo}/skills/frontier-run/SKILL.md），按其 references/workflow.md 处理一条命题综述更新题：{item_id}。
 
 硬约束：
-- 工作目录 {repo}；数据根 KL_HOME={home}；
+- 工作目录 {repo}；运行时区 FRONTIER_RUNTIME={home}（模块命令沿用该环境变量，不要再传位置参数）；
 - 只处理这一条综述题；不检索、不排序、不写 archive；
 - review 固定四节（结论 / 支持证据 / 反证与边界 / 待验证），≤2000 字，只基于 task.evidence；
 - body_html 用 <h2>/<p>/<ul>/<blockquote>；相对上一版的改动用 <span class="diff-del">/ <span class="diff-add">；
@@ -183,7 +184,7 @@ def run_agent(config: Config, prompt: str) -> subprocess.CompletedProcess:
     if config.dry_run:
         return subprocess.CompletedProcess([], 0, "dry-run 已推送", "")
     env = os.environ.copy()
-    env["KL_HOME"] = str(config.home)
+    env.update(layout.handoff(config.home))
     env["FRONTIER_OWNER_ID"] = config.owner
     session_kwargs: dict = (
         {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}

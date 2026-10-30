@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -70,10 +69,6 @@ def _add_resource_token_args(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hostrun", description=__doc__)
     parser.add_argument(
-        "--home",
-        help="legacy data root; maps to the code runtime area and <home>/archive",
-    )
-    parser.add_argument(
         "--code",
         help="code directory (default: this checkout); runtime state lives under it",
     )
@@ -103,8 +98,8 @@ def build_parser() -> argparse.ArgumentParser:
     isub.add_parser("status")
     r = isub.add_parser("report")
     r.add_argument("--out")
-    mig = isub.add_parser("migrate", help="move a legacy --home installation into code + archive")
-    mig.add_argument("--from", dest="legacy_home", help="old --home data root (default: recorded home)")
+    mig = isub.add_parser("migrate", help="move a legacy data root into code + archive")
+    mig.add_argument("--from", dest="legacy_home", help="old data root to migrate (default: recorded)")
     mig.add_argument("--uv", dest="uv_path", help="uv executable used to rebuild the private environment")
     mig.add_argument("--no-environment", action="store_true", help="skip the private environment rebuild")
     rec = isub.add_parser("record")
@@ -395,7 +390,7 @@ def _normalize(argv: list[str]) -> list[str]:
     while index < len(argv):
         arg = argv[index]
         matched = False
-        for flag in ("--home", "--code", "--archive"):
+        for flag in ("--code", "--archive"):
             if arg == flag and index + 1 < len(argv):
                 locations[flag] = argv[index + 1]
                 index += 2
@@ -415,7 +410,7 @@ def _normalize(argv: list[str]) -> list[str]:
         rest.append(arg)
         index += 1
     prefix: list[str] = []
-    for flag in ("--home", "--code", "--archive"):
+    for flag in ("--code", "--archive"):
         if flag in locations:
             prefix += [flag, locations[flag]]
     if offline:
@@ -424,25 +419,23 @@ def _normalize(argv: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(_normalize(list(sys.argv[1:] if argv is None else argv)))
     try:
-        resolved = layout_mod.resolve(
-            home=args.home, code=args.code, archive=args.archive
-        )
-        # Establishing the new layout is idempotent and writes no file; the
-        # legacy --home tree keeps creating only what a command needs.
+        raw = layout_mod.cli_argv(argv)
+        args = build_parser().parse_args(_normalize(raw))
+        resolved = layout_mod.resolve_for_cli(args)
+        # Establishing the new layout is idempotent and writes no file.
         layout_mod.ensure(resolved)
         # Remember the two locations so a custom --archive survives later runs
-        # that pass no location flag; the legacy --home mode records nothing.
+        # that pass no location flag.
         layout_mod.remember(resolved)
     except HostRunError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
     root = Path(resolved["runtime"])
     # In-process helpers (library, knowledge) resolve configuration and the
-    # recorded lark-cli path from the runtime area; exporting it keeps that
-    # lookup on the same location the command was given.
-    os.environ["KL_HOME"] = str(root)
+    # recorded lark-cli path from the runtime area; child module commands read
+    # the exported handoff so they resolve the same directories.
+    layout_mod.export(resolved)
     offline = bool(args.offline)
     try:
         code, payload = _dispatch(args, root, offline, resolved)
@@ -517,10 +510,6 @@ def _install(args, root: Path, resolved: dict | None = None) -> tuple[int, dict]
         from hostrun import migration as migration_mod
 
         layout = resolved or layout_mod.resolve()
-        if layout.get("mode") != "code":
-            raise HostRunError(
-                "install migrate 只适用于新布局；请用 --code 与 --archive 指定代码目录和资料目录"
-            )
         environment = None
         if args.no_environment:
             environment = {
@@ -557,7 +546,7 @@ def _install(args, root: Path, resolved: dict | None = None) -> tuple[int, dict]
                     data_root,
                     "workspace",
                     "ok" if result["ok"] else "blocked",
-                    note="代码与数据根已就绪" if result["ok"] else result.get("blocked", ""),
+                    note="代码目录与资料目录已就绪" if result["ok"] else result.get("blocked", ""),
                     evidence={
                         "root": result["root"],
                         "repo": result["repo"],
@@ -591,7 +580,7 @@ def _install(args, root: Path, resolved: dict | None = None) -> tuple[int, dict]
                         "home": result.get("home"),
                         "action": result.get("action"),
                         "layout_valid": False,
-                        "writes": "仅记录本拒绝状态，未创建数据根或代码副本",
+                        "writes": "仅记录本拒绝状态，未创建目录或代码副本",
                     },
                     recheck=True,
                 )
@@ -615,7 +604,7 @@ def _install(args, root: Path, resolved: dict | None = None) -> tuple[int, dict]
             "dependencies",
             "ok" if result["ok"] else "blocked",
             note=(
-                "数据根私有 uv 与解释器可用，导入探针通过"
+                "私有 uv 与解释器可用，导入探针通过"
                 if result["ok"]
                 else (result.get("note") or "工具链未就绪")
             ),

@@ -10,7 +10,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from common import home as data_home
+from common import runtime_root as runtime_area
 from common import read_json
 
 BIN = "lark-cli"
@@ -102,12 +102,12 @@ def classify_exit(returncode: int | None, *, detail: str = "") -> dict:
 def _recorded_executable() -> str:
     """The absolute CLI path recorded by ``hostrun lark discover`` (ADR 0007).
 
-    The data root holds ``install/config.json`` with ``paths.lark_cli``; nothing
+    The runtime area holds ``install/config.json`` with ``paths.lark_cli``; nothing
     here reads or copies a credential.
     """
     try:
-        root = data_home()
-    except Exception:  # noqa: BLE001 - no data root means no recorded path
+        root = runtime_area()
+    except Exception:  # noqa: BLE001 - no runtime area means no recorded path
         return ""
     config = read_json(Path(root) / "install" / "config.json", {}) or {}
     recorded = str((config.get("paths") or {}).get("lark_cli") or "").strip()

@@ -1,6 +1,6 @@
 """PDF ingestion: manifest -> archive raw metadata + text + page anchors.
 
-Parsing lives here; only ``archive`` writes ``$KL_HOME/archive``.
+Parsing lives here; only ``archive`` writes ``<运行时区>/archive``.
 """
 
 from pdf_ingest.ingest import (  # noqa: F401

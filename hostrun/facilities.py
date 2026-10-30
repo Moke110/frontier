@@ -128,7 +128,7 @@ def plan(home: Path, overrides: dict | None = None, *, admin=None) -> dict:
         "defaults": default_names(),
         "confirmed": False,
         "needs_user_confirmation": True,
-        "note": "确认数据根、Base、各表与两个目录的名称后再创建；确认前不会写入飞书",
+        "note": "确认 Base、各表与两个目录的名称后再创建；确认前不会写入飞书",
     }
     warning = _same_name_warning(admin, names)
     if warning:

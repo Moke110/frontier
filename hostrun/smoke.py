@@ -29,7 +29,7 @@ from common import now, read_json, write_json
 from frontier.model import temporary_card_id
 from hostrun import facilities as facilities_mod
 from hostrun import install as install_mod
-from hostrun import lark
+from hostrun import lark, layout
 from hostrun.base import (
     HostRunError,
     base_client,
@@ -443,8 +443,13 @@ def brief(home: Path) -> dict:
         raise HostRunError("先运行 smoke start")
     card_id = (state.get("card") or {}).get("id")
     test_id = state.get("test_id")
+    locations = layout.handoff(home)
+    flags = (
+        f'--code "{locations[layout.ENV_CODE]}" '
+        f'--archive "{locations[layout.ENV_ARCHIVE]}"'
+    )
     command = (
-        f'python -m hostrun.cli --home "{home}" smoke record --step {{step}} '
+        f"python -m hostrun.cli {flags} smoke record --step {{step}} "
         f"--evidence '{{...}}'"
     )
     owner = str(state.get("owner") or "")
@@ -452,42 +457,42 @@ def brief(home: Path) -> dict:
         raise HostRunError("测试记录缺少已核实的收件人；重新运行 smoke start --owner")
     steps = [
         "python -m frontier.cli validate --include-temporary（临时卡片也校验）",
-        f'python -m hostrun.cli --home "{home}" smoke plan --out "{home / PLAN_REL}"',
+        f'python -m hostrun.cli {flags} smoke plan --out "{home / PLAN_REL}"',
         f'python -m retriever.cli fetch --plan "{home / PLAN_REL}" --out '
         f'"<临时目录>/{test_id}-candidates.jsonl" --source live',
-        f'python -m hostrun.cli --home "{home}" smoke record --step retrieved '
+        f"python -m hostrun.cli {flags} smoke record --step retrieved "
         f'--plan "{home / PLAN_REL}"'
         "（候选数从该计划/候选文件读取；可加 --candidates 但必须一致）",
         "python -m archive.cli add-paper --file <候选 json>（逐条，自动去重）",
         f'python -m editor.cli task --candidates <候选> --date <today> --out "<临时目录>/{test_id}-editor.json"',
         "你亲自写 selection.json，并 python -m editor.cli check ...",
-        f'python -m hostrun.cli --home "{home}" smoke record --step written '
+        f"python -m hostrun.cli {flags} smoke record --step written "
         "--paper <选中 paper_id>（可重复）",
-        f'python -m writer.cli task ... --card {card_id} ...',
+        f"python -m writer.cli task ... --card {card_id} ...",
         "python -m writer.cli figures ...；你亲自写七段 HTML 与 assets",
         "python -m writer.cli check ...",
         f'python -m writer.cli render --push <push> --out "<临时目录>/{test_id}.html"',
         "python -m archive.cli add-push --file <push json>（先把渲染结果登记进推送库）",
-        f'python -m hostrun.cli --home "{home}" smoke record --step rendered '
+        f"python -m hostrun.cli {flags} smoke record --step rendered "
         "--push <push_id> --html <渲染文件路径>"
         "（该推送记录必须已存在、push_id 一致且属于本次选中的论文；"
         "文件须含七段段落与原文图/生成图图注）",
         "python -m library.cli ensure-source --paper <paper_id>",
-        f'python -m publisher.cli --home "{home}" send --push <push> --html <html> --to {owner}'
+        f"python -m publisher.cli {flags} send --push <push> --html <html> --to {owner}"
         "（若上次发送结果不明，先核对飞书并用 publisher.cli resolve-send 处理，禁止重发）",
         "python -m hostrun.cli feedback sync",
-        f'python -m hostrun.cli --home "{home}" smoke record --step sent '
+        f"python -m hostrun.cli {flags} smoke record --step sent "
         "--push <push_id> --message <file_message_id> --question <item_id> "
         "--source <source_id> --file <source_file_token> --file <push_file_token>",
         "请用户在飞书卡片上本人评分（不要代填）；用户提交后可运行 feedback sync 同步",
-        f'python -m hostrun.cli --home "{home}" smoke record --step rated --item <id> --verdict <verdict>',
+        f"python -m hostrun.cli {flags} smoke record --step rated --item <id> --verdict <verdict>",
         "请用户在飞书卡片上本人明确采纳（agree_all/adopt）；不得代填",
-        f'python -m hostrun.cli --home "{home}" smoke record --step decided --item <id> --decision <decision>',
+        f"python -m hostrun.cli {flags} smoke record --step decided --item <id> --decision <decision>",
         "python -m hostrun.cli feedback process",
-        f'python -m hostrun.cli --home "{home}" smoke record --step applied '
+        f"python -m hostrun.cli {flags} smoke record --step applied "
         "--target <被采纳目标 id> --applied-field <被采纳字段>（每字段重复一次；"
         "省略时按临时卡片、至少核对一个字段）",
-        f'python -m hostrun.cli --home "{home}" smoke verify --target-key cards '
+        f"python -m hostrun.cli {flags} smoke verify --target-key cards "
         f"--target-id {card_id} --field <字段>=<值>（每个采纳字段重复一次）",
     ]
     return {

@@ -490,7 +490,10 @@ def test_empty_queue_spawns_pending_runner(kl_home, monkeypatch):
     cmd = calls[0][0]
     assert "trigger.cli" in cmd
     assert cmd[-1] == "run-request"
-    assert "--home" in cmd
+    assert "--home" not in cmd
+    # The spawned child resolves the same locations through the environment.
+    assert calls[0][1]["env"]["FRONTIER_RUNTIME"] == str(kl_home)
+    assert calls[0][1]["env"]["FRONTIER_CODE"] == str(kl_home.parent)
 
 
 def test_pending_request_coalesces_and_waits_for_empty_queue(kl_home):

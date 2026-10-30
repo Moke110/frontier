@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common import ensure_dir, file_lock, now, read_json, write_json
-from hostrun import agent_run, executor, intents
+from hostrun import agent_run, executor, intents, layout
 from hostrun.base import HostRunError, listener_dir, load_config, require_dsh
 from publisher import feishu
 
@@ -616,7 +616,7 @@ def derived_argv(dsh: str, brief: str, extra_args=()) -> list[str]:
 def derived_brief(home: Path, brief: str, *, repo: str, python: str = "") -> str:
     """Prefix a pipeline brief with ADR 0008 §5's environment/skill contract.
 
-    A derived run must use the same repository, data root, interpreter and
+    A derived run must use the same repository, runtime area, interpreter and
     ``frontier-run`` skill as the scheduled task.  The live
     ``dsh --profile headless`` prompt/skill-loading behaviour is **untested**
     against a real host; tests inject the spawner and one real derived run must
@@ -624,9 +624,9 @@ def derived_brief(home: Path, brief: str, *, repo: str, python: str = "") -> str
     """
     lines = [
         "frontier 派生运行（ADR 0008 §5）：必须加载 frontier-run 技能，"
-        "按其正向链路执行，只处理一篇；数据根使用环境变量 KL_HOME。",
+        "按其正向链路执行，只处理一篇；运行时区使用环境变量 FRONTIER_RUNTIME。",
         f"- 仓库：{repo}",
-        f"- 数据根：{home}（KL_HOME）",
+        f"- 运行时区：{home}（FRONTIER_RUNTIME）",
     ]
     if python:
         lines.append(f"- 记录的解释器：{python}")
@@ -837,7 +837,7 @@ def run_derived(
                 derived_brief(home, str(result["brief"]), repo=repo_dir, python=interpreter),
                 listener_config.get("dsh_args") or (),
             )
-            env = {**os.environ, "KL_HOME": str(home)}
+            env = {**os.environ, **layout.handoff(home)}
             # The prepare step above may itself have consumed minutes; renew the
             # lease before the child starts, then on every wait tick so the
             # 20-minute window never expires mid-run (#73 follow-up).

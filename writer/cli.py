@@ -14,7 +14,9 @@ import json
 import sys
 from pathlib import Path
 
-from common import emit, home, now, read_json, today, write_json
+from common import emit, now, read_json, today, write_json
+from hostrun import layout
+from hostrun.base import HostRunError
 from writer.figures import fetch_for_paper
 from writer.model import write
 from writer import review as review_task
@@ -24,7 +26,8 @@ from writer.tasks import build_task, validate as validate_outbox
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="writer", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument("--code", help="code directory (default: this checkout)")
+    parser.add_argument("--archive", help="archive directory (default: <code>/../frontier-archive)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("write", help="heuristic writer (fallback, no agent)")
@@ -73,8 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    root = home(args.home)
+    try:
+        args = build_parser().parse_args(layout.cli_argv(argv))
+        resolved = layout.resolve_for_cli(args)
+    except HostRunError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    layout.export(resolved)
+    root = Path(resolved["runtime"])
     try:
         if args.cmd == "write":
             selection = read_json(Path(args.selection))

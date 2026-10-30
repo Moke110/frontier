@@ -240,7 +240,7 @@ python -m question_queue.cli status
 | 提出更新 | agent（writer） | 写进 push 的 `proposals`，状态 `draft` |
 | 让用户同意 | publisher | 评分后发审批卡，落 `decisions.jsonl` |
 
-agent **永远不直接编辑** `$KL_HOME/archive/**` 下的 JSON；所有知识库写入都必须经过 archive CLI，保证可追溯、可回滚。
+agent **永远不直接编辑** `<运行时区>/archive/**` 下的 JSON；所有知识库写入都必须经过 archive CLI，保证可追溯、可回滚。
 
 ## 4. 为什么任务文件里不放提示词以外的状态
 

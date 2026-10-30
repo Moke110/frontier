@@ -672,7 +672,9 @@ def test_plan_embeds_the_recorded_absolute_interpreter_in_both_commands(tmp_path
     for task in spec["tasks"]:
         command = task["command"]
         assert command.startswith(_quoted(interpreter))
-        assert str(home) in command
+        assert f"--code {_quoted(repo)}" in command
+        assert "--archive" in command
+        assert "--home" not in command
         assert str(repo) in command
         assert f"--intent {task['intent']}" in command
         assert task["load_skill"] == str(skill)
