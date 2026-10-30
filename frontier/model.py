@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from common import now, read_json, read_yaml, write_yaml
+from archive.store import is_under_review
 
 VERDICT_VALUE = {"irrelevant": 0.0, "ok": 0.5, "great": 1.0}
 SOURCES = ("arxiv", "europepmc")
@@ -126,6 +127,9 @@ def plan(
     queries = []
     for card in cards:
         card_id = card["id"]
+        # Under review cards are kept and counted, but never drive retrieval.
+        if is_under_review(card):
+            continue
         st = state["checkpoints"].get(card_id, {})
         if st.get("enabled") is False:
             continue
