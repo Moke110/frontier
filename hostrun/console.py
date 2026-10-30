@@ -89,7 +89,7 @@ COMMANDS = {
     },
     "/frontier-update-kb": {
         "summary": "读取资料并逐条审阅知识卡片",
-        "implemented": False,
+        "implemented": True,
     },
     "/exit": {
         "summary": "退出控制台（关闭窗口同样停止服务）",
@@ -450,6 +450,7 @@ def dispatch(
     logs=None,
     service=None,
     init=None,
+    update_kb=None,
 ) -> dict:
     """Route one prompt line to one bounded action and return its text.
 
@@ -459,8 +460,10 @@ def dispatch(
     for the same runtime area is used.  ``/frontier-init`` delegates to the
     initialization step machine (:mod:`hostrun.console_init`); ``init`` is an
     injectable zero-argument runner so the console can hand it the prompt's
-    reader/out/TTY seams.  A registered-but-not-yet-implemented command reports
-    that explicitly.
+    reader/out/TTY seams.  ``/frontier-update-kb`` delegates to the segmented
+    read (:mod:`hostrun.update_kb`), which pauses and restores the service around
+    the read; ``update_kb`` is an injectable runner with the same call shape.
+    A registered-but-not-yet-implemented command reports that explicitly.
     """
     parsed = parse_command(line)
     if not parsed["ok"]:
@@ -568,6 +571,33 @@ def dispatch(
             "command": name,
             "text": str(outcome.get("text") or ""),
             "init": outcome,
+        }
+    if name == "/frontier-update-kb":
+        from hostrun import update_kb as update_kb_mod
+
+        source_arg = " ".join(parsed["args"]).strip().strip('"')
+        runner = update_kb if update_kb is not None else update_kb_mod.run
+        try:
+            outcome = runner(
+                home,
+                source_dir=source_arg or None,
+                service=service,
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed read must not kill the console
+            return {
+                "ok": False,
+                "action": "update_kb",
+                "reason": "update_kb_failed",
+                "command": name,
+                "text": f"知识库读取失败：{type(exc).__name__}: {exc}",
+            }
+        return {
+            "ok": bool(outcome.get("ok")),
+            "action": "update_kb",
+            "reason": outcome.get("reason") or "",
+            "command": name,
+            "text": outcome.get("text") or "知识库更新已结束。",
+            "update_kb": outcome,
         }
     if name == "/exit":
         return {
