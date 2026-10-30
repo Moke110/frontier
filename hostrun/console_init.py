@@ -102,6 +102,9 @@ LARK_REQUIRED_SCOPES = tuple(
 TRANSPORT_WAIT_SECONDS = 5 * 60
 TRANSPORT_ACTION = "transport_test"
 RECIPIENT_REL = Path("install") / "recipient.json"
+#: The transport test HTML is written to the code directory's runtime area so the
+#: owner can open the exact file that is sent (never only an HTML text message).
+TRANSPORT_HTML_REL = Path("install") / "transport-test.html"
 TEST_HTML = (
     "<html><body>"
     "<h1>frontier 通道测试</h1>"
@@ -804,12 +807,25 @@ def transport_test_card() -> dict:
     }
 
 
-def send_transport_test(*, owner: str, html: str, card: dict, identity: str = "bot") -> dict:
-    """Send the HTML text and the single-button card through the recorded CLI."""
+def send_transport_test(
+    *,
+    owner: str,
+    html: str,
+    card: dict,
+    html_file: str | None = None,
+    identity: str = "bot",
+) -> dict:
+    """Send the test HTML file (or text fallback) and the single-button card."""
     from publisher import feishu
 
+    file_path = Path(html_file) if html_file else None
     try:
-        text_message = feishu.send_text(owner, html, identity=identity)
+        if file_path is not None:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(html, encoding="utf-8")
+            html_message = feishu.send_file(owner, str(file_path), identity=identity)
+        else:  # durable fallback for hosts that cannot send files
+            html_message = feishu.send_text(owner, html, identity=identity)
         card_message = feishu.send_card(owner, card, identity=identity)
     except Exception as exc:  # noqa: BLE001 - a send failure is a retryable result
         return {
@@ -826,7 +842,8 @@ def send_transport_test(*, owner: str, html: str, card: dict, identity: str = "b
         }
     return {
         "ok": True,
-        "html_message_id": str(text_message.get("message_id") or ""),
+        "html_message_id": str(html_message.get("message_id") or ""),
+        "html_file": str(file_path) if file_path is not None else "",
         "card_message_id": card_message_id,
     }
 
@@ -929,8 +946,22 @@ def _step_transport(
                 )
             continue
         owner = str(identity["open_id"])
-        _say(out, "正在发送测试 HTML 与单按钮测试卡片…")
-        sent = send(owner=owner, html=TEST_HTML, card=transport_test_card())
+        html_path = Path(home) / TRANSPORT_HTML_REL
+        try:
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            html_path.write_text(TEST_HTML, encoding="utf-8")
+        except OSError as exc:
+            return _transport_failure(
+                "transport_html_write_failed",
+                f"无法把测试 HTML 写入代码目录（{html_path}）：{exc}",
+            )
+        _say(out, f"正在发送测试 HTML 文件（{html_path}）与单按钮测试卡片…")
+        sent = send(
+            owner=owner,
+            html=TEST_HTML,
+            card=transport_test_card(),
+            html_file=str(html_path),
+        )
         if not sent.get("ok"):
             detail = sent.get("error") or sent.get("reason") or "未知原因"
             _say(out, f"测试消息发送失败：{detail}")
@@ -1000,6 +1031,7 @@ def _step_transport(
                     "source": "init.transport",
                 },
                 "html_message_id": str(sent.get("html_message_id") or ""),
+                "html_file": str(sent.get("html_file") or html_path),
                 "card_message_id": card_message_id,
             }
             record_step(home, "transport", value, note="飞书通道测试通过，owner 已核实")

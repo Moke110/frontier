@@ -23,7 +23,14 @@ class AdminError(RuntimeError):
 
 def _run(argv: list[str], *, runner=subprocess.run) -> dict:
     try:
-        proc = runner(argv, capture_output=True, text=True, timeout=300)
+        proc = runner(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+        )
     except OSError as exc:
         raise AdminError(f"lark-cli 无法执行：{exc}") from exc
     text = (proc.stdout or "").strip()

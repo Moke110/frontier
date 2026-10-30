@@ -71,7 +71,14 @@ SCOPE_KEYS = (
 # --------------------------------------------------------------------- helpers
 def _run(argv: list[str], *, runner=subprocess.run, timeout: int = 120) -> dict:
     try:
-        proc = runner(argv, capture_output=True, text=True, timeout=timeout)
+        proc = runner(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     return {

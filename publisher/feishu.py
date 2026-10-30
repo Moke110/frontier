@@ -163,6 +163,8 @@ def _run(
         input=stdin,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         cwd=cwd,
     )
@@ -310,6 +312,8 @@ def get_message(
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
     text = (proc.stdout or "").strip()

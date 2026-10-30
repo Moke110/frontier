@@ -103,8 +103,10 @@ class Sender:
         self.fail = fail
         self.calls: list[dict] = []
 
-    def __call__(self, *, owner, html, card):
-        self.calls.append({"owner": owner, "html": html, "card": card})
+    def __call__(self, *, owner, html, card, html_file=None):
+        self.calls.append(
+            {"owner": owner, "html": html, "card": card, "html_file": html_file}
+        )
         if self.fail:
             return {"ok": False, "reason": "transport_send_failed", "error": "fake failure"}
         return {
@@ -215,6 +217,12 @@ def test_transport_sends_one_html_and_one_button_card_and_records_the_owner(tmp_
     call = sender.calls[0]
     assert call["owner"] == "ou_user"
     assert "<html" in call["html"].lower()
+    # The test HTML is written to the code directory runtime area and the file
+    # (not the HTML text) is what gets sent (#86 acceptance fix).
+    html_file = Path(call["html_file"])
+    assert html_file == home / "install" / "transport-test.html"
+    assert html_file.is_file()
+    assert "<html" in html_file.read_text(encoding="utf-8").lower()
     card = call["card"]
     buttons = [
         element
@@ -492,13 +500,50 @@ def test_event_surface_wait_card_times_out_without_a_callback(tmp_path):
     assert result == {"ok": False, "reason": "timeout", "events": []}
 
 
-def test_serve_binds_the_transport_wait_to_the_single_event_surface(tmp_path, monkeypatch):
+def test_default_transport_sender_writes_the_html_file_and_sends_it_as_a_file(
+    tmp_path, monkeypatch
+):
+    """The transport test must deliver an HTML *file*, not an HTML text message."""
+    from publisher import feishu
+
+    calls: list[tuple] = []
+
+    def fake_send_file(target, path, identity="bot", to_chat=False):
+        calls.append(("file", target, Path(path).name, Path(path).read_text(encoding="utf-8")))
+        return {"message_id": "om_file_1", "chat_id": "oc_1"}
+
+    def fake_send_card(target, card, identity="bot", to_chat=False):
+        calls.append(("card", target))
+        return {"message_id": "om_card_1", "chat_id": "oc_1"}
+
+    def fail_send_text(*args, **kwargs):
+        raise AssertionError("HTML text must not be sent when a file path is available")
+
+    monkeypatch.setattr(feishu, "send_file", fake_send_file)
+    monkeypatch.setattr(feishu, "send_card", fake_send_card)
+    monkeypatch.setattr(feishu, "send_text", fail_send_text)
+
+    target = tmp_path / "code" / "install" / "transport-test.html"
+    result = console_init.send_transport_test(
+        owner="ou_user",
+        html=console_init.TEST_HTML,
+        card=console_init.transport_test_card(),
+        html_file=str(target),
+    )
+
+    assert result["ok"] is True
+    assert result["html_file"] == str(target)
+    assert target.is_file()
+    assert "<html" in target.read_text(encoding="utf-8").lower()
+    assert calls[0][0] == "file"
+    assert calls[1][0] == "card"
+
     """The live shell must wait on its own card subscription, not a second one."""
     home = make_home(tmp_path)
     sent: list[dict] = []
 
-    def fake_send(*, owner, html, card):
-        sent.append({"owner": owner, "html": html, "card": card})
+    def fake_send(*, owner, html, card, html_file=None):
+        sent.append({"owner": owner, "html": html, "card": card, "html_file": html_file})
         return {"ok": True, "html_message_id": "om_html_1", "card_message_id": "om_card_1"}
 
     class FakeSurface:
