@@ -51,6 +51,8 @@ PULL_INTERVAL_SECONDS = 600
 BACKOFF_SECONDS = (5, 15, 30, 60)
 #: Immediate receipt for a recorded owner message; operation routing is #82/#83.
 MESSAGE_ACK_TEXT = "已收到（消息已记录）。"
+#: The only reply while the service is paused; nothing is derived (#81, ADR 0009 §6).
+PAUSED_TEXT = "服务已暂停。"
 
 SUBSCRIPTION_NAMES = {
     MESSAGE_EVENT_KEY: "消息订阅",
@@ -269,6 +271,19 @@ def _preview(text: str, limit: int = 80) -> str:
     return value if len(value) <= limit else value[:limit] + "…"
 
 
+def _service_paused(home: Path, paused=None) -> bool:
+    """Whether the persisted service state is paused (#81 owns the writer)."""
+    if paused is not None:
+        try:
+            return bool(paused() if callable(paused) else paused)
+        except Exception:  # noqa: BLE001 - an unreadable state is not a pause
+            return False
+    try:
+        return bool(console.read_state(home).get("paused"))
+    except Exception:  # noqa: BLE001 - an unreadable state is not a pause
+        return False
+
+
 def handle_message(
     home: Path,
     event: dict | None,
@@ -276,8 +291,13 @@ def handle_message(
     send=None,
     owner: str | None = None,
     emit=None,
+    paused=None,
 ) -> dict:
-    """Record one message and send the minimal owner receipt, or log-and-ignore."""
+    """Record one message and send the minimal owner receipt, or log-and-ignore.
+
+    While the service is paused the only reply is :data:`PAUSED_TEXT`; the
+    message is recorded but never routed (no derived run, no intent judgement).
+    """
     log = emit or (lambda level, source, message: None)
     decision = classify_message(home, event, owner=owner)
     outcome = {**decision, "replied": False, "reply": None, "reply_text": None}
@@ -288,6 +308,23 @@ def handle_message(
     log("INFO", "feishu", f"收到 owner 消息：{_preview(decision['text']) or '（空）'}")
     sender = send or feishu.send_text
     target = str(decision.get("target") or "")
+    if _service_paused(Path(home), paused):
+        log("INFO", "feishu", "服务已暂停，只回复暂停提示（不派生任何运行）")
+        try:
+            result = sender(target, PAUSED_TEXT)
+        except Exception as exc:  # noqa: BLE001 - a failed receipt must not kill the surface
+            log("WARN", "feishu", f"暂停提示发送失败：{type(exc).__name__}: {exc}")
+            outcome.update(action="paused", reason="send_failed", reply_text=PAUSED_TEXT)
+            return outcome
+        outcome.update(
+            action="paused",
+            reason="service_paused",
+            replied=True,
+            reply=result,
+            reply_text=PAUSED_TEXT,
+        )
+        return outcome
+
     try:
         result = sender(target, MESSAGE_ACK_TEXT)
     except Exception as exc:  # noqa: BLE001 - a failed receipt must not kill the surface
@@ -316,12 +353,20 @@ def handle_card(
     *,
     handle=None,
     emit=None,
+    paused=None,
 ) -> dict:
-    """Hand one normalised card callback to the existing publisher route."""
+    """Hand one normalised card callback to the existing publisher route.
+
+    Paused service: the callback is logged and skipped, because pause means no
+    Feishu response and no derived run (ADR 0009 §6).
+    """
     log = emit or (lambda level, source, message: None)
     if not event:
         log("INFO", "feishu", "忽略空的卡片回调")
         return {"ok": False, "reason": "not_a_card"}
+    if _service_paused(Path(home), paused):
+        log("INFO", "feishu", "服务已暂停，忽略卡片回调（不派生任何运行）")
+        return {"ok": True, "skipped": "service_paused"}
     handler = handle or _publisher_handle_event
     try:
         result = handler(Path(home), event)
@@ -569,6 +614,7 @@ class EventSurface:
                 send=self._send,
                 owner=self._owner,
                 emit=self._log,
+                paused=self._paused,
             )
         if event_key == CARD_EVENT_KEY:
             event = parse_card_event(raw)
@@ -580,6 +626,7 @@ class EventSurface:
                 event,
                 handle=self._handle_card,
                 emit=self._log,
+                paused=self._paused,
             )
         self._log("WARN", "feishu", f"未知事件键 {event_key}，已丢弃")
         return {"ok": False, "action": "ignored", "reason": "unknown_event_key"}
