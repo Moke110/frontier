@@ -311,7 +311,9 @@ def test_cli_home_and_code_place_the_same_runtime_files(tmp_path, capsys):
         for p in (code / layout.RUNTIME_DIRNAME).rglob("*")
         if p.is_file()
     }
-    assert legacy == new == {Path("install") / "state.json"}
+    # Ticket #76 adds one code-mode marker: the remembered layout.  Everything
+    # else a command writes is the same relative path in both models.
+    assert new - {Path(layout.LAYOUT_FILENAME)} == legacy == {Path("install") / "state.json"}
 
 
 def test_cli_archive_defaults_next_to_the_code_directory(tmp_path, capsys):

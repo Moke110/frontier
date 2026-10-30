@@ -21,11 +21,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from common import now, read_json, write_json
 from hostrun.base import HostRunError
 
 RUNTIME_DIRNAME = ".frontier"
 ARCHIVE_DIRNAME = "frontier-archive"
 LEGACY_ARCHIVE_DIRNAME = "archive"
+LAYOUT_FILENAME = "layout.json"
 
 # One relative path per runtime-state kind.  Config, state, installation
 # records and initialization state physically share ``install/``; the category
@@ -75,6 +77,57 @@ def default_archive(code: str | Path) -> Path:
     return Path(code).expanduser().resolve().parent / ARCHIVE_DIRNAME
 
 
+def record_path(code: str | Path) -> Path:
+    """The remembered layout of a code directory (inside its ignored runtime area)."""
+    return Path(code).expanduser().resolve() / RUNTIME_DIRNAME / LAYOUT_FILENAME
+
+
+def remembered_archive(code: str | Path) -> Path | None:
+    """The archive a code directory was last used with, if it was recorded.
+
+    A record written by another checkout is ignored, so moving a repository cannot
+    silently point it at someone else's archive.
+    """
+    code_dir = Path(code).expanduser().resolve()
+    record = read_json(record_path(code_dir)) or {}
+    recorded_code = str(record.get("code") or "").strip()
+    archive = str(record.get("archive") or "").strip()
+    if not archive or not recorded_code:
+        return None
+    try:
+        if Path(recorded_code).expanduser().resolve() != code_dir:
+            return None
+    except OSError:
+        return None
+    return Path(archive).expanduser()
+
+
+def remember(resolved: dict) -> Path | None:
+    """Persist the resolved layout so a custom ``--archive`` survives later runs.
+
+    Only the new two-directory model is recorded; the legacy ``--home`` tree is
+    per-invocation and deliberately leaves no marker.  A read-only checkout must
+    not make a command fail, so an unwritable runtime area is ignored.
+    """
+    if resolved.get("mode") != "code":
+        return None
+    path = record_path(resolved["code"])
+    try:
+        write_json(
+            path,
+            {
+                "schema_version": 1,
+                "code": resolved["code"],
+                "runtime": resolved["runtime"],
+                "archive": resolved["archive"],
+                "remembered_at": now(),
+            },
+        )
+    except OSError:
+        return None
+    return path
+
+
 def resolve(
     *,
     home: str | Path | None = None,
@@ -101,8 +154,11 @@ def resolve(
     else:
         code_dir = Path(code).expanduser().resolve() if code else repo_root()
         runtime = code_dir / RUNTIME_DIRNAME
+        remembered = remembered_archive(code_dir) if not archive else None
         archive_root = (
-            Path(archive).expanduser().resolve() if archive else default_archive(code_dir)
+            Path(archive).expanduser().resolve()
+            if archive
+            else (remembered.resolve() if remembered else default_archive(code_dir))
         )
         mode = "code"
 
