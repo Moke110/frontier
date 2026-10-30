@@ -1,30 +1,21 @@
 """Bounded host runs: one intent, one process, then exit.
 
-The host scheduler (ChatGPT scheduled task, WorkBuddy automation) calls this.
-Every run does the same fixed order, per ADR 0005:
+The Console starts these runs (ADR 0009); the host itself no longer fires a
+scheduled task.  Every run does the same fixed order, per ADR 0005:
 
     feedback → resume unfinished work → maintenance (if due) → retrieval gate
 
 Intents:
-  daily           每日 08:00：处理反馈、恢复、再请求并（闸门允许时）开始一篇推送
-  feedback        每小时：只处理反馈与恢复；**不创建**检索请求
+  daily           每日推送时刻：处理反馈、恢复、再请求并（闸门允许时）开始一篇推送
+  feedback        每 5 分钟：只处理反馈与恢复；**不创建**检索请求
   maintenance     每天至多一次：原文/推送库对账与配额；不删除、不创建检索请求
-  listener-check  每日 09:00：只读判定监听进程健康 + 至多一次受控拉起；不推送
 
-No daemon, no detached child, no OS scheduler write. If the host is off, the
-run simply does not happen; missed daily requests coalesce into one.
-
-``listener-check`` is special: it is a mechanical health probe. Its judgement is
-read-only; when it reports offline it spawns the recorded start command at most
-once and re-checks. It never takes the executor lease (a running 08:00 push must
-not hide the 09:00 check), never writes a ``scheduled_run`` row and never folds in
-feedback/maintenance. Its evidence is the ``listener_health`` install step.
+No daemon, no detached child, no OS scheduler write. If the Console is not
+running, the run simply does not happen; missed daily requests coalesce into one.
 """
 
 from __future__ import annotations
 
-import time
-from datetime import datetime
 from pathlib import Path
 
 from common import append_jsonl, ensure_dir, now, read_json, today, write_json
@@ -32,15 +23,14 @@ from hostrun import executor, feedback as feedback_mod
 from hostrun.base import HostRunError, load_config
 from question_queue.store import QueueStore, REVIEW_KIND, CORRECTION_KIND
 
-INTENT_LISTENER_CHECK = "listener-check"
-INTENTS = ("daily", "feedback", "maintenance", INTENT_LISTENER_CHECK)
+INTENTS = ("daily", "feedback", "maintenance")
 MAINTENANCE_REL = Path("library") / "maintenance"
 RUNS_REL = Path("hostrun") / "runs.jsonl"
 
 PIPELINE_BRIEF = """frontier 有界运行（{intent}）：请在**当前会话**中完成一篇论文推送，只处理一篇。
 
 硬约束：
-- 工作目录 {repo}；数据根 {home}；
+- 工作目录 {repo}；运行时区 {home}（沿用环境变量 FRONTIER_CODE/FRONTIER_ARCHIVE/FRONTIER_RUNTIME，模块命令不要再传位置参数）；
 - 只走「检索 → 排序 → 写作 → 渲染 → 推送」这一条正向链路；不另起 OpenCode 或脱离本宿主的 agent；
 - 评分题与更新题由统一队列发送，不要手写审批卡；不要运行 frontier record / editor fit；
 - 论文必须来自本次检索候选，不得编造；没有新候选就输出「今天没有新的」并结束；
@@ -58,7 +48,7 @@ PIPELINE_BRIEF = """frontier 有界运行（{intent}）：请在**当前会话**
 9. python -m writer.cli render --push ... --out {tmp}/<push_id>.html
 10. python -m archive.cli add-push --file ...
 11. python -m library.cli ensure-source --paper <push 里的 paper_id>
-12. python -m publisher.cli --home "{home}" send --push ... --html ... --to {owner}
+12. python -m publisher.cli send --push ... --html ... --to {owner}
 13. python -m hostrun.cli feedback sync（把新题持久化到飞书）
 {extra}"""
 
@@ -78,13 +68,14 @@ def _runlog(home: Path, row: dict) -> None:
 def owner(home: Path) -> str:
     """The recipient the legacy callers resolve, kept out of the install report.
 
-    ``install/recipient.json`` is the current source (written by ``smoke start``).
-    The config fallback is read-only for pre-existing installs; it is never
-    copied into a report. Public so the listener can route replies and apply the
-    DM allow-list without a private bridge.
+    ``install/recipient.json`` is the current source (written by the Console's
+    ``/frontier-init`` transport test, #86).  The config fallback is read-only
+    for pre-existing installs; it is never copied into a report. Public so the
+    Console can route replies and apply the DM allow-list without a private
+    bridge.
 
-    This helper does **not** prove verification; the listener's DM allow-list
-    uses :func:`verified_owner` (ADR 0008 §3), while existing callers keep the
+    This helper does **not** prove verification; the Console's DM allow-list
+    uses :func:`verified_owner` (ADR 0009 §4), while existing callers keep the
     old behaviour.
     """
     recipient = read_json(Path(home) / "install" / "recipient.json") or {}
@@ -104,9 +95,9 @@ def verified_owner(home: Path) -> str:
 
     Only ``install/recipient.json`` counts, and it must carry a positive
     ``schema_version``, a non-empty ``owner`` and a non-empty ``verified_at``
-    (the shape ``smoke start`` writes).  There is deliberately no fallback to
-    ``config.permissions.owner``: an unverified recipient may not command the
-    listener, and a missing record means log-and-ignore.
+    (the shape the Console's transport test writes).  There is deliberately no
+    fallback to ``config.permissions.owner``: an unverified recipient may not
+    command the Console, and a missing record means log-and-ignore.
     """
     payload = read_json(Path(home) / "install" / "recipient.json") or {}
     if not isinstance(payload, dict):
@@ -148,250 +139,6 @@ def _brief(
         extra=extra,
         finish=FINISH_HINT.format(intent=intent),
     ).strip()
-
-
-# ------------------------------------------------------ listener health check
-# Injectable seams: tests replace these module symbols instead of touching the
-# real process table, clock or spawner.
-def _clock_now() -> datetime:
-    return datetime.now().astimezone()
-
-
-def _default_sleep(seconds: float) -> None:
-    time.sleep(seconds)
-
-
-def _pid_alive(pid) -> bool:
-    """Thin alias for the canonical ``listener.pid_alive`` (#70).
-
-    Kept as a module symbol so existing tests can monkeypatch
-    ``intents._pid_alive`` without touching the real process table.
-    """
-    from hostrun import listener
-
-    return listener.pid_alive(pid)
-
-
-def listener_alive(health: dict) -> bool:
-    """Whether a health snapshot names a process that may still be serving.
-
-    ``online`` is the normal case; a stale heartbeat with a live pid is a wedged
-    listener that ``stop`` should still try to stop rather than claim is gone.
-    Shared by ``listener stop`` so the CLI does not carry its own copy.
-    """
-    evidence = health.get("evidence") or {}
-    return health.get("state") == "online" or bool(evidence.get("pid_alive"))
-
-
-def listener_health(
-    home: Path, *, clock=None, pid_check=None
-) -> dict:
-    """Health judgement: heartbeat freshness, pid liveness, last event.
-
-    This function itself is read-only (no lease, no spawn, no writes); the
-    surrounding ``listener-check`` intent may spawn the recorded start command
-    once when it reports offline.  ``online`` requires a heartbeat no older than
-    ``listener.heartbeat_stale_seconds`` (default 10 minutes) **and** a live pid;
-    anything else is ``stale``/``offline`` with named problems.  Freshness and
-    pid liveness come from ``listener.heartbeat_facts``/``listener.pid_alive``,
-    the same helpers the install probe and ``listener stop`` use.
-
-    ADR 0008 §6 also names "最近一次成功事件时间": it is reported as
-    ``last_event_age_seconds``/``last_success_age_seconds`` and, when the
-    heartbeat is fresh but no successful event has been seen for
-    ``listener.event_stale_seconds`` (default 1 h), adds a diagnostic problem
-    hint.  The online rule and the recovery behaviour stay exactly
-    "fresh heartbeat + live pid".
-    """
-    from hostrun import listener
-
-    home = Path(home)
-    moment = (clock or _clock_now)()
-    config = load_config(home)
-    listener_config = config.get("listener") or {}
-    stale_seconds = int(
-        listener_config.get("heartbeat_stale_seconds")
-        or listener.DEFAULT_HEARTBEAT_STALE_SECONDS
-    )
-    event_stale_seconds = int(
-        listener_config.get("event_stale_seconds") or listener.DEFAULT_EVENT_STALE_SECONDS
-    )
-    facts = listener.heartbeat_facts(home, moment=moment, stale_seconds=stale_seconds)
-    problems: list[str] = []
-    evidence = {
-        "checked_at": moment.isoformat(timespec="seconds"),
-        "heartbeat_path": facts["path"],
-        "heartbeat_at": None,
-        "age_seconds": None,
-        "pid": None,
-        "pid_alive": False,
-        "last_event_at": None,
-        "last_event_age_seconds": None,
-        "last_success_at": None,
-        "last_success_age_seconds": None,
-        "state": "offline",
-        "action": "none",
-    }
-    if facts["problem"]:
-        problems.append(facts["problem"])
-    elif not facts["present"]:
-        problems.append(f"心跳文件不存在：{facts['path']}")
-    else:
-        payload = facts["payload"] or {}
-        updated_at = facts["updated_at"]
-        pid = facts["pid"]
-        age = facts["age_seconds"]
-        alive = bool(pid_check(pid)) if pid_check is not None else _pid_alive(pid)
-        last_event_age = listener._age_seconds(payload.get("last_event_at"), moment)
-        last_success_age = listener._age_seconds(payload.get("last_success_at"), moment)
-        evidence.update(
-            {
-                "heartbeat_at": updated_at,
-                "age_seconds": age,
-                "pid": pid,
-                "pid_alive": alive,
-                "last_event_at": payload.get("last_event_at"),
-                "last_event_age_seconds": last_event_age,
-                "last_success_at": payload.get("last_success_at"),
-                "last_success_age_seconds": last_success_age,
-            }
-        )
-        if age is None:
-            problems.append(f"心跳时间不可解析：{updated_at!r}")
-        elif age > stale_seconds:
-            problems.append(f"心跳已过期：{age}s > {stale_seconds}s")
-            evidence["state"] = "stale"
-        elif not alive:
-            problems.append(f"心跳进程不在：pid {pid}")
-        else:
-            evidence["state"] = "online"
-            # Diagnostic only: the heartbeat is fresh and the pid is alive, so
-            # this does not affect `ok`/recovery (ADR 0008 §6 interpretation).
-            recent_success_age = (
-                last_success_age if last_success_age is not None else last_event_age
-            )
-            if recent_success_age is not None and recent_success_age > event_stale_seconds:
-                problems.append(
-                    "心跳新鲜但久无成功事件："
-                    f"最近一次成功事件 {recent_success_age}s 前"
-                    f"（阈值 {event_stale_seconds}s）"
-                )
-    evidence["problems"] = list(problems)
-    return {
-        "ok": evidence["state"] == "online",
-        "state": evidence["state"],
-        "problems": problems,
-        "evidence": evidence,
-    }
-
-
-def _listener_start_argv(command: str) -> list[str]:
-    """Thin alias for ``listener.start_argv`` (kept as a test seam)."""
-    from hostrun import listener
-
-    return listener.start_argv(command)
-
-
-def _default_spawn(argv: list[str]):
-    """Thin alias for the canonical detached-spawn contract (kept as a seam)."""
-    from hostrun import listener
-
-    return listener.spawn_detached(argv, new_console=True)
-
-
-def _listener_health_note(result: dict) -> str:
-    evidence = result["evidence"]
-    if result["action"] == "restart_ok":
-        return (
-            "监听进程原本不在线；已用记录的启动命令拉起一次，"
-            f"复查在线：心跳 {evidence['age_seconds']}s，pid {evidence['pid']} 存活"
-        )
-    if result["ok"]:
-        return (
-            f"监听进程在线：心跳 {evidence['age_seconds']}s，"
-            f"pid {evidence['pid']} 存活"
-        )
-    return "监听进程不在线：" + "；".join(result["problems"])
-
-
-def _record_listener_health(home: Path, result: dict) -> None:
-    from hostrun import install
-
-    result["evidence"]["action"] = result["action"]
-    result["evidence"]["problems"] = list(result["problems"])
-    install.record(
-        home,
-        "listener_health",
-        "ok" if result["ok"] else "blocked",
-        note=_listener_health_note(result),
-        evidence=result["evidence"],
-        recheck=True,
-    )
-
-
-def run_listener_check(
-    home: Path, *, spawn=None, clock=None, sleep=None, pid_check=None
-) -> dict:
-    """One mechanical listener health check; at most one restart attempt.
-
-    The judgement is read-only; when it reports offline and a recorded
-    ``listener.start_command`` exists, spawn it detached once, wait
-    ``listener.recovery_recheck_seconds`` and re-check (a bounded
-    read-only-judgement-plus-one-controlled-restart).  No retry loop, no
-    executor lease; evidence goes to the ``listener_health`` install step.
-    """
-    home = Path(home)
-    health = listener_health(home, clock=clock, pid_check=pid_check)
-    result = {
-        "ok": health["ok"],
-        "state": health["state"],
-        "problems": list(health["problems"]),
-        "action": "none",
-        "evidence": health["evidence"],
-    }
-    if result["ok"]:
-        _record_listener_health(home, result)
-        return result
-    listener_config = load_config(home).get("listener") or {}
-    start_command = str(listener_config.get("start_command") or "").strip()
-    if not start_command:
-        result["action"] = "listener_start_command_missing"
-        result["problems"].append(
-            "listener_start_command_missing：config.listener.start_command 未记录；"
-            "先运行 hostrun.cli listener install 生成启停脚本"
-        )
-        _record_listener_health(home, result)
-        return result
-    recheck_seconds = int(listener_config.get("recovery_recheck_seconds") or 30)
-    try:
-        (spawn or _default_spawn)(_listener_start_argv(start_command))
-    except Exception as exc:  # noqa: BLE001 - report it, never crash the check
-        result["action"] = "restart_failed"
-        result["problems"].append(f"启动命令执行失败：{exc}")
-        _record_listener_health(home, result)
-        return result
-    (sleep or _default_sleep)(recheck_seconds)
-    again = listener_health(home, clock=clock, pid_check=pid_check)
-    result["state"] = again["state"]
-    result["evidence"] = again["evidence"]
-    if again["ok"]:
-        result["ok"] = True
-        result["problems"] = []
-        result["action"] = "restart_ok"
-    else:
-        result["ok"] = False
-        merged: list[str] = []
-        for problem in [
-            *result["problems"],
-            *again["problems"],
-            f"重启后复查仍不在线（state={again['state']}）",
-        ]:
-            if problem not in merged:
-                merged.append(problem)
-        result["problems"] = merged
-        result["action"] = "restart_failed"
-    _record_listener_health(home, result)
-    return result
 
 
 # ------------------------------------------------------------- maintenance
@@ -505,22 +252,14 @@ def run(
     library=None,
     date: str | None = None,
     finish: str | None = None,
-    scheduled: bool = False,
-    task: str | None = None,
-    proof: str | None = None,
     lease: bool = True,
 ) -> dict:
     """Entry point of ``python -m hostrun.cli run --intent ...``.
 
-    ``scheduled`` / ``task`` / ``proof`` are set only by the host scheduler
-    command.  The proof must match the task recorded by ``schedules confirm``;
-    a hand-written run without it is logged as an ordinary run and can never
-    feed ``scheduled_run`` acceptance.
-
     ``lease=False`` means the caller already holds the executor lease for the
-    whole operation (the listener's derived run): this call neither acquires nor
-    releases, so the preparation and the derived child share one continuous
-    lease (ADR 0008 §5/§8).  The default keeps a standalone ``run`` owning its
+    whole operation (a Console Agent run): this call neither acquires nor
+    releases, so the preparation and the Agent child share one continuous
+    lease (ADR 0009 §10).  The default keeps a standalone ``run`` owning its
     own lease exactly as before.
     """
     if intent not in INTENTS:
@@ -529,26 +268,6 @@ def run(
     config = load_config(home, repo=Path(repo) if repo else None)
     repo_path = Path(repo or config["paths"]["repo"])
     room = host or (config.get("host") or {}).get("product") or "host"
-
-    if intent == INTENT_LISTENER_CHECK:
-        # Mechanical health probe: a read-only judgement that may spawn the
-        # recorded start command at most once and re-check. It never takes the
-        # executor lease (a running daily push must not hide the check), never
-        # writes a ``scheduled_run`` row; its evidence is the
-        # ``listener_health`` step.
-        return run_listener_check(home)
-
-    scheduled_ok = False
-    if scheduled and task:
-        recorded = next(
-            (
-                row
-                for row in ((config.get("schedules") or {}).get("tasks") or [])
-                if row.get("id") == task
-            ),
-            None,
-        )
-        scheduled_ok = bool(recorded and recorded.get("proof") and proof == recorded.get("proof"))
 
     if finish:
         return finish_run(home, intent, finish, host=room)
@@ -572,9 +291,6 @@ def run(
         "intent": intent,
         "at": now(),
         "host": room,
-        "scheduled": scheduled_ok,
-        "task": task if scheduled_ok else None,
-        "scheduled_rejected": bool(scheduled and not scheduled_ok),
         "ok": True,
         "actions": [],
         "quiet": True,
@@ -633,9 +349,9 @@ def run(
         # A daily push also requires formal knowledge to be ready.
         queue = _queue(home)
         if intent == "daily":
-            from hostrun.install import step_status
+            from hostrun import console_gate
 
-            if step_status(home).get("knowledge") != "ok":
+            if not console_gate.daily_allowed(home).get("ready"):
                 result["retrieval"] = {
                     "requested": False,
                     "started": False,
@@ -678,17 +394,9 @@ def run(
     _runlog(
         home,
         {
-            # The run log's ``at`` is the scheduled *start* moment: a bounded
-            # feedback run can spend many minutes on maintenance, and completion
-            # time would fall outside the on-time window and be rejected even
-            # though the host fired the task exactly on schedule.
             "at": result["at"],
             "intent": intent,
             "host": room,
-            "scheduled": scheduled_ok,
-            "task": task if scheduled_ok else None,
-            "proof": proof if scheduled_ok else None,
-            "scheduled_rejected": bool(scheduled and not scheduled_ok),
             "ok": result["ok"],
             "quiet": result["quiet"],
             "actions": result["actions"],
@@ -716,8 +424,8 @@ def finish_run(home: Path, intent: str, outcome: str, *, host: str = "host") -> 
 
 
 def status(home: Path) -> dict:
-    """One read-only snapshot: executor, queue, feedback, maintenance, schedules."""
-    from hostrun import install, schedules
+    """One read-only snapshot: executor, queue, feedback, maintenance, install."""
+    from hostrun import install
 
     queue = _queue(home)
     state = queue.status()
@@ -734,7 +442,6 @@ def status(home: Path) -> dict:
         },
         "resume": resume_state(home),
         "maintenance_today": record,
-        "schedules": schedules.status(home),
         "install": install.summary(home),
         "at": now(),
     }

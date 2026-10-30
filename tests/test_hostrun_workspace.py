@@ -11,6 +11,7 @@ import pytest
 
 from hostrun import workspace
 from hostrun.base import HostRunError
+from conftest import cli_locations
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_REL = (
@@ -222,7 +223,7 @@ def test_acquire_rejects_a_data_root_inside_the_code_checkout(tmp_path):
     assert result["ok"] is False
     assert result["action"] == "rejected"
     assert result["layout_valid"] is False
-    assert "数据根不能放在代码目录内" in result["blocked"]
+    assert "资料目录不能放在代码目录内" in result["blocked"]
     assert _files_under(repo) == before
     assert not (repo / "archive").exists()
     assert not workspace.record_path(root).exists()
@@ -234,12 +235,11 @@ def test_cli_workspace_rejection_reports_the_reason_and_writes_nothing(tmp_path,
     root = tmp_path / "ws"
     repo = _seed_repo(root / "frontier")
     before = _files_under(repo)
-    data_root = tmp_path / "data-root"
+    data_root = tmp_path / "code" / ".frontier"
 
     code = cli.main(
         [
-            "--home",
-            str(data_root),
+            *cli_locations(data_root),
             "install",
             "workspace",
             "--root",
@@ -253,13 +253,13 @@ def test_cli_workspace_rejection_reports_the_reason_and_writes_nothing(tmp_path,
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert payload["action"] == "rejected"
-    assert "数据根不能放在代码目录内" in payload["blocked"]
+    assert "资料目录不能放在代码目录内" in payload["blocked"]
     assert _files_under(repo) == before
     assert not workspace.record_path(root).exists()
     assert not (root / "frontier" / "archive").exists()
     entry = install.load_state(data_root)["steps"]["workspace"]
     assert entry["status"] == "blocked"
-    assert "数据根不能放在代码目录内" in entry["note"]
+    assert "资料目录不能放在代码目录内" in entry["note"]
 
 
 def test_reusable_checkout_is_not_cloned_again(tmp_path):

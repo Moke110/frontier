@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "version": "1.0.0",
+  "description": "frontier 操作白名单 v1（ADR 0009 §5）。这是控制台与飞书唯一允许执行的操作集合；执行入口只接受操作 id 与经参数 schema 校验的 params，绝不接受消息原文。",
+  "operations": [
+    {
+      "id": "status",
+      "description": "查看服务状态、下一次推送、执行端与队列概览",
+      "executor": "status",
+      "feishu_visible": true,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "push_again",
+      "description": "立即请求再推一篇（写入队列的待推请求）",
+      "executor": "push_again",
+      "feishu_visible": true,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "process_feedback",
+      "description": "处理飞书侧已提交的反馈",
+      "executor": "process_feedback",
+      "feishu_visible": true,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "pause",
+      "description": "暂停服务：停止定时推送与飞书响应，控制台仍在前台",
+      "executor": "pause",
+      "feishu_visible": true,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "resume",
+      "description": "恢复服务并按上次状态继续",
+      "executor": "resume",
+      "feishu_visible": true,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "test_message",
+      "description": "向已核实 owner 发送一条测试消息",
+      "executor": "test_message",
+      "feishu_visible": true,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "change_schedule",
+      "description": "修改每日推送时刻（HH:MM，用户时区）",
+      "executor": "change_schedule",
+      "feishu_visible": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "time": {
+            "type": "string",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "minLength": 5,
+            "maxLength": 5
+          }
+        },
+        "required": ["time"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "relocate_archive",
+      "description": "修改资料目录位置",
+      "executor": "relocate_archive",
+      "feishu_visible": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "instructions": [
+    {
+      "phrase": "推一篇",
+      "operation": "push_again",
+      "params": {}
+    },
+    {
+      "phrase": "处理反馈",
+      "operation": "process_feedback",
+      "params": {}
+    },
+    {
+      "phrase": "状态",
+      "operation": "status",
+      "params": {}
+    },
+    {
+      "phrase": "暂停",
+      "operation": "pause",
+      "params": {}
+    },
+    {
+      "phrase": "恢复",
+      "operation": "resume",
+      "params": {}
+    },
+    {
+      "phrase": "测试飞书消息",
+      "operation": "test_message",
+      "params": {}
+    }
+  ],
+  "excluded": [
+    {
+      "phrase": "初始化",
+      "operation": "init",
+      "reply": "console_only"
+    },
+    {
+      "phrase": "/frontier-init",
+      "operation": "init",
+      "reply": "console_only"
+    },
+    {
+      "phrase": "更新知识库",
+      "operation": "update_kb",
+      "reply": "console_only"
+    },
+    {
+      "phrase": "/frontier-update-kb",
+      "operation": "update_kb",
+      "reply": "console_only"
+    },
+    {
+      "phrase": "停止服务",
+      "operation": "stop_service",
+      "reply": "console_only"
+    },
+    {
+      "phrase": "/frontier-stop",
+      "operation": "stop_service",
+      "reply": "console_only"
+    },
+    {
+      "phrase": "改代码",
+      "operation": "code_change",
+      "reply": "no_permission"
+    },
+    {
+      "phrase": "修改代码",
+      "operation": "code_change",
+      "reply": "no_permission"
+    },
+    {
+      "phrase": "修改配置",
+      "operation": "code_change",
+      "reply": "no_permission"
+    },
+    {
+      "phrase": "修改权限",
+      "operation": "code_change",
+      "reply": "no_permission"
+    }
+  ]
+}

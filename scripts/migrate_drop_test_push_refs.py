@@ -18,7 +18,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from archive.store import Archive
-from common import home
+from hostrun import layout
+from hostrun.base import HostRunError
+
 
 TEST_PUSH = "2026-10-21_card_virtual_cell_01"
 
@@ -45,12 +47,23 @@ def run(data_home: Path, push_id: str = TEST_PUSH) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="migrate_drop_test_push_refs")
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument("--code", help="code directory (default: this checkout)")
+    parser.add_argument("--archive", help="archive directory (default: <code>/../frontier-archive)")
     parser.add_argument("--push-id", default=TEST_PUSH)
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(layout.cli_argv(argv))
+        resolved = layout.resolve_for_cli(args)
+    except HostRunError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 1
+    layout.export(resolved)
     import json
 
-    print(json.dumps(run(home(args.home), args.push_id), ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            run(Path(resolved["runtime"]), args.push_id), ensure_ascii=False, indent=2
+        )
+    )
     return 0
 
 

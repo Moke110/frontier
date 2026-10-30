@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from common import now, read_json
+from archive.store import Archive, is_under_review
 from frontier.model import is_temporary_card
 from writer.model import _context
 from writer.render import inspect as inspect_pdf
@@ -72,7 +73,10 @@ def _cards(home: Path) -> dict[str, dict]:
     return {
         r["id"]: r
         for r in rows
-        if r and r.get("id") and not is_temporary_card(r)
+        if r
+        and r.get("id")
+        and not is_temporary_card(r)
+        and not is_under_review(r)
     }
 
 
@@ -109,7 +113,7 @@ def build_task(home: Path, selection: dict, date: str) -> dict:
                         }
                         for rec in (
                             read_json(p) or {}
-                            for p in sorted((home / "archive" / "raw").glob("*.json"))
+                            for p in sorted(Archive(home).raw.glob("*.json"))
                         )
                         if (
                             (rec.get("card_id") or rec.get("checkpoint_id")) == cp_id

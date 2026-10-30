@@ -1,7 +1,7 @@
 # ADR 0009：控制台成为 frontier 的唯一运行入口
 
 - 日期：2026-10-30
-- 状态：已接受（设计与文档）；实现尚未开始
+- 状态：已接受；实现已合入（离线测试通过），真实验收见 `docs/acceptance/README.md`
 - 替代：[ADR 0008](0008-listener-process.md)（监听进程 + 宿主定时任务）
 - 修订：[ADR 0005](0005-agent-owned-execution.md) 中"不创建独立常驻程序"与"宿主定时任务"的约定；[ADR 0006](0006-deepseek-harness-as-a-host.md) 中 DSH 会话级定时的运行地位
 - 相关：[ADR 0007](0007-reuse-configured-lark-cli.md)（复用已配置的 lark-cli）、[ADR 0003](0003-lark-as-only-storage.md)（飞书存储）
@@ -139,7 +139,7 @@ ADR 0008 之后，frontier 有两个运行主体：用户手动启停的 `fronti
 
 ## 实现状态
 
-本 ADR 只确认设计、文档与验收标准，**尚未实现**。实现票据见 GitHub Issues；在真实证据产生前，本 ADR 列出的验收项全部为 `untested`。
+控制台、目录模型、`/frontier-init`、`/frontier-update-kb`、`Under review`、两层白名单与确认卡片均已实现并通过离线测试（spec #74 的 #75–#91）。旧监听进程、宿主定时任务与临时 smoke 闭环已退役。**真实验收项仍未取得全部证据**：逐项状态与证据位置见 [`docs/acceptance/README.md`](../acceptance/README.md)；在真实证据产生前，未执行项保持 `untested`，不得宣称控制台化已验收。
 
 ## 明确不做
 

@@ -1,6 +1,6 @@
 """frontier: knowledge cards -> retrieval queries, plus rating-driven state.
 
-Cards live in ``$KL_HOME/archive/cards/<card_id>.json`` and carry
+Cards live in ``<运行时区>/archive/cards/<card_id>.json`` and carry
 ``id / label / ontology / annotation``. ``frontier.yaml`` is retired: retrieval
 reads the archive directly. Rating state stays in ``state/checkpoints.yaml`` but
 is keyed by card id.
@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from common import now, read_json, read_yaml, write_yaml
+from archive.store import is_under_review
 
 VERDICT_VALUE = {"irrelevant": 0.0, "ok": 0.5, "great": 1.0}
 SOURCES = ("arxiv", "europepmc")
@@ -22,7 +23,7 @@ class FrontierError(RuntimeError):
     pass
 
 
-# Acceptance cards written by ``hostrun/smoke.py`` (``card_smoke_*``) live in
+# Temporary acceptance cards (``card_smoke_*``) live in
 # the same archive as formal cards, but they are marked temporary test content,
 # never knowledge. Only the temporary test's own plan may read them, so formal
 # loading skips them; otherwise a running acceptance test would inject its
@@ -126,6 +127,9 @@ def plan(
     queries = []
     for card in cards:
         card_id = card["id"]
+        # Under review cards are kept and counted, but never drive retrieval.
+        if is_under_review(card):
+            continue
         st = state["checkpoints"].get(card_id, {})
         if st.get("enabled") is False:
             continue

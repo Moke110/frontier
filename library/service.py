@@ -16,6 +16,7 @@ import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from archive.store import Archive
 from common import now, read_json, today, write_json
 from library import base as base_mod
 from library import config as config_mod
@@ -384,7 +385,7 @@ class Library:
         return self.find(base_mod.SOURCE, "原文 ID", paper_id)
 
     def _raw_record(self, paper_id: str) -> dict:
-        return read_json(self.home / "archive" / "raw" / f"{paper_id}.json") or {}
+        return read_json(Archive(self.home).raw / f"{paper_id}.json") or {}
 
     def _upload_pdf(
         self, folder: str, paper_id: str, path: Path, expected: str | None = None
@@ -612,7 +613,7 @@ class Library:
 
     # --------------------------------------------------------------- pushes
     def _push_record(self, push_id: str) -> dict:
-        return read_json(self.home / "archive" / "pushes" / f"{push_id}.json") or {}
+        return read_json(Archive(self.home).pushes / f"{push_id}.json") or {}
 
     def _push_fields(
         self, push: dict, existing: dict | None, url: str, size: int, digest: str

@@ -337,6 +337,21 @@ def test_deadline_terminates_a_hung_consumer(monkeypatch):
     assert proc.terminated is True
 
 
+def test_stop_event_terminates_a_hung_consumer(monkeypatch):
+    """Console shutdown must end a bounded chunk instead of waiting 30 seconds."""
+    proc = _BlockingProc()
+    _fake_popen(monkeypatch, proc)
+    stop = threading.Event()
+    threading.Timer(0.05, stop.set).start()
+
+    result = feishu.listen_events(stop_event=stop)
+
+    assert result["stopped"] is True
+    assert result["ok"] is True
+    assert result["reason"] == "stopped"
+    assert proc.terminated is True
+
+
 # ------------------------------------------------- legacy consume_events compat
 def test_legacy_consume_events_keeps_positional_arguments(monkeypatch):
     calls = _fake_popen(monkeypatch, _FakeProc(stdout_lines=["line-1\n", "line-2\n"]))

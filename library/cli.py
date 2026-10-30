@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
-from common import emit, home, now, read_json, read_jsonl, slug, write_json
+from common import emit, now, read_json, read_jsonl, slug, write_json
+from hostrun import layout
+from hostrun.base import HostRunError
 from library import base as base_mod
 from library import config as config_mod
 from library import setup as setup_mod
@@ -166,7 +167,8 @@ def _decision_rows(lib: Library, path: Path) -> list[dict]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="library", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument("--code", help="code directory (default: this checkout)")
+    parser.add_argument("--archive", help="archive directory (default: <code>/../frontier-archive)")
     parser.add_argument(
         "--offline", action="store_true",
         help="use the persisted JSON Drive/Base fixture (no lark-cli calls)",
@@ -232,11 +234,14 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("config", help="print effective settings")
 
-    args = parser.parse_args(argv)
-    root = home(args.home)
-    # The live clients resolve the recorded lark-cli path from KL_HOME; keep it
-    # on the explicit --home rather than the default data root.
-    os.environ["KL_HOME"] = str(root)
+    try:
+        args = parser.parse_args(layout.cli_argv(argv))
+        resolved = layout.resolve_for_cli(args)
+    except HostRunError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    layout.export(resolved)
+    root = Path(resolved["runtime"])
     try:
         if args.cmd == "setup":
             if args.offline:

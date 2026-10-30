@@ -3,32 +3,33 @@
     python -m hostrun.cli install check|status|report|record
     python -m hostrun.cli kb attach|create|create-tables|verify|initial-confirm
     python -m hostrun.cli feedback setup|sync|status|submit|process|rebuild|correct
-    python -m hostrun.cli run --intent daily|feedback|maintenance|listener-check [--finish ok|error]
-    python -m hostrun.cli schedules plan|confirm|status
-    python -m hostrun.cli listener install|start|stop|status|serve|health
+    python -m hostrun.cli run --intent daily|feedback|maintenance [--finish ok|error]
+    python -m hostrun.cli console control start|stop|status|push
+    python -m hostrun.cli console install --dsh <absolute dsh>
+    python -m hostrun.cli console            # resident foreground console
     python -m hostrun.cli audit run|streak
     python -m hostrun.cli executor status|handover
     python -m hostrun.cli status
 
-Every command is bounded and exits. The only resident component is the
-user-started listener (ADR 0008): ``listener serve`` runs in a foreground
-console, is not a service, does not autostart, does not write PATH/registry and
-never replaces the executor lease. The host's own scheduler calls ``run``.
+Every command is bounded and exits. The only resident component is the Console
+(ADR 0009): ``console`` runs in a foreground terminal, is not a service, does not
+autostart, does not write PATH/registry and never replaces the executor lease.
+The Console itself schedules every run; there is no host scheduler any more.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-import time
 from pathlib import Path
 
-from common import emit, home, read_json
+from common import emit, read_json
 from hostrun import audit as audit_mod
-from hostrun import cleanup as cleanup_mod
-from hostrun import executor, facilities, feedback, initialize, install, intents, kb, lark, listener, schedules, smoke
+from hostrun import console as console_mod
+from hostrun import console_events
+from hostrun import executor, facilities, feedback, initialize, install, intents, kb, lark
+from hostrun import layout as layout_mod
 from hostrun import workspace as workspace_mod
 from hostrun.base import HostRunError, load_config
 
@@ -41,7 +42,6 @@ def _host_declaration(args) -> dict | None:
         "version": args.host_version or "",
         "mode": args.host_mode or "",
         "local_execution": bool(args.host_local_execution),
-        "schedules": bool(args.host_schedules),
         "permissions": [p for p in (args.permissions or "").split(",") if p.strip()],
     }
 
@@ -65,7 +65,14 @@ def _add_resource_token_args(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hostrun", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument(
+        "--code",
+        help="code directory (default: this checkout); runtime state lives under it",
+    )
+    parser.add_argument(
+        "--archive",
+        help="archive directory for originals/ and pushes/ (default: <code>/../frontier-archive)",
+    )
     parser.add_argument("--offline", action="store_true", help="use JSON Base/Drive fixtures")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -81,13 +88,16 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--host-version")
     c.add_argument("--host-mode")
     c.add_argument("--host-local-execution", action="store_true")
-    c.add_argument("--host-schedules", action="store_true")
     c.add_argument("--permissions", help="comma separated granted scopes")
     c.add_argument("--workspace-root", help="installation workspace recorded by install workspace")
     _add_resource_token_args(c)
     isub.add_parser("status")
     r = isub.add_parser("report")
     r.add_argument("--out")
+    mig = isub.add_parser("migrate", help="move a legacy data root into code + archive")
+    mig.add_argument("--from", dest="legacy_home", help="old data root to migrate (default: recorded)")
+    mig.add_argument("--uv", dest="uv_path", help="uv executable used to rebuild the private environment")
+    mig.add_argument("--no-environment", action="store_true", help="skip the private environment rebuild")
     rec = isub.add_parser("record")
     rec.add_argument("--step", required=True, choices=install.STEPS)
     rec.add_argument("--status", required=True, choices=install.STATE_STATUSES)
@@ -138,64 +148,6 @@ def build_parser() -> argparse.ArgumentParser:
     fr.add_argument("--key", required=True)
     fr.add_argument("--name", required=True)
 
-    # ---------------------------------------------------------------------- smoke
-    p = sub.add_parser("smoke", help="temporary keyword-driven acceptance test")
-    ssub = p.add_subparsers(dest="action", required=True)
-    st = ssub.add_parser("start", help="create the temporary card and test record")
-    st.add_argument("--keyword", required=True)
-    st.add_argument("--owner", required=True, help="用户本人 open_id（与登录身份核实）")
-    st.add_argument("--repo")
-    st.add_argument("--yes", action="store_true", help="the user confirmed this test")
-    sp = ssub.add_parser("plan", help="write a plan limited to the temporary card")
-    sp.add_argument("--days", type=int, default=7)
-    sp.add_argument("--out")
-    ssub.add_parser("brief", help="the exact next actions for the host agent")
-    ssub.add_parser("status")
-    sr = ssub.add_parser("record", help="record one ordered step")
-    sr.add_argument("--step", required=True, choices=smoke.STEPS)
-    sr.add_argument("--evidence", help="JSON object")
-    sr.add_argument("--item")
-    sr.add_argument("--push")
-    sr.add_argument("--message")
-    sr.add_argument("--question")
-    sr.add_argument("--verdict", choices=["irrelevant", "ok", "great"])
-    sr.add_argument("--decision", choices=["agree_all", "adopt", "keep_previous", "reject_all"])
-    sr.add_argument("--file", dest="file_ids", action="append", default=[],
-                    help="uploaded file token; repeat for source and push files")
-    sr.add_argument("--source", dest="source_id")
-    sr.add_argument("--candidates", type=int,
-                    help="retrieved: number of candidates returned by the real retrieval (>0)")
-    sr.add_argument("--plan", dest="plan",
-                    help="retrieved: path/reference of the temporary retrieval plan")
-    sr.add_argument("--paper", dest="paper_ids", action="append", default=[],
-                    help="written: selected paper id; repeat for each selected paper")
-    sr.add_argument("--html", dest="html",
-                    help="rendered: path of the rendered push html artifact")
-    sr.add_argument("--target", dest="targets", action="append", default=[],
-                    help="applied: adopted target id (card/proposition); repeat for each")
-    sr.add_argument("--applied-field", dest="applied_fields", action="append", default=[],
-                    help="applied: field name whose adopted value must be verified; repeat for each")
-    sv = ssub.add_parser("verify", help="read the Base and require the accepted change")
-    sv.add_argument("--target-key", required=True, choices=["cards", "propositions", "evidence"])
-    sv.add_argument("--target-id", required=True)
-    sv.add_argument("--field", dest="fields", action="append", default=[],
-                    help="read-back check as name=value; repeat for each adopted field "
-                         "(legacy: --field <name> --expected <value>)")
-    sv.add_argument("--expected", action="append", default=[],
-                    help="legacy value paired with a bare --field <name>")
-    sf = ssub.add_parser("fail", help="mark the test failed and keep it for cleanup")
-    sf.add_argument("--reason", required=True)
-
-    # -------------------------------------------------------------------- cleanup
-    p = sub.add_parser("cleanup", help="delete the temporary test's artifacts and verify")
-    csub = p.add_subparsers(dest="action", required=True)
-    csub.add_parser("plan", help="list what would be deleted (read-only)")
-    cr = csub.add_parser("run", help="delete recorded artifacts, then read back")
-    cr.add_argument("--yes", action="store_true", help="the user confirmed this cleanup")
-    cr.add_argument("--abort", action="store_true", help="clean a failed test; gate stays closed")
-    csub.add_parser("status")
-
-    # ----------------------------------------------------------------------- init
     p = sub.add_parser("init", help="formal knowledge-card initialization")
     isub = p.add_subparsers(dest="action", required=True)
     ii = isub.add_parser("intake", help="record PDFs, text, indexes and the user's requirements")
@@ -283,63 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--minutes", type=int, default=executor.DEFAULT_MINUTES)
     p.add_argument("--finish", help="ok|error — record the pipeline outcome")
     p.add_argument("--date", help="calendar date for maintenance/coalescing (default today)")
-    p.add_argument("--scheduled", action="store_true", help="set only by the host scheduler")
-    p.add_argument("--task", help="host task id set by the host scheduler")
-    p.add_argument("--proof", help="per-task proof embedded in the confirmed command")
 
-    # ---------------------------------------------------------------- schedules
-    p = sub.add_parser("schedules", help="two instant host tasks: daily push and listener check")
-    ssub = p.add_subparsers(dest="action", required=True)
-    pl = ssub.add_parser("plan")
-    pl.add_argument("--timezone", dest="timezone_name")
-    pl.add_argument("--daily", default=schedules.DEFAULT_DAILY)
-    pl.add_argument("--listener-check", default=schedules.DEFAULT_LISTENER_CHECK)
-    cf = ssub.add_parser("confirm")
-    cf.add_argument("--timezone", dest="timezone_name")
-    cf.add_argument("--daily", default=schedules.DEFAULT_DAILY)
-    cf.add_argument("--listener-check", default=schedules.DEFAULT_LISTENER_CHECK)
-    cf.add_argument("--yes", action="store_true", help="the user confirmed timezone and enablement")
-    cf.add_argument("--host-created", action="store_true", help="the host actually created the tasks")
-    cf.add_argument("--paused", action="store_true", help="confirm but keep the tasks disabled")
-    cf.add_argument("--task-id", action="append", default=[], metavar="ID=HOST_TASK_ID")
-    ssub.add_parser("status")
-    pa = ssub.add_parser("pause")
-    pa.add_argument("--yes", action="store_true")
-    pa.add_argument("--reason", default="")
-    re = ssub.add_parser("resume")
-    re.add_argument("--yes", action="store_true")
-    tr = ssub.add_parser("trigger", help="record one real scheduled run from the run log")
-    tr.add_argument("--task", required=True)
-    tr.add_argument("--at")
-    tr.add_argument("--evidence")
-
-    # ----------------------------------------------------------------- listener
-    p = sub.add_parser(
-        "listener", help="user-started resident listener (ADR 0008)"
-    )
-    lsub = p.add_subparsers(dest="action", required=True)
-    li = lsub.add_parser("install", help="generate start/stop scripts and record dsh")
-    li.add_argument("--dsh", help="absolute dsh path the listener derives runs with")
-    li.add_argument("--python", dest="python_path", help="recorded private interpreter")
-    li.add_argument("--repo", help="code checkout the scripts cd into")
-    li.add_argument(
-        "--dsh-arg",
-        dest="dsh_args",
-        action="append",
-        default=None,
-        metavar="ARG",
-        help=(
-            "extra argv for a derived run, inserted before the task text "
-            "(repeat per token, e.g. --dsh-arg --patch --dsh-arg <overlay.yml>)"
-        ),
-    )
-    lsub.add_parser("start", help="spawn the recorded start command detached")
-    lsub.add_parser("stop", help="write the stop sentinel and wait one event-chunk window")
-    lsub.add_parser("status", help="read-only online/stale/offline snapshot")
-    lsub.add_parser("serve", help="run the foreground loop (used by the start script)")
-    lsub.add_parser("health", help="read-only health judgement, never restarts")
-
-    # -------------------------------------------------------------------- audit
     p = sub.add_parser("audit", help="existing data audit against the migration baseline")
     asub = p.add_subparsers(dest="action", required=True)
     ar = asub.add_parser("run")
@@ -357,30 +253,75 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("--from", dest="from_host")
     h.add_argument("--force", action="store_true")
 
-    sub.add_parser("status", help="one snapshot of executor, queue, feedback, schedules")
+    p = sub.add_parser("console", help="run the resident foreground console (ADR 0009)")
+    csub = p.add_subparsers(dest="action")
+    control = csub.add_parser(
+        "control",
+        help="write a control-file request for the running console (start|stop|status|push)",
+    )
+    csub2 = control.add_subparsers(dest="control_action", required=True)
+    for name in ("start", "stop", "status", "push"):
+        action = csub2.add_parser(name, help=f"request the console to {name}")
+        action.add_argument(
+            "--by",
+            dest="control_by",
+            default="",
+            help="initiator recorded in the console event stream (default: host agent)",
+        )
+        action.add_argument(
+            "--wait",
+            dest="control_wait",
+            type=float,
+            default=2.0,
+            help="seconds to wait for the console to consume the request (default 2)",
+        )
+    inst = csub.add_parser(
+        "install",
+        help="record dsh/overlay and write the fixed console launcher (no process is started)",
+    )
+    inst.add_argument("--dsh", help="absolute dsh path the Console's agent runs use")
+    inst.add_argument("--python", dest="python_path", help="recorded private interpreter")
+    inst.add_argument(
+        "--dsh-arg",
+        dest="dsh_args",
+        action="append",
+        default=None,
+        metavar="ARG",
+        help=(
+            "extra argv for an Agent run, inserted before the task text "
+            "(repeat per token, e.g. --dsh-arg --patch --dsh-arg <overlay.yml>)"
+        ),
+    )
+    sub.add_parser("status", help="one snapshot of executor, queue, feedback and install")
     return parser
 
 
 def _normalize(argv: list[str]) -> list[str]:
-    """Accept ``--home`` / ``--offline`` after the subcommand.
+    """Accept the location flags and ``--offline`` after the subcommand.
 
-    argparse only knows them as global options, so ``run --home X --intent daily``
-    used to die with "unrecognized arguments". Generated schedule commands and
-    hand-typed ones both work now, and the last value wins.
+    argparse only knows them as global options, so ``run --code C --intent daily``
+    used to die with "unrecognized arguments". Launcher commands and hand-typed
+    ones both work now, and the last value of each flag wins.
     """
-    home: list[str] = []
+    locations: dict[str, str] = {}
     offline = False
     rest: list[str] = []
     index = 0
     while index < len(argv):
         arg = argv[index]
-        if arg == "--home" and index + 1 < len(argv):
-            home.append(argv[index + 1])
-            index += 2
-            continue
-        if arg.startswith("--home="):
-            home.append(arg.split("=", 1)[1])
-            index += 1
+        matched = False
+        for flag in ("--code", "--archive"):
+            if arg == flag and index + 1 < len(argv):
+                locations[flag] = argv[index + 1]
+                index += 2
+                matched = True
+                break
+            if arg.startswith(flag + "="):
+                locations[flag] = arg.split("=", 1)[1]
+                index += 1
+                matched = True
+                break
+        if matched:
             continue
         if arg == "--offline":
             offline = True
@@ -389,23 +330,35 @@ def _normalize(argv: list[str]) -> list[str]:
         rest.append(arg)
         index += 1
     prefix: list[str] = []
-    if home:
-        prefix += ["--home", home[-1]]
+    for flag in ("--code", "--archive"):
+        if flag in locations:
+            prefix += [flag, locations[flag]]
     if offline:
         prefix.append("--offline")
     return [*prefix, *rest]
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(_normalize(list(sys.argv[1:] if argv is None else argv)))
-    root = home(args.home)
-    # In-process helpers (library, knowledge) resolve the recorded lark-cli path
-    # from the data root; exporting the explicit --home keeps that lookup on the
-    # same root the command was given instead of the default one.
-    os.environ["KL_HOME"] = str(root)
+    try:
+        raw = layout_mod.cli_argv(argv)
+        args = build_parser().parse_args(_normalize(raw))
+        resolved = layout_mod.resolve_for_cli(args)
+        # Establishing the new layout is idempotent and writes no file.
+        layout_mod.ensure(resolved)
+        # Remember the two locations so a custom --archive survives later runs
+        # that pass no location flag.
+        layout_mod.remember(resolved)
+    except HostRunError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    root = Path(resolved["runtime"])
+    # In-process helpers (library, knowledge) resolve configuration and the
+    # recorded lark-cli path from the runtime area; child module commands read
+    # the exported handoff so they resolve the same directories.
+    layout_mod.export(resolved)
     offline = bool(args.offline)
     try:
-        code, payload = _dispatch(args, root, offline)
+        code, payload = _dispatch(args, root, offline, resolved)
     except HostRunError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
@@ -414,9 +367,9 @@ def main(argv: list[str] | None = None) -> int:
     return code
 
 
-def _dispatch(args, root: Path, offline: bool) -> tuple[int, dict | None]:
+def _dispatch(args, root: Path, offline: bool, resolved: dict | None = None) -> tuple[int, dict | None]:
     if args.cmd == "install":
-        return _install(args, root)
+        return _install(args, root, resolved)
     if args.cmd == "kb":
         return _kb(args, root, offline)
     if args.cmd == "feedback":
@@ -431,25 +384,39 @@ def _dispatch(args, root: Path, offline: bool) -> tuple[int, dict | None]:
             offline=offline,
             date=args.date,
             finish=args.finish,
-            scheduled=args.scheduled,
-            task=args.task,
-            proof=args.proof,
         )
         return (0 if result.get("ok") else 1), result
     if args.cmd == "lark":
         return _lark(args, root)
     if args.cmd == "facilities":
         return _facilities(args, root, offline)
-    if args.cmd == "smoke":
-        return _smoke(args, root, offline)
-    if args.cmd == "cleanup":
-        return _cleanup(args, root, offline)
     if args.cmd == "init":
         return _init(args, root, offline)
-    if args.cmd == "schedules":
-        return _schedules(args, root)
-    if args.cmd == "listener":
-        return _listener(args, root)
+    if args.cmd == "console":
+        action = getattr(args, "action", None)
+        if action == "control":
+            from hostrun import console_service
+
+            payload = console_service.run_control(
+                root,
+                args.control_action,
+                initiator=getattr(args, "control_by", "") or "host-agent",
+                wait_seconds=getattr(args, "control_wait", 2.0),
+            )
+            return (0 if payload.get("ok") else 1), payload
+        if action == "install":
+            payload = console_mod.install(
+                root,
+                resolved=resolved,
+                dsh=args.dsh,
+                python_path=args.python_path,
+                dsh_args=args.dsh_args,
+            )
+            return (0 if payload.get("ok") else 1), payload
+        result = console_mod.serve(
+            root, resolved=resolved, events=console_events.live
+        )
+        return (0 if result.get("ok") else 1), result
     if args.cmd == "audit":
         return _audit(args, root, offline)
     if args.cmd == "executor":
@@ -464,9 +431,30 @@ def _dispatch(args, root: Path, offline: bool) -> tuple[int, dict | None]:
     raise HostRunError(f"unknown command {args.cmd}")
 
 
-def _install(args, root: Path) -> tuple[int, dict]:
+def _install(args, root: Path, resolved: dict | None = None) -> tuple[int, dict]:
     from common import ensure_dir
     from hostrun.base import update_config
+
+    if args.action == "migrate":
+        from hostrun import migration as migration_mod
+
+        layout = resolved or layout_mod.resolve()
+        environment = None
+        if args.no_environment:
+            environment = {
+                "ok": True,
+                "status": "untested",
+                "skipped": True,
+                "note": "按 --no-environment 跳过私有环境重建；重建结果未验证",
+            }
+        result = migration_mod.migrate(
+            code=layout["code"],
+            archive=layout["archive"],
+            legacy_home=args.legacy_home,
+            environment=environment,
+            uv_path=args.uv_path,
+        )
+        return (0 if result["ok"] else 1), result
 
     if args.action == "workspace":
         result = workspace_mod.acquire(
@@ -487,7 +475,7 @@ def _install(args, root: Path) -> tuple[int, dict]:
                     data_root,
                     "workspace",
                     "ok" if result["ok"] else "blocked",
-                    note="代码与数据根已就绪" if result["ok"] else result.get("blocked", ""),
+                    note="代码目录与资料目录已就绪" if result["ok"] else result.get("blocked", ""),
                     evidence={
                         "root": result["root"],
                         "repo": result["repo"],
@@ -521,7 +509,7 @@ def _install(args, root: Path) -> tuple[int, dict]:
                         "home": result.get("home"),
                         "action": result.get("action"),
                         "layout_valid": False,
-                        "writes": "仅记录本拒绝状态，未创建数据根或代码副本",
+                        "writes": "仅记录本拒绝状态，未创建目录或代码副本",
                     },
                     recheck=True,
                 )
@@ -545,7 +533,7 @@ def _install(args, root: Path) -> tuple[int, dict]:
             "dependencies",
             "ok" if result["ok"] else "blocked",
             note=(
-                "数据根私有 uv 与解释器可用，导入探针通过"
+                "私有 uv 与解释器可用，导入探针通过"
                 if result["ok"]
                 else (result.get("note") or "工具链未就绪")
             ),
@@ -827,124 +815,6 @@ def _facilities(args, root: Path, offline: bool) -> tuple[int, dict]:
     return (0 if result.get("ok") else 1), result
 
 
-def _smoke(args, root: Path, offline: bool) -> tuple[int, dict]:
-    from hostrun.base import base_client
-
-    client = base_client(root, offline=True) if offline else None
-    if args.action == "start":
-        verifier = lark.user_open_id
-        offline_note = ""
-        if offline:
-            # Offline fixtures cannot prove who the recipient is, and a real
-            # lark-cli spawn would break the offline promise.
-            def verifier(_cli):
-                return {"ok": False}
-
-            offline_note = (
-                "离线模式无法证明收件人身份：offline 夹具不含真实登录身份，"
-                "请连接真实 lark-cli 并完成本人登录后重试；本次未生成测试记录"
-            )
-        result = smoke.start(
-            root,
-            args.keyword,
-            owner=args.owner,
-            repo=args.repo,
-            client=client,
-            confirmed=args.yes,
-            verifier=verifier,
-        )
-        if offline_note:
-            result.setdefault("offline_note", offline_note)
-        return (0 if result.get("ok") else 1), result
-    if args.action == "plan":
-        result = smoke.plan(root, days=args.days, out=Path(args.out) if args.out else None)
-        return 0, result
-    if args.action == "brief":
-        result = smoke.brief(root)
-        return (0 if result.get("ok") else 1), result
-    if args.action == "record":
-        evidence = json.loads(args.evidence) if args.evidence else {}
-        result = smoke.record(
-            root,
-            args.step,
-            evidence=evidence,
-            item=args.item,
-            push=args.push,
-            message=args.message,
-            question=args.question,
-            verdict=args.verdict,
-            decision=args.decision,
-            file_id=args.file_ids,
-            source_id=args.source_id,
-            candidates=args.candidates,
-            plan=args.plan,
-            papers=args.paper_ids,
-            html=args.html,
-            targets=args.targets,
-            applied_fields=args.applied_fields,
-        )
-        return (0 if result.get("ok", True) else 1), result
-    if args.action == "verify":
-        fields = args.fields or []
-        expecteds = args.expected or []
-        if len(expecteds) > len(fields):
-            raise HostRunError("--expected 数量多于 --field")
-        checks: list[tuple[str, str]] = []
-        for index, raw in enumerate(fields):
-            if "=" in raw:
-                name, value = raw.split("=", 1)
-                checks.append((name, value))
-            elif index < len(expecteds):
-                checks.append((raw, expecteds[index]))
-            else:
-                raise HostRunError(
-                    f"--field {raw} 缺少对应 --expected；也可写成 --field name=value"
-                )
-        result = smoke.verify(
-            root,
-            target_key=args.target_key,
-            target_id=args.target_id,
-            checks=checks,
-            client=client,
-        )
-        return (0 if result.get("ok") else 1), result
-    if args.action == "fail":
-        result = smoke.fail(root, args.reason)
-        return 1, result
-    return 0, smoke.status(root)
-
-
-def _cleanup(args, root: Path, offline: bool) -> tuple[int, dict]:
-    from hostrun.base import base_client
-
-    client = base_client(root, offline=True) if offline else None
-    if args.action == "plan":
-        return 0, cleanup_mod.plan(root, client=client)
-    if args.action == "status":
-        state = smoke.load(root)
-        return 0, {
-            "ok": bool(state.get("cleaned_at")),
-            "test_id": state.get("test_id"),
-            "test_status": state.get("test_status") or state.get("status"),
-            "cleaned_at": state.get("cleaned_at"),
-            "cleanup": state.get("cleanup") or {},
-        }
-    drive = None
-    if offline:
-        from library.offline import JsonDrive
-
-        drive = JsonDrive(root / "library" / "offline-drive.json")
-    result = cleanup_mod.run(
-        root,
-        confirmed=args.yes,
-        allow_failed=args.abort,
-        client=client,
-        drive=drive,
-        lark_cli=_cli_bin(root),
-    )
-    return (0 if result.get("ok") else 1), result
-
-
 def _init(args, root: Path, offline: bool) -> tuple[int, dict]:
     from hostrun.base import base_client
 
@@ -1112,208 +982,6 @@ def _lark(args, root: Path) -> tuple[int, dict]:
             },
         )
     return (0 if result["ok"] else 1), result
-
-
-def _schedules(args, root: Path) -> tuple[int, dict]:
-    if args.action == "plan":
-        result = schedules.plan(
-            root,
-            timezone_name=args.timezone_name,
-            daily=args.daily,
-            listener_check=args.listener_check,
-        )
-        return (0 if result.get("ok") else 1), result
-    if args.action == "confirm":
-        task_ids = _pairs(args.task_id)
-        result = schedules.confirm(
-            root,
-            timezone_name=args.timezone_name,
-            daily=args.daily,
-            listener_check=args.listener_check,
-            confirmed_by_user=args.yes,
-            host_created=args.host_created,
-            enabled=not args.paused,
-            task_ids=task_ids,
-        )
-        return (0 if result.get("ok") else 1), result
-    if args.action == "pause":
-        result = schedules.pause(root, confirmed_by_user=args.yes, reason=args.reason)
-        return (0 if result.get("ok") else 1), result
-    if args.action == "resume":
-        result = schedules.resume(root, confirmed_by_user=args.yes)
-        return (0 if result.get("ok") else 1), result
-    if args.action == "trigger":
-        evidence = json.loads(args.evidence) if args.evidence else {}
-        result = schedules.record_trigger(root, args.task, at=args.at, evidence=evidence)
-        return (0 if result.get("ok") else 1), result
-    return 0, schedules.status(root)
-
-
-# The foreground loop only checks the stop sentinel between bounded event
-# chunks, and those chunks run for 30 s (listener.CONSUME_TIMEOUT).  Waiting
-# only 10 s therefore reported a false ``stop_timeout`` for a listener that was
-# exiting normally at the end of its current chunk (live, 2026-10-30).
-LISTENER_STOP_WAIT_SECONDS = 35.0
-LISTENER_STOP_POLL_SECONDS = 1.0
-
-
-def _listener_argv(command: str) -> list[str]:
-    """Thin alias for the canonical start argv (kept as a test seam)."""
-    return listener.start_argv(command)
-
-
-def _spawn_detached(argv: list[str]):
-    """Thin alias for the canonical detached spawn (kept as a test seam).
-
-    Returns the ``Popen`` handle immediately; ``start`` never waits for the
-    listener (the single-instance lock decides whether it will actually serve).
-    """
-    return listener.spawn_detached(argv, new_console=True)
-
-
-def _listener_sleep(seconds: float) -> None:
-    """The bounded stop-wait sleep; injectable in tests."""
-    time.sleep(seconds)
-
-
-def _listener_status(root: Path) -> dict:
-    """Read-only snapshot: nothing is written, spawned or stopped."""
-    health = intents.listener_health(root)
-    evidence = health.get("evidence") or {}
-    try:
-        beat = listener.read_heartbeat(root)
-    except (OSError, ValueError):
-        beat = {}
-    if not isinstance(beat, dict):
-        beat = {}
-    return {
-        "ok": True,
-        "state": health.get("state") or "offline",
-        "pid": evidence.get("pid"),
-        "pid_alive": bool(evidence.get("pid_alive")),
-        "heartbeat_at": evidence.get("heartbeat_at"),
-        "age_seconds": evidence.get("age_seconds"),
-        "last_event_at": evidence.get("last_event_at"),
-        "last_event_age_seconds": evidence.get("last_event_age_seconds"),
-        "last_success_at": evidence.get("last_success_at"),
-        "last_success_age_seconds": evidence.get("last_success_age_seconds"),
-        "consecutive_failures": beat.get("consecutive_failures", 0),
-        "heartbeat_path": evidence.get("heartbeat_path")
-        or str(listener.heartbeat_path(root)),
-        "problems": health.get("problems") or [],
-    }
-
-
-def _listener_start(root: Path) -> tuple[int, dict]:
-    """Spawn the recorded start command detached; never blocks or retries."""
-    config = load_config(root)
-    command = str((config.get("listener") or {}).get("start_command") or "").strip()
-    health = intents.listener_health(root)
-    evidence = health.get("evidence") or {}
-    if health.get("state") == "online":
-        return 0, {
-            "ok": True,
-            "state": "already_running",
-            "pid": evidence.get("pid"),
-            "heartbeat_at": evidence.get("heartbeat_at"),
-        }
-    if not command:
-        return 1, {
-            "ok": False,
-            "state": "not_installed",
-            "reason": "listener_start_command_missing",
-            "note": "先运行 hostrun.cli listener install 生成启停脚本",
-        }
-    try:
-        proc = _spawn_detached(_listener_argv(command))
-    except OSError as exc:
-        return 1, {
-            "ok": False,
-            "state": "start_failed",
-            "reason": "spawn_failed",
-            "error": f"{type(exc).__name__}: {exc}",
-            "command": command,
-        }
-    return 0, {
-        "ok": True,
-        "state": "started",
-        "pid": getattr(proc, "pid", None),
-        "command": command,
-    }
-
-
-def _listener_alive(health: dict) -> bool:
-    """Thin alias for ``intents.listener_alive`` (shared health predicate).
-
-    ``online`` is the normal case; a stale heartbeat with a live pid is a wedged
-    listener that ``stop`` should still try to stop rather than claim is gone.
-    """
-    return intents.listener_alive(health)
-
-
-def _listener_stop(root: Path) -> tuple[int, dict]:
-    """Request a stop and wait one event-chunk window for the process to exit.
-
-    The loop honours the sentinel at the top of each 30 s event chunk, so the
-    wait covers that window plus a margin instead of claiming a live listener
-    ignored the request.
-    """
-    health = intents.listener_health(root)
-    if not _listener_alive(health):
-        return 0, {
-            "ok": True,
-            "state": "not_running",
-            "heartbeat": health.get("evidence") or {},
-        }
-    sentinel = listener.request_stop(root)
-    current = health
-    attempts = int(LISTENER_STOP_WAIT_SECONDS / LISTENER_STOP_POLL_SECONDS)
-    for _ in range(attempts):
-        _listener_sleep(LISTENER_STOP_POLL_SECONDS)
-        current = intents.listener_health(root)
-        if not _listener_alive(current):
-            return 0, {
-                "ok": True,
-                "state": "stopped",
-                "heartbeat": current.get("evidence") or {},
-                "sentinel": str(sentinel),
-            }
-    return 1, {
-        "ok": False,
-        "state": "stop_timeout",
-        "reason": "stop_timeout",
-        "heartbeat": current.get("evidence") or {},
-        "sentinel": str(sentinel),
-        "note": (
-            f"已写入停止哨兵；{int(LISTENER_STOP_WAIT_SECONDS)} 秒内未观察到退出，"
-            "可关闭监听窗口或稍后再试"
-        ),
-    }
-
-
-def _listener(args, root: Path) -> tuple[int, dict]:
-    """Dispatch the six listener actions; results always carry ``ok``."""
-    if args.action == "install":
-        result = install.listener_install(
-            root,
-            dsh=args.dsh,
-            python=args.python_path,
-            repo=args.repo,
-            dsh_args=args.dsh_args,
-        )
-        return (0 if result.get("ok") else 1), result
-    if args.action == "start":
-        return _listener_start(root)
-    if args.action == "stop":
-        return _listener_stop(root)
-    if args.action == "serve":
-        result = listener.serve(root)
-        return (0 if result.get("ok") else 1), result
-    if args.action == "health":
-        result = intents.listener_health(root)
-        result["action"] = "none"
-        return (0 if result.get("ok") else 1), result
-    return 0, _listener_status(root)
 
 
 def _audit(args, root: Path, offline: bool) -> tuple[int, dict]:

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import cli_locations
 from library import base as base_mod
 from library.drive import FixtureDrive, md5_bytes
 from library.service import (
@@ -78,7 +79,7 @@ def _settings(drive, *, limit_bytes=10 * 1024**2, threshold=80):
 
 
 def _home(tmp_path):
-    home = tmp_path / "home"
+    home = tmp_path / "code" / ".frontier"
     (home / "archive" / "raw").mkdir(parents=True)
     (home / "archive" / "pushes").mkdir(parents=True)
     (home / "knowledge").mkdir(parents=True)
@@ -586,15 +587,15 @@ def test_offline_cli_roundtrip(tmp_path):
     from library.cli import main
 
     home = _home(tmp_path)
-    assert main(["--home", str(home), "--offline", "setup"]) == 0
+    assert main([*cli_locations(home), "--offline", "setup"]) == 0
     path, data = _pdf(home)
-    assert main(["--home", str(home), "--offline", "put-source",
+    assert main([*cli_locations(home), "--offline", "put-source",
                  "--paper", "pdf_demo_01"]) == 0
-    assert main(["--home", str(home), "--offline", "resolve",
+    assert main([*cli_locations(home), "--offline", "resolve",
                  "--paper", "pdf_demo_01"]) == 0
     assert (home / "cache" / "raw" / "pdf_demo_01.pdf").read_bytes() == data
-    assert main(["--home", str(home), "--offline", "quota"]) == 0
-    assert main(["--home", str(home), "--offline", "reconcile"]) == 0
+    assert main([*cli_locations(home), "--offline", "quota"]) == 0
+    assert main([*cli_locations(home), "--offline", "reconcile"]) == 0
     config = json.loads((home / "knowledge" / "base.json").read_text())
     assert config["tables"]["sources"].startswith("tbloff")
 

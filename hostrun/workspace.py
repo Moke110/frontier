@@ -122,7 +122,7 @@ def environment_python(home: str | Path) -> Path:
     return _venv_python(environment_venv(home))
 
 
-def repair_command(root: str | Path, home: str | Path) -> str:
+def repair_command(root: str | Path, home: str | Path, *, code: str | Path | None = None) -> str:
     """The exact command that rebuilds a missing or broken interpreter.
 
     The command first changes into the code checkout, so the host can run it
@@ -130,6 +130,10 @@ def repair_command(root: str | Path, home: str | Path) -> str:
     """
     root_path = Path(root).expanduser().resolve()
     home_path = Path(home).expanduser().resolve()
+    flags = ""
+    if code is not None:
+        flags += f'--code "{Path(code).expanduser().resolve()}" '
+    flags += f'--archive "{home_path}"'
     if os.name == "nt":
         change = f'cd /d "{root_path}" && '
     else:
@@ -137,7 +141,7 @@ def repair_command(root: str | Path, home: str | Path) -> str:
     return (
         change
         + f'"{sys.executable or "python"}" -m hostrun.cli '
-        f'--home "{home_path}" install toolchain '
+        f"{flags} install toolchain "
         f'--root "{root_path}" --clear'
     )
 
@@ -162,13 +166,13 @@ def resolve_layout(
     repo = (code if code.is_absolute() else root_path / code).resolve()
     home = (data if data.is_absolute() else root_path / data).resolve()
     if repo == home:
-        raise HostRunError("代码目录与数据根不能是同一个目录")
+        raise HostRunError("代码目录与资料目录不能是同一个目录")
     try:
         home.relative_to(repo)
     except ValueError:
         pass
     else:
-        raise HostRunError("数据根不能放在代码目录内，否则升级会覆盖研究数据")
+        raise HostRunError("资料目录不能放在代码目录内，否则升级会覆盖研究数据")
     return {"root": str(root_path), "repo": str(repo), "home": str(home)}
 
 
@@ -555,7 +559,7 @@ def ensure_uv(
         return {
             "ok": False,
             "status": "blocked",
-            "note": "未找到 uv，数据根私有安装也失败：" + installed["error"],
+            "note": "未找到 uv，私有安装也失败：" + installed["error"],
             "evidence": {"source": "missing", "install": installed},
         }
     version = _run([installed["path"], "--version"], runner=runner, timeout=60)
@@ -620,7 +624,7 @@ def ensure_environment(
             "created": False,
             "repaired": False,
             "probe": {"ok": True, "error": ""},
-            "note": "已有数据根私有环境通过依赖自检",
+            "note": "已有私有环境通过依赖自检",
         }
 
     recorded_missing = bool(expected) and Path(expected) == python
@@ -642,7 +646,7 @@ def ensure_environment(
             "created": False,
             "repaired": False,
             "probe": {"ok": False, "error": probe_error},
-            "note": f"数据根私有解释器不可用：{python}；修复：{hint}",
+            "note": f"私有解释器不可用：{python}；修复：{hint}",
         }
 
     ensure_dir(home)
@@ -735,7 +739,7 @@ def toolchain(
         raise HostRunError("先执行 install workspace，工作区尚未记录代码与数据目录")
     repo = Path(record["repo"])
     home = Path(record["home"])
-    repair = repair_command(root_path, home)
+    repair = repair_command(root_path, home, code=repo)
     uv = ensure_uv(
         home,
         uv_path=uv_path,
@@ -813,7 +817,7 @@ description: "Install, run, pause or recover frontier on this host. Read the rep
 本文件是安装时生成的**入口指针**，不是仓库副本。运行与安装规则以仓库内文件为准。
 
 - 仓库：{record["repo"]}
-- 数据根：{record["home"]}
+- 运行时区：{record["home"]}
 - 解释器：{record.get("python") or "<由 install toolchain 记录>"}
 - 安装记录：{Path(record["root"]) / RECORD_REL}
 
@@ -933,9 +937,9 @@ def status(root: str | Path) -> dict:
     if not (repo / ".git").exists():
         problems.append(f"代码目录不可用：{repo}")
     if not home.is_dir():
-        problems.append(f"数据根不可用：{home}")
+        problems.append(f"运行时区不可用：{home}")
     if venv and not venv.is_dir():
-        problems.append(f"数据根私有环境不可用：{venv}")
+        problems.append(f"私有环境不可用：{venv}")
     if not python.is_file():
         problems.append(f"解释器不可用：{python}")
     if not uv.is_file():

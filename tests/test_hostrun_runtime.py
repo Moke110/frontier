@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from conftest import seed_queue
+from conftest import seed_queue, cli_locations
 from hostrun import audit, cli, executor, feedback, install, intents
 
 
@@ -190,7 +190,7 @@ def test_run_owns_its_lease_by_default(configured_home, offline_base):
 def test_run_with_a_caller_held_lease_does_not_acquire_or_release(
     configured_home, offline_base, monkeypatch
 ):
-    """#72 item 3: the listener's lease survives the inner bounded run."""
+    """#72 item 3: the caller-held lease survives the inner bounded run."""
     home = _home(configured_home, offline_base, [])
     executor.acquire(home, host="workbuddy", minutes=45)
     calls = []
@@ -311,7 +311,7 @@ def test_audit_missing_baseline_file_is_an_error(tmp_path):
 
 # ---------------------------------------------------------------------- cli
 def test_cli_reports_install_status_as_json(tmp_path, capsys):
-    code = cli.main(["--home", str(tmp_path), "install", "status"])
+    code = cli.main([*cli_locations(tmp_path), "install", "status"])
     payload = json.loads(capsys.readouterr().out)
 
     assert code == 0
@@ -319,9 +319,9 @@ def test_cli_reports_install_status_as_json(tmp_path, capsys):
 
 
 def test_cli_feedback_setup_and_status_offline(configured_home, offline_base, capsys):
-    assert cli.main(["--home", str(configured_home), "--offline", "feedback", "setup"]) == 0
+    assert cli.main([*cli_locations(configured_home), "--offline", "feedback", "setup"]) == 0
     capsys.readouterr()
-    assert cli.main(["--home", str(configured_home), "--offline", "feedback", "status"]) == 0
+    assert cli.main([*cli_locations(configured_home), "--offline", "feedback", "status"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["questions"] == 0
@@ -330,88 +330,21 @@ def test_cli_feedback_setup_and_status_offline(configured_home, offline_base, ca
 
 def test_cli_rejects_an_unknown_intent(configured_home, capsys):
     with pytest.raises(SystemExit):
-        cli.main(["--home", str(configured_home), "run", "--intent", "hourly"])
+        cli.main([*cli_locations(configured_home), "run", "--intent", "hourly"])
 
 
-# ---------------------------------------------------------------- schedules
-def test_schedules_are_unconfirmed_until_the_user_says_yes(configured_home):
-    from hostrun import install, schedules
-
-    pending = schedules.confirm(configured_home, daily="08:00", confirmed_by_user=False)
-    assert pending["ok"] is False
-    assert pending["reason"] == "needs_user_confirmation"
-    status = schedules.status(configured_home)
-    assert status["enabled"] is False
-    assert status["confirmed_at"] is None
-
-    agreed = schedules.confirm(configured_home, daily="08:00", confirmed_by_user=True)
-    assert agreed["ok"] is True
-    assert agreed["created"] is False  # the host has not created anything yet
-    assert schedules.status(configured_home)["enabled"] is False
-
-    install.record(configured_home, "knowledge", "ok")
-    created = schedules.confirm(
-        configured_home,
-        daily="08:00",
-        confirmed_by_user=True,
-        host_created=True,
-        task_ids={"frontier-daily": "host-1", "frontier-listener-check": "host-2"},
-    )
-    assert created["created"] is True
-    assert schedules.status(configured_home)["enabled"] is True
-
-
-def test_schedule_commands_are_actually_runnable(configured_home):
-    from hostrun import cli as hostrun_cli
-    from hostrun import intents, schedules
-
-    spec = schedules.plan(configured_home)
-
-    assert [task["intent"] for task in spec["tasks"]] == ["daily", "listener-check"]
-    assert all(task["intent"] in intents.INTENTS for task in spec["tasks"])
-    assert all(task["load_skill"] for task in spec["tasks"])
-    for task in spec["tasks"]:
-        tokens = task["command"].split()
-        argv = tokens[tokens.index("hostrun.cli") + 1 :]  # drop the interpreter path
-        parsed = hostrun_cli.build_parser().parse_args(hostrun_cli._normalize(argv))
-        assert parsed.cmd == "run"
-        assert parsed.intent == task["intent"]
-        assert parsed.home
-        assert parsed.scheduled is True
-        assert parsed.task == task["id"]
-
-
-def test_invalid_clock_is_rejected(configured_home):
-    from hostrun import schedules
-    from hostrun.base import HostRunError
-
-    with pytest.raises(HostRunError):
-        schedules.plan(configured_home, daily="8:00")
-    with pytest.raises(HostRunError):
-        schedules.plan(configured_home, listener_check="9:00")
-
-
-def test_schedules_cli_plans_the_two_instant_tasks(configured_home, capsys):
-    code = cli.main(
-        ["--home", str(configured_home), "schedules", "plan", "--listener-check", "10:30"]
-    )
-    payload = json.loads(capsys.readouterr().out)
-
-    assert code == 0
-    assert [task["id"] for task in payload["tasks"]] == [
-        "frontier-daily",
-        "frontier-listener-check",
-    ]
-    assert payload["tasks"][1]["at"] == "10:30"
+# ------------------------------------------------------------- retired paths
+def test_host_schedule_commands_are_gone(configured_home, capsys):
+    """#91 retires the two host tasks; the Console owns scheduling now."""
+    with pytest.raises(SystemExit):
+        cli.main([*cli_locations(configured_home), "schedules", "plan"])
 
     with pytest.raises(SystemExit):
-        cli.main(
-            ["--home", str(configured_home), "schedules", "plan", "--feedback-minute", "5"]
-        )
+        cli.main([*cli_locations(configured_home), "run", "--intent", "listener-check"])
 
 
-def test_home_flag_works_after_the_subcommand(configured_home, capsys):
-    code = cli.main(["install", "status", "--home", str(configured_home)])
+def test_location_flags_work_after_the_subcommand(configured_home, capsys):
+    code = cli.main(["install", "status", *cli_locations(configured_home)])
 
     assert code == 0
     assert json.loads(capsys.readouterr().out)["steps"]

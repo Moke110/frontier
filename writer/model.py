@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from archive.store import v3_prop_from_v2
+from archive.store import Archive, is_under_review, v3_prop_from_v2
 from common import clip, now, read_json, write_json
 from frontier.model import is_temporary_card
 
@@ -75,8 +75,13 @@ def _cards(home: Path) -> list[dict]:
     card_dir = Path(home) / "archive" / "cards"
     rows = [read_json(p) for p in sorted(card_dir.glob("*.json"))] if card_dir.exists() else []
     # Temporary acceptance cards are not formal context; keep the same rule as
-    # frontier.model.load_cards (#55).
-    return [r for r in rows if r and not is_temporary_card(r)]
+    # frontier.model.load_cards (#55).  Under review cards are kept but excluded
+    # from writing context (#88).
+    return [
+        r
+        for r in rows
+        if r and not is_temporary_card(r) and not is_under_review(r)
+    ]
 
 
 def _context(home: Path, card_id: str | None) -> dict:
@@ -84,13 +89,17 @@ def _context(home: Path, card_id: str | None) -> dict:
     card = None
     if card_id:
         card = read_json(root / "cards" / f"{card_id}.json")
+        if card and is_under_review(card):
+            card = None
     prop_dir = root / "propositions"
     props = []
     for path in sorted(prop_dir.glob("*.json")) if prop_dir.exists() else []:
         prop = v3_prop_from_v2(read_json(path) or {})
+        if is_under_review(prop):
+            continue
         if card_id and card_id in prop.get("related_knowledge", []):
             props.append(prop)
-    raw_dir = root / "raw"
+    raw_dir = Archive(Path(home)).raw
     papers = list(raw_dir.glob("*.json")) if raw_dir.exists() else []
     archived = 0
     for path in papers:

@@ -1,6 +1,6 @@
 # 统一问题队列：状态机与闸门
 
-实现契约：用于字段、状态机和兼容行为，不是本地任务规格。开发计划与验收以 GitHub Issues 为准；现行宿主调度与持久反馈见 `contracts/README.md` §12 和 `skills/frontier-run/SKILL.md`。现行常驻组件是用户手动启停的 `frontier-listener`（[ADR 0008](../docs/adr/0008-listener-process.md)）；下文旧 listener / systemd 路径仅描述兼容实现，不授权启动旧部署。
+实现契约：用于字段、状态机和兼容行为，不是本地任务规格。开发计划与验收以 GitHub Issues 为准；现行宿主调度与持久反馈见 `contracts/README.md` §12 和 `skills/frontier-run/SKILL.md`。现行常驻组件是用户手动启停的控制台（[ADR 0009](../docs/adr/0009-console-as-service.md)）；下文旧 listener / systemd 路径仅描述兼容实现，不授权启动旧部署。
 
 - 票：[统一问题队列的状态机与闸门 #10](https://github.com/Moke110/frontier/issues/10)
 - 状态：定稿（供 #16 / #17 / #18 实现）
@@ -26,7 +26,7 @@
 ## 2. 文件与所有权
 
 ```
-$KL_HOME/
+<运行时区>/
 ├── queue/
 │   ├── state.json          # 队列唯一真相（queue 模块写）
 │   ├── events.jsonl        # 只追加：enqueue/activate/send/answer/drop/fail/retry/request

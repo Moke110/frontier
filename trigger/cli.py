@@ -8,7 +8,9 @@ import os
 import sys
 from pathlib import Path
 
-from common import emit, home
+from common import emit
+from hostrun import layout
+from hostrun.base import HostRunError
 from trigger.keywords import parse, resolve_checkpoint
 from trigger.service import (
     Config,
@@ -24,7 +26,8 @@ from trigger.service import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trigger", description=__doc__)
     parser.add_argument("--repo", default=str(Path(__file__).resolve().parents[1]))
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument("--code", help="code directory (default: this checkout)")
+    parser.add_argument("--archive", help="archive directory (default: <code>/../frontier-archive)")
     parser.add_argument("--owner", help="owner open_id (default: $FRONTIER_OWNER_ID)")
     parser.add_argument("--timeout", type=int, default=1800, help="agent timeout seconds")
     parser.add_argument("--dry-run", action="store_true", help="ack locally, do not call Lark/agent")
@@ -48,10 +51,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    try:
+        args = build_parser().parse_args(layout.cli_argv(argv))
+        resolved = layout.resolve_for_cli(args)
+    except HostRunError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    layout.export(resolved)
     config = Config(
         repo=Path(args.repo).expanduser().resolve(),
-        home=home(args.home),
+        home=Path(resolved["runtime"]),
         owner=load_owner(args.owner),
         timeout=args.timeout,
         dry_run=args.dry_run or os.environ.get("FRONTIER_DRY_RUN") == "1",

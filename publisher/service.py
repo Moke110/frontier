@@ -9,7 +9,9 @@ import sys
 import time
 from pathlib import Path
 
+from archive.store import Archive
 from common import append_jsonl, emit, now, read_json, read_jsonl, stable_id
+from hostrun import layout
 from publisher import feishu
 from publisher.cards import (
     ACTION_VERDICT,
@@ -28,7 +30,7 @@ ENABLE_APPROVALS = False
 
 
 def _push_path(home: Path, push_id: str) -> Path:
-    return Path(home) / "archive" / "pushes" / f"{push_id}.json"
+    return Archive(Path(home)).pushes / f"{push_id}.json"
 
 
 ATTEMPTS_REL = Path("publisher") / "send-attempts.jsonl"
@@ -136,11 +138,11 @@ def _spawn_pending(home: Path, owner: str) -> dict:
     """Start the pending retrieval request in a detached process."""
     repo = Path(__file__).resolve().parents[1]
     home = Path(home)
-    cmd = [sys.executable, "-m", "trigger.cli", "--home", str(home)]
+    cmd = [sys.executable, "-m", "trigger.cli"]
     if owner:
         cmd += ["--owner", owner]
     cmd.append("run-request")
-    env = {**os.environ, "KL_HOME": str(home)}
+    env = {**os.environ, **layout.handoff(home)}
     log_path = home / "publisher" / "trigger-spawn.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -182,11 +184,11 @@ def _spawn_review(home: Path, owner: str, item_id: str) -> dict:
     """Start the review-writing agent for one queued review item."""
     repo = Path(__file__).resolve().parents[1]
     home = Path(home)
-    cmd = [sys.executable, "-m", "trigger.cli", "--home", str(home)]
+    cmd = [sys.executable, "-m", "trigger.cli"]
     if owner:
         cmd += ["--owner", owner]
     cmd += ["review-request", "--item", item_id]
-    env = {**os.environ, "KL_HOME": str(home)}
+    env = {**os.environ, **layout.handoff(home)}
     log_path = home / "publisher" / "trigger-spawn.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -222,8 +224,8 @@ def _spawn_sync(home: Path, owner: str) -> dict:
     if not (Path(home) / "knowledge" / "base.json").exists():
         return {"ok": True, "skipped": "no_config"}
     repo = Path(__file__).resolve().parents[1]
-    cmd = [sys.executable, "-m", "knowledge.cli", "--home", str(home), "sync"]
-    env = {**os.environ, "KL_HOME": str(home)}
+    cmd = [sys.executable, "-m", "knowledge.cli", "sync"]
+    env = {**os.environ, **layout.handoff(home)}
     log_path = Path(home) / "publisher" / "trigger-spawn.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -244,8 +246,8 @@ def _run_cli(home: Path, module: str, *args: str, timeout: int = 600) -> dict:
     """Run another module's CLI synchronously and return its JSON result."""
     repo = Path(__file__).resolve().parents[1]
     home = Path(home)
-    cmd = [sys.executable, "-m", module, "--home", str(home), *args]
-    env = {**os.environ, "KL_HOME": str(home)}
+    cmd = [sys.executable, "-m", module, *args]
+    env = {**os.environ, **layout.handoff(home)}
     proc = subprocess.run(
         cmd,
         cwd=str(repo),
@@ -513,7 +515,7 @@ def _duplicate_reason(home: Path, push: dict) -> dict | None:
             return {"reason": "already_sent", "push_id": push_id}
 
     papers = set(push.get("paper_ids") or [])
-    for path in sorted((home / "archive" / "pushes").glob("*.json")):
+    for path in sorted(Archive(home).pushes.glob("*.json")):
         other = read_json(path) or {}
         if other.get("push_id") == push_id:
             continue

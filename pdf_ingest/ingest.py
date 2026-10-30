@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from archive.store import Archive, ArchiveError
-from common import emit, home, now, paper_id as make_source_paper_id, slug, write_json
+from common import emit, now, paper_id as make_source_paper_id, slug, write_json
 
 PAGE_SEP = "\n\n"
 DEFAULT_MANIFEST = "fixtures/pdf-manifest.jsonl"
@@ -310,21 +310,34 @@ def summary(report: dict) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
+    import json
+    import sys
+    from pathlib import Path
+
+    from hostrun import layout
+    from hostrun.base import HostRunError
 
     parser = argparse.ArgumentParser(prog="pdf_ingest", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument("--code", help="code directory (default: this checkout)")
+    parser.add_argument("--archive", help="archive directory (default: <code>/../frontier-archive)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("run", help="ingest a manifest of PDFs")
     p.add_argument("--manifest", default=DEFAULT_MANIFEST)
     p.add_argument("--limit", type=int)
     p.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(layout.cli_argv(argv))
+        resolved = layout.resolve_for_cli(args)
+    except HostRunError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    layout.export(resolved)
 
     if args.cmd != "run":  # pragma: no cover - argparse enforces this
         parser.error(f"unknown command {args.cmd}")
 
     report = run(
-        home(args.home),
+        Path(resolved["runtime"]),
         args.manifest,
         limit=args.limit,
         dry_run=args.dry_run,

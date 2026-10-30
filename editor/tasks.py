@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from common import now, read_json, read_yaml
+from archive.store import Archive, is_under_review
 from frontier.model import is_temporary_card
 
 INSTRUCTIONS = """你是检索排序器。根据每张知识卡片的 ontology / annotation 与关联命题，
@@ -24,8 +25,13 @@ def _cards(home: Path) -> list[dict]:
     card_dir = Path(home) / "archive" / "cards"
     rows = [read_json(p) for p in sorted(card_dir.glob("*.json"))] if card_dir.exists() else []
     # Temporary acceptance cards live in the same archive but are not knowledge:
-    # ranking context must never see them (#55).
-    return [r for r in rows if r and not is_temporary_card(r)]
+    # ranking context must never see them (#55).  Under review cards are kept
+    # but equally excluded from formal ranking (#88).
+    return [
+        r
+        for r in rows
+        if r and not is_temporary_card(r) and not is_under_review(r)
+    ]
 
 
 def _card_context(home: Path, card: dict, weight: int) -> dict:
@@ -36,6 +42,8 @@ def _card_context(home: Path, card: dict, weight: int) -> dict:
     if prop_dir.exists():
         for path in sorted(prop_dir.glob("*.json")):
             prop = read_json(path) or {}
+            if is_under_review(prop):
+                continue
             if card_id and card_id in prop.get("related_knowledge", []):
                 props.append(
                     {
@@ -50,7 +58,7 @@ def _card_context(home: Path, card: dict, weight: int) -> dict:
                     }
                 )
     archived = 0
-    raw_dir = root / "raw"
+    raw_dir = Archive(Path(home)).raw
     if raw_dir.exists():
         for path in raw_dir.glob("*.json"):
             rec = read_json(path) or {}
@@ -73,7 +81,7 @@ def _card_context(home: Path, card: dict, weight: int) -> dict:
 
 
 def _pushed_paper_ids(home: Path) -> set[str]:
-    push_dir = Path(home) / "archive" / "pushes"
+    push_dir = Archive(Path(home)).pushes
     pushed: set[str] = set()
     if push_dir.exists():
         for path in sorted(push_dir.glob("*.json")):

@@ -1,10 +1,13 @@
 """archive: the only writer of the knowledge store.
 
-Layers (all under $KL_HOME/archive):
-  1. raw/          original papers (metadata + text + PDF page anchors)
-  2. pushes/       generated pushes (long-form PDF payload + proposals)
-  3. cards/        knowledge cards (id / label / ontology / annotation)
-  4. propositions/ cross-paper claims with history and related cards
+Knowledge state lives under ``<runtime>/archive``:
+  1. cards/        knowledge cards (id / label / ontology / annotation)
+  2. propositions/ cross-paper claims with history and related cards
+  3. index/        materialized indexes
+
+Material lives in the resolved archive directory (``--archive``, ADR 0009):
+  4. originals/    original papers (metadata + text + PDF page anchors)
+  5. pushes/       generated pushes (long-form PDF payload + proposals)
 
 A knowledge card has no links of its own. Propositions are the only place that
 connects cards (``related_knowledge``, at least two cards).
@@ -69,6 +72,22 @@ class ArchiveError(RuntimeError):
     pass
 
 
+def is_under_review(record: dict | None) -> bool:
+    """Whether a card or proposition is kept but excluded from formal work.
+
+    The flag is optional: a missing key (every record written before this
+    field existed) means not under review.  Writes validate the type, so this
+    only needs a truthful boolean read.
+    """
+    return bool((record or {}).get("under_review", False))
+
+
+def _validate_under_review(record: dict, kind: str) -> None:
+    value = record.get("under_review")
+    if value is not None and not isinstance(value, bool):
+        raise ArchiveError(f"{kind} under_review must be a boolean")
+
+
 # --------------------------------------------------------------------- ids
 def _taken(prefix: str, existing: dict[str, dict]) -> set[str]:
     return set(existing)
@@ -122,6 +141,7 @@ def _validate_card(card: dict) -> None:
         raise ArchiveError(f"card missing {', '.join(missing)}")
     if not CARD_ID_RE.match(card["id"]):
         raise ArchiveError(f"bad card id {card['id']!r} (want card_<slug>)")
+    _validate_under_review(card, "card")
     if not isinstance(card["ontology"], list) or not all(
         isinstance(t, str) and t.strip() for t in card["ontology"]
     ):
@@ -179,6 +199,7 @@ def _validate_prop(prop: dict, cards: dict[str, dict]) -> None:
         raise ArchiveError(f"proposition missing {', '.join(missing)}")
     if not PROP_ID_RE.match(prop["id"]):
         raise ArchiveError(f"bad proposition id {prop['id']!r} (want prop_<slug>)")
+    _validate_under_review(prop, "proposition")
     related = prop["related_knowledge"]
     if not isinstance(related, list) or len(related) < MIN_RELATED_CARDS:
         raise ArchiveError(
@@ -266,6 +287,8 @@ def v3_prop_from_v2(prop: dict) -> dict:
         "created_at": prop.get("created_at") or now(),
         "updated_at": prop.get("updated_at") or now(),
     }
+    if "under_review" in prop:
+        out["under_review"] = bool(prop["under_review"])
     counter = 0
     for entry in prop.get("history") or []:
         at = entry.get("at") or now()
@@ -351,13 +374,35 @@ def v3_prop_from_v2(prop: dict) -> dict:
 
 
 class Archive:
-    def __init__(self, home: Path):
+    def __init__(self, home: Path, archive: str | Path | None = None):
         self.home = Path(home)
+        # Knowledge state (cards/propositions/index) stays in the runtime area;
+        # research material (raw papers, page anchors, pushes) lives in the
+        # resolved archive directory as ``originals/`` and ``pushes/`` (ADR 0009,
+        # #76/#77).  Resolving through ``layout`` is what keeps migration and
+        # every reader on one path model instead of two.
         self.root = self.home / "archive"
-        self.raw = self.root / "raw"
+        from hostrun import layout
+
+        resolved = (
+            Path(archive).expanduser()
+            if archive is not None
+            else layout.archive_for_runtime(self.home)
+        )
+        if resolved is not None:
+            self.archive_root = Path(resolved).expanduser().resolve()
+            self.raw = self.archive_root / "originals"
+            self.pushes = self.archive_root / "pushes"
+            self.legacy_material = False
+        else:
+            # No layout record and no handoff yet: an uninitialized/isolated
+            # runtime keeps the legacy runtime-resident store.
+            self.archive_root = self.root
+            self.raw = self.root / "raw"
+            self.pushes = self.root / "pushes"
+            self.legacy_material = True
         self.raw_text = self.raw / "text"
         self.pages = self.raw / "pages"
-        self.pushes = self.root / "pushes"
         self.cards = self.root / "cards"
         self.props = self.root / "propositions"
         self.index = self.root / "index"
@@ -411,6 +456,29 @@ class Archive:
     # ------------------------------------------------------------ layer 1
     def _text_path(self, pid: str) -> Path:
         return self.raw_text / f"{pid}.txt"
+
+    def get_text(self, pid: str) -> str:
+        """Full text of one stored paper; raises when the material is missing."""
+        path = self._text_path(pid)
+        if not path.is_file():
+            raise ArchiveError(f"unknown paper text: {pid}")
+        return path.read_text(encoding="utf-8")
+
+    def material_path(self, relative: str | Path) -> Path:
+        """Resolve a stored ``raw/...`` or ``pushes/...`` path to its real file.
+
+        Records written before the archive split carry paths relative to the old
+        ``<runtime>/archive`` root.  After migration the same relative path means
+        ``<archive>/originals/...`` or ``<archive>/pushes/...``; this keeps those
+        recorded paths readable without rewriting every record.
+        """
+        rel = Path(relative)
+        if not self.legacy_material and rel.parts:
+            if rel.parts[0] == "raw":
+                return self.raw.joinpath(*rel.parts[1:])
+            if rel.parts[0] == "pushes":
+                return self.pushes.joinpath(*rel.parts[1:])
+        return self.root / rel
 
     def find_paper(self, source: str, source_id: str) -> dict | None:
         """Look up the dedupe key ``source:source_id`` across raw records."""
@@ -572,12 +640,37 @@ class Archive:
             raise ArchiveError(f"unknown card: {card_id}")
         return rec
 
-    def list_cards(self, enabled_only: bool = False) -> list[dict]:
+    def list_cards(
+        self, enabled_only: bool = False, *, include_under_review: bool = True
+    ) -> list[dict]:
         rows = [read_json(p) for p in sorted(self.cards.glob("*.json"))]
         rows = [r for r in rows if r]
         if enabled_only:
             rows = [r for r in rows if r.get("enabled", True)]
+        if not include_under_review:
+            rows = [r for r in rows if not is_under_review(r)]
         return rows
+
+    def set_under_review(
+        self, record_id: str, flag: bool, *, kind: str = "card"
+    ) -> dict:
+        """Set or clear the optional review flag without a changelog entry.
+
+        ``pull`` uses this for an owner's Base checkbox; the review console
+        (#90) can reuse it when a kept candidate is written with the flag.
+        """
+        flag = bool(flag)
+        if kind == "card":
+            record = self.get_card(record_id)
+            record["under_review"] = flag
+            self.put_card(record)
+        elif kind == "proposition":
+            record = self.get_prop(record_id)
+            record["under_review"] = flag
+            self.put_prop(record)
+        else:
+            raise ArchiveError(f"unknown record kind {kind!r}")
+        return {"kind": kind, "id": record_id, "under_review": flag}
 
     # ------------------------------------------------------------ layer 4
     def put_prop(self, prop: dict) -> dict:
@@ -609,9 +702,13 @@ class Archive:
             raise ArchiveError(f"unknown proposition: {prop_id}")
         return v3_prop_from_v2(rec)
 
-    def list_props(self, card_id: str | None = None) -> list[dict]:
+    def list_props(
+        self, card_id: str | None = None, *, include_under_review: bool = True
+    ) -> list[dict]:
         rows = [read_json(p) for p in sorted(self.props.glob("*.json"))]
         rows = [v3_prop_from_v2(r) for r in rows if r]
+        if not include_under_review:
+            rows = [r for r in rows if not is_under_review(r)]
         if card_id:
             rows = [r for r in rows if card_id in r.get("related_knowledge", [])]
         return rows

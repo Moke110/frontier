@@ -1,7 +1,5 @@
 # frontier 检索、写作与知识更新参考
 
-> 状态：控制台化设计已定（[ADR 0009](../../../docs/adr/0009-console-as-service.md)），代码尚未实现。本文件描述目标流程；当前仓库仍按旧流程运行。
-
 由 [frontier 运行时入口](../SKILL.md) 按需加载的完整流程参考；命令以**代码目录**为工作目录执行。agent 负责**排序（editor）与写作（writer）**；脚本负责取数、校验、入队、落盘。所有知识库写入都经过 archive / `KnowledgeStore`，agent 不直接改存储。
 
 文中的 Phase 标签表示能力来源，不能作为当前安装或云端切换已通过的证据。运行前检查安装报告与实际知识库状态；同步由控制台每 10 分钟的有界轮询承担，不单独安装系统定时器。真实验收限制见 [验收记录](../../../docs/acceptance/)。
@@ -11,9 +9,9 @@
 1. 已按 [安装参考](installation.md) 验证本地宿主、解释器、飞书 CLI 和知识库；定时运行由控制台计时，不再依赖宿主内置调度。
 2. `lark-cli` 装在代码目录的运行目录并已登录；登录状态由 `hostrun install` 的 `identity` 步骤验证，不靠 `command -v` 猜。
 3. 常驻的只有用户可见、关闭即停的控制台（[ADR 0009](../../../docs/adr/0009-console-as-service.md)）：它按每日时刻启动一次 agent 运行、消费飞书消息与卡片回调、每 5 分钟反馈轮询、每 10 分钟 `knowledge.cli pull`。agent 运行是「一次有界运行 → 退出」，不挂会话。不装 systemd、不写持久环境变量。
-4. 目录拆分：代码、私有环境、配置、运行状态、日志与资料登记在**代码目录**（`<code>`，运行目录 `<code>/runtime/`）；原文 `originals/` 与推送件 `pushes/` 在**资料目录**（`<archive>`），资料目录里没有台账。
+4. 目录拆分：代码、私有环境、配置、运行状态、日志与资料登记在**代码目录**（`<code>`，运行时区 `<code>/.frontier/`）；原文 `originals/` 与推送件 `pushes/` 在**资料目录**（`<archive>`），资料目录里没有台账。
 
-所有模块命令显式传入 `--code <代码目录>` 与 `--archive <资料目录>`（控制台化后取代旧的 `--home`；安装记录里保存两者的绝对路径）：
+所有模块命令显式传入 `--code <代码目录>` 与 `--archive <资料目录>`（旧 `--home` 已移除；安装记录里保存两者的绝对路径）：
 
 ```bash
 python -m hostrun.cli --code <code> --archive <archive> install status
@@ -173,8 +171,8 @@ python -m hostrun.cli --code <code> --archive <archive> feedback sync
 ### 3.8 综述题
 
 - 第 10 条证据被采纳 → 队列追加 `proposition_review` 题（`ready=false`），占住闸门。
-- 控制台在派生的一次 agent 运行中处理该题：`writer.cli review-task` → 写 review JSON → `review-check` → `review-render` →
-  `question_queue.cli review-ready` → `publisher.cli deliver`。derived 运行的单飞行、租约、时限与不重试护栏沿用运行时入口。
+- 控制台在派生的一次 Agent 运行中处理该题：`writer.cli review-task` → 写 review JSON → `review-check` → `review-render` →
+  `question_queue.cli review-ready` → `publisher.cli deliver`。Agent 运行的单飞行、租约、时限与不重试护栏沿用运行时入口。
 - 综述 HTML + 确认卡推送；`采纳此版` 写入并清零计数，`保持上一版` 保留计数。
 - 综述题不占每篇推送的 2 个实体名额。
 
@@ -299,7 +297,7 @@ python -m hostrun.cli --code <code> --archive <archive> feedback sync
 | 队列闸住 | `question_queue.cli status`，再 `retry` / `abandon` |
 | Bitable 写入部分成功（Phase 3） | 查 group journal，`retry` 从断点继续，不重复写 |
 | 取消「待复核」后检索仍不包含该卡片 | 等下一次 10 分钟 pull，或让控制台立即执行一次 `knowledge.cli pull` |
-| agent 运行没有产出 | 看 `/frontier-logs` 与 `<code>/runtime/logs/agent-<run_id>.log`；确认记录里的 `dsh` 与 `--patch` overlay 有效 |
+| agent 运行没有产出 | 看 `/frontier-logs` 与 `<code>/.frontier/logs/agent-<run_id>.log`；确认记录里的 `dsh` 与 `--patch` overlay 有效 |
 
 ## 10. 参考
 
@@ -307,4 +305,4 @@ python -m hostrun.cli --code <code> --archive <archive> feedback sync
 - `contracts/agent-tasks.md`：editor / writer 任务包与校验规则。
 - `contracts/question-queue.md`：队列状态机与闸门。
 - `docs/adr/`：知识卡片、命题 v3、Bitable 权威、控制台作为服务等决策记录。
-- `fixtures/`：离线数据根与论文。
+- `fixtures/`：离线运行时区与论文。

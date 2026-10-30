@@ -1,4 +1,4 @@
-"""archive CLI — the only writer of $KL_HOME/archive."""
+"""archive CLI — the only writer of the runtime area's archive store."""
 
 from __future__ import annotations
 
@@ -9,7 +9,9 @@ from pathlib import Path
 
 from archive import migrate as migration
 from archive.store import Archive, ArchiveError
-from common import emit, home, read_json
+from common import emit, read_json
+from hostrun import layout
+from hostrun.base import HostRunError
 
 
 def _payload(args) -> dict:
@@ -28,7 +30,8 @@ def _payload(args) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="archive", description=__doc__)
-    parser.add_argument("--home", help="data root (default: $KL_HOME or ~/knowledge-loop)")
+    parser.add_argument("--code", help="code directory (default: this checkout)")
+    parser.add_argument("--archive", help="archive directory (default: <code>/../frontier-archive)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init", help="create layer directories")
@@ -102,9 +105,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    root = home(args.home)
-    store = Archive(root)
+    try:
+        args = build_parser().parse_args(layout.cli_argv(argv))
+        resolved = layout.resolve_for_cli(args)
+    except HostRunError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    layout.export(resolved)
+    root = Path(resolved["runtime"])
+    store = Archive(root, archive=resolved["archive"])
     try:
         if args.cmd == "init":
             emit(store.init())

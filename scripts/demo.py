@@ -10,7 +10,7 @@ instead of calling writer render; the real seven-section HTML is written by the
 host agent. Nothing is applied to the knowledge base before an explicit
 agreement, which is exactly what step 10 shows.
 
-Runs in a throwaway $KL_HOME; never touches the real data root.
+Runs in a throwaway code directory; never touches the real runtime area.
 """
 
 from __future__ import annotations
@@ -49,10 +49,16 @@ def run(args: list[str], env: dict, quiet: bool = False) -> dict:
 
 
 def main() -> int:
-    home = Path(tempfile.mkdtemp(prefix="kl-demo-"))
+    code = Path(tempfile.mkdtemp(prefix="kl-demo-")) / "code"
+    home = code / ".frontier"
     shutil.copytree(ROOT / "fixtures" / "home", home, dirs_exist_ok=True)
-    env = {**os.environ, "KL_HOME": str(home)}
-    print(f"KL_HOME = {home}")
+    env = {
+        **os.environ,
+        "FRONTIER_CODE": str(code),
+        "FRONTIER_ARCHIVE": str(code.parent / "frontier-archive"),
+        "FRONTIER_RUNTIME": str(home),
+    }
+    print(f"运行时区 = {home}")
 
     step("1. archive: 四层存储（fixtures 已预置知识卡片 + 命题）")
     run([PY, "-m", "archive.cli", "reindex"], env)
@@ -231,7 +237,7 @@ def main() -> int:
     print(f"评分记录：{ratings.read_text().strip() if ratings.exists() else '（无）'}")
     print(f"\n全部产物在 {home}")
     print("可单独重跑任一模块，例如：")
-    print(f"  python -m question_queue.cli --home {home} status")
+    print(f"  python -m question_queue.cli status（沿用上面的 FRONTIER_* 环境变量）")
     return 0
 
 

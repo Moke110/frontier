@@ -10,7 +10,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from common import home as data_home
+from common import runtime_root as runtime_area
 from common import read_json
 
 BIN = "lark-cli"
@@ -102,12 +102,12 @@ def classify_exit(returncode: int | None, *, detail: str = "") -> dict:
 def _recorded_executable() -> str:
     """The absolute CLI path recorded by ``hostrun lark discover`` (ADR 0007).
 
-    The data root holds ``install/config.json`` with ``paths.lark_cli``; nothing
+    The runtime area holds ``install/config.json`` with ``paths.lark_cli``; nothing
     here reads or copies a credential.
     """
     try:
-        root = data_home()
-    except Exception:  # noqa: BLE001 - no data root means no recorded path
+        root = runtime_area()
+    except Exception:  # noqa: BLE001 - no runtime area means no recorded path
         return ""
     config = read_json(Path(root) / "install" / "config.json", {}) or {}
     recorded = str((config.get("paths") or {}).get("lark_cli") or "").strip()
@@ -448,13 +448,19 @@ def _consume_lines(
     on_stderr: Callable[[str], Any] | None = None,
     deadline_seconds: float | None = None,
     popen: Callable[..., Any] | None = None,
+    stop_event: Any | None = None,
 ) -> Iterator[str]:
     """Yield stripped NDJSON stdout lines while draining stderr concurrently.
 
     ``state`` is mutated so the caller can build a result once the iterator is
     exhausted (or closed early).  ``--max-events``/``--timeout`` bound the child
-    itself; ``deadline_seconds`` additionally kills a hung child from this side.
+    itself; ``deadline_seconds`` additionally kills a hung child from this side,
+    and ``stop_event`` lets the owner (the Console) terminate a bounded chunk at
+    shutdown instead of waiting out its timeout.
     """
+    if stop_event is not None and stop_event.is_set():
+        state["stopped"] = True
+        return
     spawn = subprocess.Popen if popen is None else popen
     # lark-cli treats stdin EOF as "shutdown"; keep the pipe open for the
     # lifetime of the bounded chunk.
@@ -497,6 +503,20 @@ def _consume_lines(
         timer.daemon = True
         timer.start()
 
+    finished = threading.Event()
+    watcher = None
+    if stop_event is not None:
+
+        def _watch_stop() -> None:
+            while not finished.is_set():
+                if stop_event.wait(timeout=0.1):
+                    state["stopped"] = True
+                    _terminate(proc)
+                    return
+
+        watcher = threading.Thread(target=_watch_stop, name="feishu-stop", daemon=True)
+        watcher.start()
+
     try:
         for raw in proc.stdout:
             line = str(raw).strip()
@@ -505,6 +525,9 @@ def _consume_lines(
             state["events"] += 1
             yield line
     finally:
+        finished.set()
+        if watcher is not None:
+            watcher.join(timeout=1.0)
         if timer is not None:
             timer.cancel()
         _close(proc.stdin)
@@ -562,6 +585,7 @@ def listen_events(
     on_stderr: Callable[[str], Any] | None = None,
     deadline_seconds: float | None = None,
     popen: Callable[..., Any] | None = None,
+    stop_event: Any | None = None,
 ) -> dict:
     """Consume one bounded ``lark-cli event consume`` chunk (issue #63).
 
@@ -572,7 +596,9 @@ def listen_events(
     stdout line and may return ``False`` to stop early; ``deadline_seconds``
     kills a hung child.  ``on_stderr`` is the diagnostic seam proving the drain
     keeps up (the bounded tail/readiness logic is internal); no production
-    caller is required for it to be worth keeping.
+    caller is required for it to be worth keeping.  ``stop_event`` terminates a
+    running chunk during Console shutdown, so closing the Console never waits
+    out a full 30-second consume.
 
     Never raises for a non-zero child exit; returns
     ``{"ok", "reason", "kind", "returncode", "fatal", "retryable", "ready",
@@ -591,6 +617,7 @@ def listen_events(
         on_stderr=on_stderr,
         deadline_seconds=deadline_seconds,
         popen=popen,
+        stop_event=stop_event,
     )
     try:
         for line in lines:

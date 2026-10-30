@@ -1,8 +1,8 @@
-"""Host-run config base: recorded ``dsh`` path, listener defaults, redaction.
+"""Host-run config base: recorded ``dsh`` path, Agent-run defaults, redaction.
 
-The listener (ADR 0008) is the only resident component; everything it needs is
-recorded configuration, so these tests stay offline: no real ``dsh``, no PATH
-fallback, no network or credentials.
+The Console (ADR 0009) is the only resident component; everything its Agent runs
+need is recorded configuration, so these tests stay offline: no real ``dsh``, no
+PATH fallback, no network or credentials.
 """
 
 import json
@@ -33,39 +33,27 @@ def _repair_hint(home: Path) -> str:
 
 
 # ---------------------------------------------------------------- defaults
-def test_default_config_records_dsh_and_listener_defaults(tmp_path):
+def test_default_config_records_dsh_and_agent_run_defaults(tmp_path):
     config = base.default_config(tmp_path / "home")
 
     assert config["paths"]["dsh"] == ""
-    assert config["listener"] == {
-        "window_title": "frontier-listener",
-        "heartbeat_seconds": 60,
-        "feedback_poll_seconds": 300,
+    assert config["agent_run"] == {
         "feedback_lease_minutes": 45,
         "derived_timeout_seconds": 1200,
-        "heartbeat_stale_seconds": 600,
-        "event_stale_seconds": 3600,
-        "recovery_recheck_seconds": 30,
-        "start_command": "",
-        "stop_command": "",
         "dsh_args": [],
     }
+    assert "listener" not in config
+    assert "schedules" not in config
 
 
-def test_listener_dir_points_at_home_listener(tmp_path):
-    home = tmp_path / "home"
-
-    assert base.listener_dir(home) == Path(home) / "listener"
-
-
-def test_load_config_fills_listener_defaults_without_overwriting(tmp_path):
+def test_load_config_fills_agent_run_defaults_without_overwriting(tmp_path):
     home = tmp_path / "home"
     _write_config(
         home,
         {
             "schema_version": 1,
             "paths": {"dsh": "D:/tools/dsh.cmd"},
-            "listener": {"window_title": "custom-title", "heartbeat_seconds": 30},
+            "agent_run": {"feedback_lease_minutes": 10},
         },
     )
 
@@ -73,45 +61,61 @@ def test_load_config_fills_listener_defaults_without_overwriting(tmp_path):
 
     # recorded values win ...
     assert config["paths"]["dsh"] == "D:/tools/dsh.cmd"
-    assert config["listener"]["window_title"] == "custom-title"
-    assert config["listener"]["heartbeat_seconds"] == 30
+    assert config["agent_run"]["feedback_lease_minutes"] == 10
     # ... and the rest of the section is filled from the defaults.
-    assert config["listener"]["feedback_poll_seconds"] == 300
-    assert config["listener"]["derived_timeout_seconds"] == 1200
-    assert config["listener"]["heartbeat_stale_seconds"] == 600
-    assert config["listener"]["recovery_recheck_seconds"] == 30
-    assert config["listener"]["start_command"] == ""
-    assert config["listener"]["stop_command"] == ""
+    assert config["agent_run"]["derived_timeout_seconds"] == 1200
+    assert config["agent_run"]["dsh_args"] == []
     # unrelated sections keep their defaults too.
     assert config["paths"]["python"]
-    assert config["schedules"]["tasks"] == []
 
 
-def test_listener_section_and_dsh_round_trip(tmp_path):
+def test_legacy_listener_config_is_mapped_onto_agent_run(tmp_path):
+    """A migrated install keeps its overlay without the retired section."""
     home = tmp_path / "home"
-    start = str(Path(home) / "bin" / "frontier-listener.cmd")
-    stop = str(Path(home) / "bin" / "frontier-listener-stop.cmd")
+    _write_config(
+        home,
+        {
+            "schema_version": 1,
+            "listener": {
+                "start_command": "C:/old/frontier-listener.cmd",
+                "stop_command": "C:/old/frontier-listener-stop.cmd",
+                "dsh_args": ["--patch", "C:/overlay.yml"],
+                "feedback_lease_minutes": 30,
+            },
+            "schedules": {"enabled": True, "tasks": [{"id": "frontier-daily"}]},
+        },
+    )
+
+    config = base.load_config(home)
+
+    assert config["agent_run"]["dsh_args"] == ["--patch", "C:/overlay.yml"]
+    assert config["agent_run"]["feedback_lease_minutes"] == 30
+    assert config["agent_run"]["derived_timeout_seconds"] == 1200
+    assert "listener" not in config
+    assert "schedules" not in config
+
+
+def test_agent_run_and_dsh_round_trip(tmp_path):
+    home = tmp_path / "home"
 
     base.update_config(
         home,
         paths={"dsh": "C:/tools/dsh.cmd"},
-        listener={"start_command": start, "stop_command": stop},
+        agent_run={"dsh_args": ["--patch", "C:/overlay.yml"]},
     )
     loaded = base.load_config(home)
 
     assert loaded["paths"]["dsh"] == "C:/tools/dsh.cmd"
-    assert loaded["listener"]["start_command"] == start
-    assert loaded["listener"]["stop_command"] == stop
-    assert loaded["listener"]["window_title"] == "frontier-listener"
+    assert loaded["agent_run"]["dsh_args"] == ["--patch", "C:/overlay.yml"]
 
 
-def test_redaction_masks_credentials_but_keeps_paths_and_listener(tmp_path):
+def test_redaction_masks_credentials_but_keeps_paths_and_agent_run(tmp_path):
     home = tmp_path / "home"
     config = base.default_config(home)
     config["paths"]["dsh"] = "C:/tools/dsh.cmd"
     config["paths"]["lark_cli"] = "C:/tools/lark-cli.cmd"
     config["app_secret"] = "s3cret"
-    config["listener"]["start_command"] = "C:/home/bin/frontier-listener.cmd"
+    config["agent_run"]["dsh_args"] = ["--patch", "C:/overlay.yml"]
 
     base.save_config(home, config)
 
@@ -119,7 +123,7 @@ def test_redaction_masks_credentials_but_keeps_paths_and_listener(tmp_path):
     assert written["app_secret"] == "***"
     assert written["paths"]["dsh"] == "C:/tools/dsh.cmd"
     assert written["paths"]["lark_cli"] == "C:/tools/lark-cli.cmd"
-    assert written["listener"]["start_command"] == "C:/home/bin/frontier-listener.cmd"
+    assert written["agent_run"]["dsh_args"] == ["--patch", "C:/overlay.yml"]
 
 
 # -------------------------------------------------------------------- dsh

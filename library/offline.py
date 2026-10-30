@@ -1,6 +1,6 @@
 """Persisted offline Drive + Base for ``--offline`` and local demos.
 
-State lives in two JSON files under ``$KL_HOME/library/``. They are test/demo
+State lives in two JSON files under ``<运行时区>/library/``. They are test/demo
 fixtures, not a second source of truth: normal runs never read them.
 """
 

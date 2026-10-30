@@ -55,6 +55,9 @@ LEGACY_BROAD_SCOPES = {
 }
 READY_STATUSES = {"valid", "ready"}
 REFRESHABLE_STATUSES = {"needs_refresh"}
+#: The Feishu developer console, where bot scopes/app permissions are configured.
+#: The console prints this link when a scope or the bot identity is missing.
+DEVELOPER_CONSOLE_URL = "https://open.feishu.cn/app"
 SCOPE_KEYS = (
     "scopes",
     "scope",
@@ -161,9 +164,11 @@ def discover_cli(root: str | Path, *, spec: str | None = None, home: str | Path 
     rediscovery guidance; it never falls back to a different CLI on PATH.
     """
     root = Path(root).expanduser().resolve()
-    private_dirs = [root / ".frontier" / "bin"]
+    # ``.frontier/bin`` is where a private install writes its launcher;
+    # ``.frontier/lark-cli/bin`` is where a migrated private CLI lives (#76).
+    private_dirs = [root / ".frontier" / "bin", root / ".frontier" / "lark-cli" / "bin"]
     if home:
-        private_dirs.append(Path(home) / "bin")
+        private_dirs.extend([Path(home) / "bin", Path(home) / "lark-cli" / "bin"])
     found = resolve_cli(spec, private_dirs=private_dirs, names=CLI_NAMES)
     result = {"ok": bool(found["found"]), **found}
     if not result["ok"]:
@@ -656,7 +661,7 @@ def status(
             runner=runner,
         )
     else:
-        resources = {"status": "untested", "note": "未提供数据根，跳过资源预检"}
+        resources = {"status": "untested", "note": "未提供运行时区，跳过资源预检"}
     ok = (
         identity_result["status"] == "ok"
         and authz["status"] == "ok"
@@ -717,13 +722,85 @@ def login_command(cli: str | None, *, identity_name: str = "user") -> dict:
     }
 
 
-def complete_login(cli: str, device_code: str, *, runner=subprocess.run) -> dict:
+def _json_object(text: str) -> dict | None:
+    """The first JSON object in a CLI answer, tolerating a log line around it."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    try:
+        value = json.loads(stripped)
+        return value if isinstance(value, dict) else None
+    except json.JSONDecodeError:
+        start, end = stripped.find("{"), stripped.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            value = json.loads(stripped[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, dict) else None
+
+
+def _field(payload: dict, *names: str) -> str:
+    """A non-secret display field from a flat payload or its ``data`` object."""
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    for source in (payload, data):
+        for name in names:
+            value = source.get(name)
+            if value not in (None, ""):
+                return str(value)
+    return ""
+
+
+def request_login(cli: str | None, *, runner=subprocess.run, timeout: int = 60) -> dict:
+    """Ask for a device-code login: the verification URL and the device code.
+
+    The split flow is ``auth login --domain all --no-wait --json``: it returns
+    the URL the user opens and the code that finishes the login.  Nothing is
+    stored or printed by this module; the caller shows the two values and then
+    calls :func:`complete_login`.  A failed request never invents a code.
+    """
+    if not cli:
+        return {"ok": False, "note": "先安装或指定 lark-cli"}
+    result = _run(
+        [cli, "auth", "login", "--domain", "all", "--no-wait", "--json"],
+        runner=runner,
+        timeout=timeout,
+    )
+    if not result["ok"]:
+        return {
+            "ok": False,
+            "note": "无法取得登录链接与设备码：" + (_tail(result["err"] or result["out"]) or "退出非零"),
+        }
+    payload = _json_object(result["out"])
+    if payload is None:
+        return {"ok": False, "note": "登录命令未返回 JSON；无法取得登录链接与设备码"}
+    url = _field(payload, "verification_url", "verificationUrl", "verification_uri")
+    code = _field(payload, "device_code", "deviceCode")
+    if not url or not code:
+        return {"ok": False, "note": "登录响应缺少 verification_url 或 device_code"}
+    expires = _field(payload, "expires_in", "expiresIn")
+    return {
+        "ok": True,
+        "verification_url": url,
+        "device_code": code,
+        "expires_in": int(expires) if expires.isdigit() else 0,
+    }
+
+
+def complete_login(
+    cli: str,
+    device_code: str,
+    *,
+    runner=subprocess.run,
+    timeout: int = 300,
+) -> dict:
     if not cli or not device_code:
         return {"ok": False, "note": "需要 CLI 路径与 device_code"}
     result = _run(
         [cli, "auth", "login", "--device-code", device_code],
         runner=runner,
-        timeout=300,
+        timeout=timeout,
     )
     return {
         "ok": result["ok"],
