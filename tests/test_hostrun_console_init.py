@@ -13,15 +13,44 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from common import write_json
-from hostrun import console, console_init, install
+from hostrun import console, console_init, install, lark
 
 
 # ------------------------------------------------------------------ fixtures
+class Proc:
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+def ready_lark_runner():
+    """A fake ``lark-cli`` that is installed, logged in and fully authorized.
+
+    #84's tests are about the archive/agent steps; #85 adds the Lark step right
+    after them, so every full run needs a ready CLI and never a real process.
+    """
+    payload = {
+        "identities": {
+            "user": {"available": True, "tokenStatus": "valid", "userOpenId": "ou_user"},
+            "bot": {"available": True, "tokenStatus": "valid"},
+            "tenant": {"matched": True},
+        },
+        "scopes": [scope for scopes in lark.REQUIRED_SCOPES.values() for scope in scopes],
+    }
+
+    def run(argv, **kwargs):
+        return Proc(stdout=json.dumps(payload))
+
+    return run
+
+
 def make_home(tmp_path: Path, *, service: str = "stopped", permissions: dict | None = None):
     """A code directory with a runtime area and a recorded dsh + patch overlay."""
     code = tmp_path / "code"
@@ -32,12 +61,15 @@ def make_home(tmp_path: Path, *, service: str = "stopped", permissions: dict | N
     dsh.write_text("@echo off\n", encoding="utf-8")
     patch = home / "install" / "dsh-headless-account.patch.yml"
     patch.write_text("authorization: true\n", encoding="utf-8")
+    cli = home / "bin" / ("lark-cli.cmd" if os.name == "nt" else "lark-cli")
+    cli.parent.mkdir(parents=True)
+    cli.write_text("@echo off\n", encoding="utf-8")
     write_json(
         home / "install" / "config.json",
         {
             "schema_version": 1,
             "host": {"product": "dsh", "version": "0.2.1-rc.5"},
-            "paths": {"repo": str(code), "dsh": str(dsh)},
+            "paths": {"repo": str(code), "dsh": str(dsh), "lark_cli": str(cli)},
             "listener": {"dsh_args": ["--patch", str(patch)]},
             "permissions": permissions
             if permissions is not None
@@ -65,6 +97,7 @@ def init_run(home, answers, **kwargs):
     out = io.StringIO()
     kwargs.setdefault("isatty", lambda: True)
     kwargs.setdefault("pick_folder", lambda default: None)
+    kwargs.setdefault("lark_runner", ready_lark_runner())
     result = console_init.run(
         home,
         reader=reader(*answers),
@@ -95,7 +128,7 @@ def test_init_is_allowed_while_the_service_is_paused(tmp_path):
     result, _rendered = init_run(home, ["", ""])
 
     assert result["ok"] is True
-    assert result["completed"] == ["archive", "agent"]
+    assert result["completed"] == ["archive", "agent", "lark"]
 
 
 def test_init_refuses_a_non_tty_with_the_launcher_hint(tmp_path):
@@ -118,7 +151,7 @@ def test_first_run_confirms_the_default_archive_then_the_agent(tmp_path):
     result, rendered = init_run(home, ["", ""])
 
     assert result["ok"] is True
-    assert result["completed"] == ["archive", "agent"]
+    assert result["completed"] == ["archive", "agent", "lark"]
     state = json.loads(console_init.state_path(home).read_text(encoding="utf-8"))
     assert state["steps"]["archive"]["status"] == "ok"
     assert state["steps"]["archive"]["value"]["path"] == str(default_archive)
@@ -127,9 +160,8 @@ def test_first_run_confirms_the_default_archive_then_the_agent(tmp_path):
     assert state["steps"]["agent"]["value"]["dsh"].endswith("dsh.cmd")
     assert "dsh-headless-account.patch.yml" in state["steps"]["agent"]["value"]["patch"]
     # The remaining ADR §7 steps are explicit not-yet steps, not silent skips.
-    assert result["next_step"] == "lark"
+    assert result["next_step"] == "transport"
     assert [item["step"] for item in result["not_yet"]] == [
-        "lark",
         "transport",
         "naming",
         "push_time",
@@ -167,7 +199,7 @@ def test_y_uses_the_default_archive_directory(tmp_path):
     state = json.loads(console_init.state_path(home).read_text(encoding="utf-8"))
     assert state["steps"]["archive"]["value"]["path"] == str(tmp_path / "frontier-archive")
     assert state["steps"]["archive"]["value"]["default"] is True
-    assert result["completed"] == ["archive", "agent"]
+    assert result["completed"] == ["archive", "agent", "lark"]
     assert "默认资料目录" in rendered
 
 
@@ -189,7 +221,7 @@ def test_n_opens_the_folder_dialog_and_a_cancel_falls_back_to_the_default(tmp_pa
         "outside_code": True,
     }
     assert "已取消" in rendered
-    assert result["completed"] == ["archive", "agent"]
+    assert result["completed"] == ["archive", "agent", "lark"]
 
 
 def test_a_directory_outside_the_code_directory_is_accepted_after_a_write_probe(tmp_path):
@@ -211,7 +243,7 @@ def test_a_directory_outside_the_code_directory_is_accepted_after_a_write_probe(
         "default": False,
         "outside_code": True,
     }
-    assert result["completed"] == ["archive", "agent"]
+    assert result["completed"] == ["archive", "agent", "lark"]
 
 
 def test_a_chosen_directory_inside_the_code_directory_is_refused(tmp_path):
@@ -312,7 +344,7 @@ def test_an_interruption_resumes_at_the_unfinished_step(tmp_path):
     second, rendered = init_run(home, [""])
 
     assert second["ok"] is True
-    assert second["completed"] == ["archive", "agent"]
+    assert second["completed"] == ["archive", "agent", "lark"]
     assert "[已完成] 确认资料目录" in rendered
     # The archive step is not asked again.
     assert "使用默认资料目录" not in rendered
@@ -325,8 +357,8 @@ def test_a_rerun_skips_every_completed_step_and_shows_done(tmp_path):
     result, rendered = init_run(home, [])
 
     assert result["ok"] is True
-    assert result["completed"] == ["archive", "agent"]
-    assert rendered.count("[已完成]") == 2
+    assert result["completed"] == ["archive", "agent", "lark"]
+    assert rendered.count("[已完成]") == 3
     assert "尚未实现" in rendered
 
 
@@ -359,6 +391,9 @@ def test_frontier_init_is_no_longer_a_stub_in_the_help(tmp_path):
 def test_serve_wires_the_init_step_machine_to_the_prompt_reader(tmp_path):
     home = make_home(tmp_path)
     console.write_state(home, paused=True, service="paused")
+    # The Lark step has its own offline test file; record it as done here so the
+    # serve test exercises the prompt wiring without a Lark subprocess.
+    console_init.record_step(home, "lark", {"cli": {"path": "lark-cli", "source": "recorded"}})
     resolved = {
         "code": str(home.parent),
         "runtime": str(home),
