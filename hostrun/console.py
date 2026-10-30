@@ -84,8 +84,8 @@ COMMANDS = {
         "implemented": True,
     },
     "/frontier-init": {
-        "summary": "初始化资料目录、Agent 与飞书通道",
-        "implemented": False,
+        "summary": "初始化资料目录与执行 Agent（已实现前两步，后续步骤逐步接入）",
+        "implemented": True,
     },
     "/frontier-update-kb": {
         "summary": "读取资料并逐条审阅知识卡片",
@@ -449,14 +449,18 @@ def dispatch(
     status=None,
     logs=None,
     service=None,
+    init=None,
 ) -> dict:
     """Route one prompt line to one bounded action and return its text.
 
     The dispatcher never raises on a bad command.  The lifecycle commands
     (``/frontier-start|stop|push``) delegate to :class:`hostrun.console_service.Service`;
     when a test or a plain dispatch call supplies no service, a one-shot service
-    for the same runtime area is used.  A registered-but-not-yet-implemented
-    command reports that explicitly.
+    for the same runtime area is used.  ``/frontier-init`` delegates to the
+    initialization step machine (:mod:`hostrun.console_init`); ``init`` is an
+    injectable zero-argument runner so the console can hand it the prompt's
+    reader/out/TTY seams.  A registered-but-not-yet-implemented command reports
+    that explicitly.
     """
     parsed = parse_command(line)
     if not parsed["ok"]:
@@ -540,6 +544,31 @@ def dispatch(
             "text": text,
             "service": outcome,
         }
+    if name == "/frontier-init":
+        runner = init
+        if runner is None:
+            from hostrun import console_init
+
+            outcome = console_init.run(home)
+        else:
+            try:
+                outcome = runner()
+            except Exception as exc:  # noqa: BLE001 - init must not kill the console
+                outcome = {
+                    "ok": False,
+                    "reason": "init_failed",
+                    "text": f"初始化失败：{type(exc).__name__}: {exc}",
+                }
+        if not isinstance(outcome, dict):
+            outcome = {"ok": False, "reason": "init_failed", "text": "初始化未返回结果。"}
+        return {
+            "ok": bool(outcome.get("ok")),
+            "action": "init",
+            "reason": outcome.get("reason") or "",
+            "command": name,
+            "text": str(outcome.get("text") or ""),
+            "init": outcome,
+        }
     if name == "/exit":
         return {
             "ok": True,
@@ -615,6 +644,7 @@ def serve(
     start_worker=None,
     events=None,
     service=None,
+    init=None,
 ) -> dict:
     """Run the resident console shell until ``/exit``, EOF or Ctrl+C.
 
@@ -634,6 +664,10 @@ def serve(
     same runtime area.  It restores the last service state, starts the one-second
     tick worker, dispatches the lifecycle slash commands, and shuts down (kill
     in-flight run, release lease, mark the request unfinished) in ``finally``.
+
+    ``init`` is an optional zero-argument runner for ``/frontier-init``.  The
+    default binds the interactive step machine to the same reader/out/TTY seams
+    as the prompt, so tests can drive a whole initialization through ``serve``.
     """
     home = Path(home)
     ensure_dir(console_dir(home))
@@ -821,6 +855,18 @@ def serve(
         commands = 0
         events = 0
         reason = "stopped"
+        init_runner = init
+        if init_runner is None:
+            def init_runner():
+                from hostrun import console_init
+
+                return console_init.run(
+                    home,
+                    resolved=layout,
+                    reader=read,
+                    out=out,
+                    isatty=detect_tty,
+                )
         try:
             while True:
                 try:
@@ -842,7 +888,9 @@ def serve(
                 commands += 1
                 emit_event(home, "INFO", "command", text, out=out)
                 events += 1
-                result = dispatch(home, text, status=status, service=lifecycle)
+                result = dispatch(
+                    home, text, status=status, service=lifecycle, init=init_runner
+                )
                 if result.get("text"):
                     try:
                         out.write(result["text"] + "\n")
