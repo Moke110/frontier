@@ -6,6 +6,7 @@
     python -m hostrun.cli run --intent daily|feedback|maintenance|listener-check [--finish ok|error]
     python -m hostrun.cli schedules plan|confirm|status
     python -m hostrun.cli listener install|start|stop|status|serve|health
+    python -m hostrun.cli console            # resident foreground console
     python -m hostrun.cli audit run|streak
     python -m hostrun.cli executor status|handover
     python -m hostrun.cli status
@@ -27,6 +28,7 @@ from pathlib import Path
 from common import emit, read_json
 from hostrun import audit as audit_mod
 from hostrun import cleanup as cleanup_mod
+from hostrun import console as console_mod
 from hostrun import executor, facilities, feedback, initialize, install, intents, kb, lark, listener, schedules, smoke
 from hostrun import layout as layout_mod
 from hostrun import workspace as workspace_mod
@@ -368,6 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("--from", dest="from_host")
     h.add_argument("--force", action="store_true")
 
+    sub.add_parser("console", help="run the resident foreground console (ADR 0009)")
     sub.add_parser("status", help="one snapshot of executor, queue, feedback, schedules")
     return parser
 
@@ -479,6 +482,9 @@ def _dispatch(args, root: Path, offline: bool, resolved: dict | None = None) -> 
         return _schedules(args, root)
     if args.cmd == "listener":
         return _listener(args, root)
+    if args.cmd == "console":
+        result = console_mod.serve(root, resolved=resolved)
+        return (0 if result.get("ok") else 1), result
     if args.cmd == "audit":
         return _audit(args, root, offline)
     if args.cmd == "executor":

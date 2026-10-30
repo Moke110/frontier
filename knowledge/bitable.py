@@ -12,10 +12,11 @@ import json
 import subprocess
 from pathlib import Path
 
-from archive.store import Archive
+from archive.store import Archive, is_under_review
 from common import now, read_json
 
 CONFIG_REL = Path("knowledge") / "base.json"
+REVIEW_FIELD = "待复核"
 
 
 class BitableError(RuntimeError):
@@ -174,6 +175,7 @@ def card_row(card: dict) -> dict:
         "annotation": card.get("annotation", ""),
         "created_at": _dt(card.get("created_at")),
         "updated_at": _dt(card.get("updated_at")),
+        REVIEW_FIELD: is_under_review(card),
     }
 
 
@@ -216,7 +218,12 @@ def _plan_cards(local: list[dict], remote: list[dict]) -> tuple[list[dict], dict
             continue
         diff = {}
         for field, value in row.items():
-            if field.endswith("_at"):
+            if field == REVIEW_FIELD:
+                # A Base predating the column reads as false, so an unflagged
+                # local card does not rewrite it just because the key is absent.
+                if bool(current["fields"].get(field)) != bool(value):
+                    diff[field] = bool(value)
+            elif field.endswith("_at"):
                 if not _date_eq(value, current["fields"].get(field)):
                     diff[field] = value
             elif current["fields"].get(field) != value:
@@ -395,6 +402,7 @@ def sync(home: Path, client=None, *, dry_run: bool = False) -> dict:
             "关联卡片": card_links,
             "证据": links,
             "变更日志": log_links,
+            REVIEW_FIELD: is_under_review(prop),
         }
         current = prop_by_id.get(prop["id"])
         if not current:
@@ -404,6 +412,8 @@ def sync(home: Path, client=None, *, dry_run: bool = False) -> dict:
         for field in ("title", "review", "证据更新计数"):
             if current["fields"].get(field) != row[field]:
                 diff[field] = row[field]
+        if bool(current["fields"].get(REVIEW_FIELD)) != bool(row[REVIEW_FIELD]):
+            diff[REVIEW_FIELD] = bool(row[REVIEW_FIELD])
         for field in ("关联卡片", "证据", "变更日志"):
             if set(_link_ids(current["fields"].get(field))) != {
                 link["id"] for link in row[field]
@@ -450,6 +460,10 @@ def compare(home: Path, client=None) -> dict:
         if remote["fields"].get("annotation") != card.get("annotation"):
             diffs.append({"kind": "card", "id": card_id, "field": "annotation",
                           "local": card.get("annotation"), "remote": remote["fields"].get("annotation")})
+        if bool(remote["fields"].get(REVIEW_FIELD)) != is_under_review(card):
+            diffs.append({"kind": "card", "id": card_id, "field": "under_review",
+                          "local": is_under_review(card),
+                          "remote": bool(remote["fields"].get(REVIEW_FIELD))})
     for prop_id, prop in local_props.items():
         remote = remote_props.get(prop_id)
         if not remote:
@@ -463,6 +477,10 @@ def compare(home: Path, client=None) -> dict:
             if remote["fields"].get(field) != local_value:
                 diffs.append({"kind": "proposition", "id": prop_id, "field": field,
                               "local": local_value, "remote": remote["fields"].get(field)})
+        if bool(remote["fields"].get(REVIEW_FIELD)) != is_under_review(prop):
+            diffs.append({"kind": "proposition", "id": prop_id, "field": "under_review",
+                          "local": is_under_review(prop),
+                          "remote": bool(remote["fields"].get(REVIEW_FIELD))})
     return {
         "ok": not diffs,
         "counts": {"cards": len(local_cards), "propositions": len(local_props)},
@@ -483,11 +501,18 @@ def current_ledger(home: Path) -> dict:
         "schema_version": 1,
         "updated_at": now(),
         "cards": {
-            c["id"]: {"annotation": c.get("annotation", "")}
+            c["id"]: {
+                "annotation": c.get("annotation", ""),
+                "under_review": is_under_review(c),
+            }
             for c in store.list_cards()
         },
         "propositions": {
-            p["id"]: {"title": p.get("title", ""), "review": p.get("review", "")}
+            p["id"]: {
+                "title": p.get("title", ""),
+                "review": p.get("review", ""),
+                "under_review": is_under_review(p),
+            }
             for p in store.list_props()
         },
         "evidence": {
@@ -507,10 +532,13 @@ def write_ledger(home: Path) -> dict:
 
 
 def pull(home: Path, client=None) -> dict:
-    """Apply text-only manual edits from Bitable back into the local archive.
+    """Apply text-only manual edits and the review checkbox back into the archive.
 
-    Only title / review / annotation / conclusion are accepted. Invalid edits
-    are left in Bitable with a 待修正 note; structural columns are never pulled.
+    Only title / review / annotation / conclusion and the optional ``待复核``
+    checkbox are accepted.  Toggling the checkbox updates the record without a
+    changelog entry.  Invalid edits are left in Bitable with a 待修正 note;
+    structural columns are never pulled.  A table without the checkbox column
+    (an old Base) is ignored rather than treated as "unchecked".
     """
     home = Path(home)
     config = load_config(home)
@@ -533,7 +561,20 @@ def pull(home: Path, client=None) -> dict:
             local = store.get_card(card_id)
         except Exception:
             continue
-        old = (ledger.get("cards", {}).get(card_id) or {}).get("annotation")
+        baseline = ledger.get("cards", {}).get(card_id) or {}
+        remote_flag = row["fields"].get(REVIEW_FIELD)
+        # The ledger is the "last seen" baseline; without it a poll cannot tell
+        # an owner edit from a local write that has not been synced yet.
+        if remote_flag is not None and "under_review" in baseline:
+            new_flag = bool(remote_flag)
+            if (
+                new_flag != bool(baseline["under_review"])
+                and new_flag != is_under_review(local)
+            ):
+                local["under_review"] = new_flag
+                store.put_card(local)
+                applied.append({"kind": "card", "id": card_id, "field": "under_review"})
+        old = baseline.get("annotation")
         new = row["fields"].get("annotation")
         if new is None or new == old or new == local.get("annotation"):
             continue
@@ -554,11 +595,24 @@ def pull(home: Path, client=None) -> dict:
             local = store.get_prop(prop_id)
         except Exception:
             continue
+        baseline = ledger.get("propositions", {}).get(prop_id) or {}
+        remote_flag = row["fields"].get(REVIEW_FIELD)
+        if remote_flag is not None and "under_review" in baseline:
+            new_flag = bool(remote_flag)
+            if (
+                new_flag != bool(baseline["under_review"])
+                and new_flag != is_under_review(local)
+            ):
+                local["under_review"] = new_flag
+                store.put_prop(local)
+                applied.append(
+                    {"kind": "proposition", "id": prop_id, "field": "under_review"}
+                )
         for field, action, limit in (
             ("title", "title_changed", None),
             ("review", "review_changed", 2000),
         ):
-            old = (ledger.get("propositions", {}).get(prop_id) or {}).get(field)
+            old = baseline.get(field)
             new = row["fields"].get(field)
             if new is None or new == old or new == local.get(field):
                 continue

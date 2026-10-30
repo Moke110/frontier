@@ -12,6 +12,7 @@ Modules:
   ``workspace``   code/data layout, private uv + interpreter, frontier-run pointer
   ``lark``        Lark CLI discovery, login guidance and permission preflight
   ``listener``    the user-started resident loop: Feishu events and feedback polls
+  ``console``     the Console shell: single instance, heartbeat, event stream, slash commands
   ``agent_run``   the Console's Agent run adapter: headless dsh, JSON events, log, lease
   ``facilities``  create/attach Base, tables and Drive folders by confirmed names
   ``smoke``       tagged keyword-driven temporary acceptance
