@@ -38,12 +38,12 @@ def _config(
         "schema_version": 1,
         "host": {"product": HOST},
         "paths": {"home": str(home), "repo": str(home)},
-        "listener": {"derived_timeout_seconds": timeout_seconds},
+        "agent_run": {"derived_timeout_seconds": timeout_seconds},
     }
     if dsh:
         config["paths"]["dsh"] = dsh
     if dsh_args is not None:
-        config["listener"]["dsh_args"] = dsh_args
+        config["agent_run"]["dsh_args"] = dsh_args
     (home / "install" / "config.json").write_text(
         json.dumps(config, ensure_ascii=False), encoding="utf-8"
     )

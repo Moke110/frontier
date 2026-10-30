@@ -37,8 +37,8 @@ Console.  This module delivers the seven ADR §7 steps:
    stable IDs are recorded in ``install/facilities.json`` and the step state.
 6. **Daily push time** — one daily slot in the user's local timezone, default
    ``08:00``, validated and persisted through
-   :func:`hostrun.console_service.set_push_time` (the #81 clock, no ``schedules``
-   import), which also records the next occurrence.
+   :func:`hostrun.console_service.set_push_time` (the #81 clock, no host
+   scheduler import), which also records the next occurrence.
 7. **Knowledge-base gate** — "初始化知识库" hands the console over to
    ``/frontier-update-kb``; "暂不初始化" records an explicit closed gate, starts
    the service and tells the user that the daily push is blocked until the
@@ -381,7 +381,7 @@ def agent_facts(home: Path, *, code: Path, archive: Path) -> dict:
     paths = config.get("paths") or {}
     recorded = str(paths.get("dsh") or "").strip()
     usable = dsh_bin(home)
-    dsh_args = [str(arg) for arg in ((config.get("listener") or {}).get("dsh_args") or ())]
+    dsh_args = [str(arg) for arg in ((config.get("agent_run") or {}).get("dsh_args") or ())]
     patch = ""
     for index, arg in enumerate(dsh_args):
         if arg == "--patch" and index + 1 < len(dsh_args):

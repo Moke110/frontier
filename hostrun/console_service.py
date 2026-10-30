@@ -181,10 +181,10 @@ def _next_occurrence(moment: datetime, text: str) -> datetime:
 
 
 # ------------------------------------------------------------------ defaults
-def _default_run_daily(home: Path, **kwargs):
+def _default_run_daily(home: Path, intent: str = "daily", **kwargs):
     from hostrun import intents
 
-    return intents.run(Path(home), "daily", **kwargs)
+    return intents.run(Path(home), intent or "daily", **kwargs)
 
 
 def _default_run_agent(home: Path, task: str, **kwargs):

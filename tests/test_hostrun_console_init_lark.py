@@ -175,7 +175,7 @@ def make_home(tmp_path: Path, *, recorded_cli: bool = True, service: str = "paus
                 "dsh": str(dsh),
                 "lark_cli": str(cli) if recorded_cli else "",
             },
-            "listener": {"dsh_args": ["--patch", str(patch)]},
+            "agent_run": {"dsh_args": ["--patch", str(patch)]},
             "permissions": {"scope": ["base:read"], "host_scope": ["filesystem"]},
         },
     )

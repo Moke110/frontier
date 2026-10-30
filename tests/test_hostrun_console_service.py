@@ -33,6 +33,31 @@ from question_queue.store import QueueStore
 TZ = timezone(timedelta(hours=8))
 
 
+def test_default_daily_runner_matches_the_injected_seam(tmp_path, monkeypatch):
+    """The default runner takes the same ``(home, intent, **kwargs)`` shape.
+
+    Regression found during #91 real acceptance: with no injected runner the
+    Console called ``intents.run`` through a one-argument default and every real
+    scheduled push failed with ``TypeError``.
+    """
+    from hostrun import intents
+
+    calls = []
+
+    def fake_run(home, intent, **kwargs):
+        calls.append((Path(home), intent, kwargs))
+        return {"ok": True, "brief": "BRIEF"}
+
+    monkeypatch.setattr(intents, "run", fake_run)
+
+    result = console_service._default_run_daily(
+        tmp_path, "daily", host="dsh", lease=False
+    )
+
+    assert calls == [(tmp_path, "daily", {"host": "dsh", "lease": False})]
+    assert result == {"ok": True, "brief": "BRIEF"}
+
+
 # ------------------------------------------------------------------ fixtures
 class Clock:
     """A settable aware clock; the scheduler never reads the wall clock."""

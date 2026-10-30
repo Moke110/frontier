@@ -1,11 +1,11 @@
-"""Formal initialization: gates, inputs, confirmation, Base write and retrieval."""
+"""Formal initialization: inputs, confirmation, Base write and retrieval."""
 
 import json
 from pathlib import Path
 
 import pytest
 
-from hostrun import cleanup, facilities, initialize, kb
+from hostrun import facilities, initialize, kb
 from hostrun.base import HostRunError
 from library.drive import FixtureDrive
 from library.offline import JsonBase
@@ -37,27 +37,12 @@ class Admin:
         }
 
 
-def _home(tmp_path, *, gate=True):
+def _home(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     base = _fresh_base(tmp_path)
     drive = FixtureDrive()
     facilities.create(home, confirmed=True, admin=Admin(base), client=base, drive=drive)
-    if gate:
-        (home / "install").mkdir(parents=True, exist_ok=True)
-        (home / "install" / "smoke.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "test_id": "smoke_test",
-                    "test_status": "complete",
-                    "status": "cleaned",
-                    "created_at": "2026-10-27T10:00:00+08:00",
-                    "cleaned_at": "2026-10-27T10:30:00+08:00",
-                }
-            ),
-            encoding="utf-8",
-        )
     return home, base, drive
 
 
@@ -152,16 +137,18 @@ def test_propose_rejects_cards_that_violate_the_model(tmp_path):
     assert result["reason"] == "invalid_cards"
 
 
-def test_apply_requires_test_and_cleanup_gate(tmp_path):
-    home, base, _ = _home(tmp_path, gate=False)
+def test_apply_needs_a_current_draft_not_a_cleanup_gate(tmp_path):
+    """#91 retired the smoke/cleanup gate: only the draft confirmation matters."""
+    home, base, _ = _home(tmp_path)
     (home / "install").mkdir(parents=True, exist_ok=True)
     _intake(home, tmp_path)
 
     initialize.propose(home, [_card()], client=base)
     initialize.confirm(home, confirmed_by_user=True)
 
-    with pytest.raises(HostRunError):
-        initialize.apply_draft(home, client=base)
+    result = initialize.apply_draft(home, client=base)
+
+    assert result["ok"] is True
 
 
 def test_apply_requires_confirmation_of_the_current_draft(tmp_path):
@@ -240,7 +227,8 @@ def test_existing_base_cards_are_imported_not_rebuilt(tmp_path):
     assert result["retrieval"]["queries"] >= 1
 
 
-def test_standard_retrieval_refuses_leftover_smoke_card(tmp_path):
+def test_standard_retrieval_no_longer_special_cases_smoke_cards(tmp_path):
+    """#91: smoke is retired, so a leftover card is just a card."""
     home, base, _ = _home(tmp_path)
     _intake(home, tmp_path)
     initialize.propose(home, [_card()], client=base)
@@ -248,12 +236,12 @@ def test_standard_retrieval_refuses_leftover_smoke_card(tmp_path):
     initialize.apply_draft(home, client=base)
     plan_path = home / initialize.PLAN_REL
     plan_path.unlink()
-    smoke_card = home / "archive" / "cards" / "card_smoke_leftover.json"
-    smoke_card.write_text(
+    leftover = home / "archive" / "cards" / "card_smoke_leftover.json"
+    leftover.write_text(
         json.dumps(
             {
                 "id": "card_smoke_leftover",
-                "label": "临时",
+                "label": "旧临时卡片",
                 "ontology": ["x", "y", "z"],
                 "annotation": "⛔ x；⚠️ y",
             }
@@ -261,21 +249,19 @@ def test_standard_retrieval_refuses_leftover_smoke_card(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(HostRunError):
-        initialize.standard_retrieval(home)
+    result = initialize.standard_retrieval(home)
 
-    # The standard path never writes a formal plan containing the test card.
-    assert not plan_path.exists()
+    assert result["ok"] is True
+    assert plan_path.exists()
 
 
-def test_status_next_action_mentions_cleanup_when_gate_is_closed(tmp_path):
-    home, base, _ = _home(tmp_path, gate=False)
-    (home / "install").mkdir(parents=True, exist_ok=True)
+def test_status_has_no_cleanup_gate_and_points_at_the_next_step(tmp_path):
+    home, base, _ = _home(tmp_path)
 
     result = initialize.status(home)
 
-    assert result["gate"]["test_and_cleanup_passed"] is False
-    assert "临时闭环" in result["next"]
+    assert "gate" not in result
+    assert result["next"] == "init propose"
 
 
 # ------------------------------------------------- intake gate and draft binding

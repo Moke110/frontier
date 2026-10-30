@@ -2,6 +2,40 @@
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下按日期归并证据；规格 [#51](https://github.com/Moke110/frontier/issues/51) 的历史离线实现与本轮文档修订分开记录。历史阻塞须在目标宿主重新探测，不能直接当作当前结果。代码通过离线测试不等于产品通过真实验收。
 
+## 2026-10-30 控制台化验收（spec #74 / ADR 0009；仅执行本机可安全运行项）
+
+本轮按 ticket #91 执行**不发送真实飞书消息、不使用凭据、不迁移本机既有安装**的验收。离线全量：**723 passed, 3 skipped**（命令见 `E:\Desktop\frontier-dev\.spec74-notes\impl\91\report.md`；比 #87 基线少的部分是随监听进程/smoke/cleanup/schedules 一并删除的旧测试）。以下“pass”只表示对应命令在本机真实执行并得到记录的结果；ADR 0009 的九项真实验收不因离线或本地替身运行而改变状态。
+
+### 本机真实执行通过的安全项（不构成 ADR 0009 验收）
+
+| 项目 | 结果 | 证据 |
+|---|---|---|
+| 控制台 CLI 面 | `python -m hostrun.cli --help` 与 `console --help` 成功；只保留 `console` / `console control` / `console install`；`listener`/`schedules`/`smoke`/`cleanup` 子命令与 `run --intent listener-check` 均被 argparse 拒绝（exit 2） | 临时代码目录 `tmp-accept91` 的 `evidence.txt`（工作区外，摘要见 `.spec74-notes/impl/91/acceptance-evidence.md`） |
+| `console install` | `--dsh <绝对路径>` 返回 `status=ok`，写入 `paths.dsh` 与 `<code>/bin/frontier-console.cmd`（标题 `frontier-console`、含 `--code/--archive`、`%*`），`processes_started=false`；相对路径 `--dsh` 返回 `status=blocked` 且仍生成脚本 | 同上 |
+| 非 TTY 拒绝 | `'' \| python -m hostrun.cli console` → exit 1、`reason=not_a_tty`；未创建 `console/state.json` 或 `heartbeat.json` | 同上 |
+| `console control status`（无控制台运行） | 返回 `consumed=false` 与本地只读快照（executor/queue/knowledge/install），不伪装控制台已执行 | 同上 |
+| 控制台启动/关闭与暂停恢复 | 在带 TTY 的本地 shell 启动真实控制台进程：启动时执行补推路径（`trigger=scheduled`），知识库门禁未就绪时如实记录 `knowledge_not_ready` 且不发送飞书消息；EOF 退出后 `service=stopped`、日志记录终止在飞运行并标记请求未完成；重开时上次 `paused=true` 被恢复为“服务保持暂停”（`service=stopped, paused=true`），不触发推送。Agent 仅使用占位 `dsh.cmd`，未调用真实模型 | `tmp-accept91c` 的 console/console.log 与 state.json（摘要见同一 evidence 文件） |
+| 既有安装迁移（**副本演练，非真实安装**） | 把本机旧数据根 `E:\Desktop\frontier-dev\frontier-archive` 复制到临时目录后执行 `install migrate --from <副本> --no-environment`：`status=migrated`，listener 配置段与启停脚本被移除，`listener.dsh_args` 迁入 `agent_run.dsh_args`，launcher 含 `%*`；旧根目录的 `listener/` 作为 leftover 报告、未迁入运行时区。**live 安装未被迁移**；环境重建、服务启停与知识库读写未执行（`--no-environment`） | `tmp-migrate91/migrate.json` 与生成配置（摘要见同一 evidence 文件） |
+
+### ADR 0009 九项验收（真实证据缺失，保持 `untested`）
+
+1. 控制台连续运行 ≥24 小时、事件流与日志无崩溃重启：**untested**（只做了分钟级本地启动/退出，不能代替）。
+2. 至少一次每日推送由控制台计时真实到点触发并送达：**untested**（本地补推路径确实触发，但未连接真实飞书、未取得送达证据；不能把本地触发记作通过）。
+3. 飞书指令白名单三条（`推一篇`/`处理反馈`/`状态`）真实往返：**untested**（未发送真实消息）。
+4. 非白名单文本经意图判定产出确认卡片、点击后执行并回执：**untested**（无真实飞书回调）。
+5. 暂停与恢复各一次、暂停期间飞书只回暂停提示且不派生运行：**untested**（真实飞书侧未验证；本地仅验证“上次暂停则重开保持暂停”）。
+6. 关闭控制台窗口后服务确实停止（次日不推送、飞书无响应），重开后按上次状态恢复：**部分本地观察、整体 untested**。已见：EOF 退出即 `service=stopped`、终止在飞运行并标记未完成；重开暂停态保持暂停。未见：真实关闭按钮、次日无推送、飞书无响应。
+7. `/frontier-init` 全流程（Lark 安装/登录、测试 HTML 与按钮点击、三项命名、owner 写入）：**untested**（无凭据/未发送消息）。
+8. `/frontier-update-kb` 全流程（三种审阅决定、`Under review` 次日不参与检索）：**untested**（无真实 Base/Drive，未做 TTY 审阅）。
+9. 既有安装迁移一次，迁移后服务与知识库读写正常：**untested**。仅完成上述副本演练；本机 live 安装 `E:\Desktop\frontier-dev` 未迁移，迁移后的服务启停与知识库读写未执行。
+
+### 本轮真实验收发现并修复的缺陷
+
+- 控制台默认每日运行器签名错误：`_default_run_daily(home, **kwargs)` 被以 `(home, "daily", ...)` 调用，真实补推时报 `TypeError`；离线测试一直注入假运行器所以未暴露。已修并新增 `tests/test_hostrun_console_service.py::test_default_daily_runner_matches_the_injected_seam`。
+- 迁移生成的 launcher 未转发参数，`frontier-console control ...` 在迁移后不可用；已补 `%*`（#81 曾记录为跨票据遗留）。
+
+> 原始命令输出与临时目录摘要保留在工作区外 `.spec74-notes/impl/91/acceptance-evidence.md`。未取得真实证据前，**不得**据本节宣称控制台化已验收。
+
 > 词汇说明：#77（目录模型第三步）之后，位置只有代码目录（`--code`，运行时区 `<code>/.frontier/`）与资料目录（`--archive`，只放 `originals/` 与 `pushes/`）两个概念。本文件 2026-10-30 及更早的记录写于旧 `--home` 模型下，保留原话以如实反映当时的证据，不再代表当前契约。
 
 ## 2026-10-30 用户停止剩余真实验收（票据按此口径关闭）

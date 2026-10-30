@@ -1,11 +1,9 @@
 # frontier 安装与恢复参考（供宿主 agent 执行）
 
-> 状态：控制台化设计已定（[ADR 0009](../../../docs/adr/0009-console-as-service.md)），代码尚未实现。本文件描述目标流程；当前仓库仍按旧流程运行。
-
 frontier 的安装与日常操作由**用户可见的前台控制台**承担，宿主 agent 负责准备工作区、环境、设施与用户对话。用户从仓库 [README.md](../../../README.md) 的安装 Prompt 启动；宿主加载 `skills/frontier-run/SKILL.md` 后按本参考执行。示例中的 `<workspace>`、`<code>`、`<archive>`、解释器与 CLI 路径都替换为安装时验证过的绝对路径。
 
 - 工作区（`<workspace>`）下是代码目录（`<code>`，默认 `<workspace>/frontier`）与资料目录（`<archive>`，默认 `<workspace>/frontier-archive`）。
-- 代码、私有环境（`<code>/.venv`）、配置、运行状态、日志与资料登记（`<code>/runtime/archive-index.jsonl`）都在代码目录；资料目录只放 `originals/` 与 `pushes/`。
+- 代码、私有环境（`<code>/.venv`）、配置、运行状态、日志与资料登记（`<code>/.frontier/archive-index/index.jsonl`）都在代码目录的运行时区 `<code>/.frontier/`；资料目录只放 `originals/` 与 `pushes/`。
 - 不需要 WSL、systemd、Windows 任务计划或登录自启；不写持久环境变量、PATH 或注册表。唯一常驻组件是用户可见、关闭即停的控制台（[ADR 0009](../../../docs/adr/0009-console-as-service.md)）。
 - 单执行端：同一知识库同一时刻只由一个控制台驱动。
 - 判断标准只有 `python -m hostrun.cli install report` 的分项：`working` 才是通过，`blocked` 是缺能力，`untested` 是没测过。**离线测试、任务计划、手动调用都不代替真实交付证据。**
@@ -63,10 +61,10 @@ python -m hostrun.cli --code <code> --archive <archive> console install --dsh "<
 python -m hostrun.cli --code <code> --archive <archive> console
 ```
 
-- `console install` 只生成 `<code>/bin/frontier-console.cmd`（窗口标题 `frontier-console`）并写入代码目录、资料目录、解释器、`dsh` 绝对路径与 `dsh_args`；**不**创建服务、不登录自启、不写注册表。`dsh` 必须显式记录：未给 `--dsh` 且记录为空或失效时，脚本仍生成但控制台步骤记 `blocked`，agent 运行也会拒绝启动。
+- `console install` 只生成 `<code>/bin/frontier-console.cmd`（窗口标题 `frontier-console`）并写入代码目录、资料目录、解释器、`dsh` 绝对路径与 `dsh_args`；**不**创建服务、不登录自启、不写注册表、不启动进程。`dsh` 必须显式记录：未给 `--dsh` 且记录为空或失效时，脚本仍生成，但命令返回 `blocked`，`/frontier-init` 的执行 agent 步骤会拒绝继续，agent 运行也会拒绝启动。
 - `--dsh-arg`（可重复）记录 agent 运行在 `--profile headless` 与任务文本之间的额外参数。本机实测：`dsh --profile headless` 的出厂层把 `deepseek-account` 与 `credentials` 插件置为 disabled，只留 API-key 路由，没有 `DEEPSEEK_API_KEY` 时会报 `MISSING_CREDENTIAL`。用 `--patch` 指定一个启用账号授权路由的 overlay 即可复用交互会话已有凭据，不另配 key。
-- 控制台前台运行：`Ctrl+C`、`/exit` 或关闭窗口即停止服务；单实例锁保证同一安装只有一个控制台；心跳写 `<code>/runtime/console/heartbeat.json`，日志写 `<code>/runtime/logs/console.log`（滚动）。
-- 控制台启动时**自检权限**：需要写飞书凭据库或工作区外资料目录而当前进程受限时，打印提示要求用户双击 `frontier-console.cmd` 以完整权限重启，并保留已完成的初始化进度（`<code>/runtime/state/init.json`）。这是唯一改变权限范围的机制；另开子终端不能解除沙箱。
+- 控制台前台运行：`Ctrl+C`、`/exit` 或关闭窗口即停止服务；单实例锁保证同一安装只有一个控制台；心跳写 `<code>/.frontier/console/heartbeat.json`，日志写 `<code>/.frontier/console/console.log`（滚动）。
+- 控制台启动时**自检权限**：需要写飞书凭据库或工作区外资料目录而当前进程受限时，打印提示要求用户双击 `frontier-console.cmd` 以完整权限重启，并保留已完成的初始化进度（`<code>/.frontier/install/initial/state.json`）。这是唯一改变权限范围的机制；另开子终端不能解除沙箱。
 - 控制台运行时由宿主 agent 用控制文件操作服务，不等价于替用户输入：`python -m hostrun.cli console control start|stop|status|push`。
 - 控制台职责：按每日时刻触发一次推送、消费飞书消息与卡片回调、每 5 分钟反馈轮询、每 10 分钟 `knowledge.cli pull`、按需启动一次 agent 运行，并在事件流里显示 agent 运行的开始/结束/失败摘要。
 - 控制台内命令：`/frontier-init`、`/frontier-start`、`/frontier-stop`、`/frontier-status`、`/frontier-push`、`/frontier-update-kb`、`/frontier-logs`、`/frontier-help`、`/exit`。
@@ -82,7 +80,7 @@ python -m hostrun.cli lark status   --root <workspace>   # 可执行 / 身份 / 
 python -m hostrun.cli lark status --root <workspace> --base-token <base-token> --folder <drive-folder-token>
 ```
 
-- 私有安装落在代码目录的运行目录（`<code>/runtime/lark`，launcher `<code>/runtime/bin/lark-cli.cmd`），不装全局包、不写 PATH 或注册表。
+- 私有安装落在代码目录的运行目录（`<code>/.frontier/lark-cli`，launcher `<code>/.frontier/bin/lark-cli`），不装全局包、不写 PATH 或注册表。
 - **三级检测**分别处理：没有可用 CLI → 安装；CLI 在但身份未登录 → 登录；已登录但授权范围不足或真实读操作失败 → 给出飞书开发者后台链接与缺失清单，等用户开权限后复检。bot scope 只能在开发者后台开通，`auth login` 从不用于 bot。
 - 登录是拆分式设备码流程：`lark-cli auth login --domain all --no-wait --json` 返回授权链接与设备码，用户浏览器授权后由控制台执行 `auth login --device-code <code>` 完成。全程不新开终端，也不要求用户自己敲命令；需要时把授权链接或二维码发到飞书。
 - 控制台等待登录最长 15 分钟；窗口内每 5 秒复检 `lark status`。失败或超时给用户「重试 / 中止（保留进度）」两个选项，**不允许跳过**进入下一步。
@@ -108,13 +106,13 @@ python -m hostrun.cli facilities status --code <code> --archive <archive>
 ### 3.5 测试消息与收件人验证
 
 - 设施就绪后，控制台发一条测试消息给用户本人：一份测试 HTML 与一张带 1 个按钮的交互卡片，等用户点击卡片按钮。
-- 用户点击后，控制台核对点击者与当前登录身份一致，**同时完成 owner 验证并写入 `<code>/runtime/install/recipient.json`**（用户标识原文只留在运行目录，不进入安装配置或报告）；后续只认该收件人的单聊。
+- 用户点击后，控制台核对点击者与当前登录身份一致，**同时完成 owner 验证并写入 `<code>/.frontier/install/recipient.json`**（用户标识原文只留在运行目录，不进入安装配置或报告）；后续只认该收件人的单聊。
 - 测试消息可重发；重发前重新核对收件人，不清理聊天记录。没有点击、超时或身份不一致时报告 `recipient_unverified`/`recipient_mismatch`（不回显 open_id），初始化暂停在该步骤。
 - 不再有临时关键词闭环与测试产物清理：链路验证由这次传输测试与首次知识库初始化后的正式推送演练承担。
 
 ### 3.6 `/frontier-init` 流程与门禁
 
-用户在控制台输入 `/frontier-init`，控制台按步骤执行并显示进度。步骤结果写 `<code>/runtime/state/init.json`，可重入：
+用户在控制台输入 `/frontier-init`，控制台按步骤执行并显示进度。步骤结果写 `<code>/.frontier/install/initial/state.json`，可重入：
 
 1. **确认资料目录**：`Y`/`y` 用默认 `<workspace>/frontier-archive`；`N`/`n` 打开系统文件夹对话框选择，允许工作区外，但要求控制台已以完整权限运行，否则提示重启。
 2. **确认执行 agent**：展示将调用的 agent、`dsh` 绝对路径、`--patch` overlay 与授权范围，用户回车确认。v1 只支持当前安装宿主（DeepSeek Harness 适配器）。
@@ -133,11 +131,11 @@ python -m hostrun.cli facilities status --code <code> --archive <archive>
 用户选中目录后，控制台按以下顺序执行：
 
 1. **暂停正式服务**：停止定时推送与飞书响应，记录暂停原因与可恢复状态；控制台仍在前台并显示进度。
-2. **复制原文**：把目录中的文件**复制**进资料目录 `originals/`（md5 校验，原目录不动），按业务 id 登记到 `<code>/runtime/archive-index.jsonl`，再按现有 `library ensure-source` 上传云盘；付费墙或无法读取的文件记为缺口并报告，不阻断其余文件。
-3. **分片读取**：控制台按整文件打包，每片不超过上下文窗口约 10% 的字符估算；**单个文件可超过预算**，不做文件内切分；单个文件估算超过窗口 50% 时记为「未读取：超出读取上限」。最多 2 个读取子运行并发，串行提交，单次失败重试 1 次后跳过并报告。每个子运行只产出候选卡片/命题 JSON 到 `<code>/runtime/init/staging/`，不写入知识库。
+2. **复制原文**：把目录中的文件**复制**进资料目录 `originals/`（md5 校验，原目录不动），按业务 id 登记到 `<code>/.frontier/archive-index/index.jsonl`，再按现有 `library ensure-source` 上传云盘；付费墙或无法读取的文件记为缺口并报告，不阻断其余文件。
+3. **分片读取**：控制台按整文件打包，每片不超过上下文窗口约 10% 的字符估算；**单个文件可超过预算**，不做文件内切分；单个文件估算超过窗口 50% 时记为「未读取：超出读取上限」。最多 2 个读取子运行并发，串行提交，单次失败重试 1 次后跳过并报告。每个子运行只产出候选卡片/命题 JSON 到 `<code>/.frontier/update-kb/candidates/`，不写入知识库。
 4. **合并去重**：主运行合并候选、按来源去重，生成待审阅清单与 `draft_hash`。
 5. **逐条审阅**：控制台一次一条打印候选知识卡片与命题（含 `第 N / M` 与完整字段）。单键读取：**Enter 接受**、**Backspace 丢弃**、**Tab 保留并打 `Under review`**；`q` 中止，已决定的立即生效，未决定的留待下次。stdin 不是 TTY 时拒绝进入审阅并提示在控制台窗口中执行。
-6. **写入**：接受项写入知识库；保留项写入并标 `under_review`；丢弃项不写入 Base，但记入 `<code>/runtime/init/decisions.jsonl`（`{draft_id, decision: accept|discard|hold, at, source: console}`）以便追溯与续接。写入后按归一化字段读回校验，不一致报告 `base_readback_mismatch`。
+6. **写入**：接受项写入知识库；保留项写入并标 `under_review`；丢弃项不写入 Base，但记入 `<code>/.frontier/update-kb/review/decisions.jsonl`（`{draft_id, decision: accept|discard|hold, at, source: console}`）以便追溯与续接。写入后按归一化字段读回校验，不一致报告 `base_readback_mismatch`。
 7. **恢复服务与演练**：恢复正式服务，用刚入库的卡片跑一次标准检索、推送、评分与采纳的真实推送演练；失败则如实报告并保持初始化未完成。
 8. **增量**：重复执行时只读资料目录中尚未登记的文件；不重复整库读取，已存在的卡片不覆盖（ID 冲突时拒绝并保留 Base 原行）。
 
@@ -169,7 +167,7 @@ python -m hostrun.cli console control status
 python -m hostrun.cli console control push
 ```
 
-- agent 运行统一为 `dsh --profile headless --json`：控制台解析事件流、记录 `session_id` 到 `runs.jsonl`，事件流只显示开始/结束/失败摘要，完整输出写 `<code>/runtime/logs/agent-<run_id>.log`；`/frontier-logs` 查看最近一次运行尾部。
+- agent 运行统一为 `dsh --profile headless --json`：控制台解析事件流、记录 `session_id` 到 `runs.jsonl`，事件流只显示开始/结束/失败摘要，完整输出写 `<code>/.frontier/logs/agent-<run_id>.log`；`/frontier-logs` 查看最近一次运行尾部。
 - **补推**：控制台启动或从暂停恢复时，若当天还没有推送请求就立即补一次；错过多天最多合并成一次待推请求，不连续补发。
 - **暂停**：`/frontier-stop` 或飞书 `暂停` 停止定时推送与飞书响应，控制台仍在前台；`/frontier-start` 或飞书 `恢复` 继续。关闭窗口是整个服务停止。
 - **状态恢复**：重开控制台时按上次状态恢复——上次是暂停则保持暂停并提示恢复命令，上次是运行态则自动启动服务。

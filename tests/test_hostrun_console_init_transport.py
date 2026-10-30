@@ -58,7 +58,7 @@ def make_home(tmp_path: Path):
         {
             "schema_version": 1,
             "paths": {"repo": str(code), "dsh": str(dsh), "lark_cli": str(cli)},
-            "listener": {"dsh_args": []},
+            "agent_run": {"dsh_args": []},
         },
     )
     console_init.record_step(

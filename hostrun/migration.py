@@ -39,7 +39,6 @@ LEGACY_RUNTIME_DIRS = (
     "executor",
     "console",
     "lark-cli",
-    "listener",
     "knowledge",
     "library",
     "publisher",
@@ -228,7 +227,7 @@ def _console_script_text(code: Path, runtime: Path, archive: Path, python: str) 
     return (
         f"title {CONSOLE_WINDOW_TITLE}\n"
         f'cd /d "{code}"\n'
-        f'"{python}" -m hostrun.cli --code "{code}" --archive "{archive}" console\n'
+        f'"{python}" -m hostrun.cli --code "{code}" --archive "{archive}" console %*\n'
     )
 
 
@@ -237,7 +236,6 @@ def _migrate_config(
     code: Path,
     runtime: Path,
     environment: dict,
-    console: Path,
 ) -> Path:
     path = runtime / "install" / "config.json"
     existing = read_json(path) or {}
@@ -251,10 +249,16 @@ def _migrate_config(
         paths["python"] = str(environment["python"])
         paths["venv"] = str(environment.get("venv") or "")
     config["paths"] = paths
-    listener = {**(config.get("listener") or {})}
-    listener["start_command"] = str(console)
-    listener["stop_command"] = ""
-    config["listener"] = listener
+    # The listener section is gone: keep only the Agent-run settings the Console
+    # still consumes, and drop the retired start/stop commands and host tasks.
+    legacy_listener = config.pop("listener", {}) or {}
+    agent_run = {**(config.get("agent_run") or {})}
+    for key in ("feedback_lease_minutes", "derived_timeout_seconds", "dsh_args"):
+        if key in legacy_listener and key not in agent_run:
+            agent_run[key] = legacy_listener[key]
+    if agent_run:
+        config["agent_run"] = agent_run
+    config.pop("schedules", None)
     workspace_section = config.get("workspace")
     if isinstance(workspace_section, dict):
         config["workspace"] = {
@@ -392,7 +396,7 @@ def migrate(
             if env_ok and environment.get("python")
             else str(existing_paths.get("python") or sys.executable)
         )
-        config_path = _migrate_config(legacy, code_path, runtime, environment, code_path / "bin" / CONSOLE_START_SCRIPT)
+        config_path = _migrate_config(legacy, code_path, runtime, environment)
         workspace_path = _migrate_workspace_record(code_path, runtime, environment, record)
         scripts = _replace_scripts(legacy, code_path, runtime, archive_path, python)
         index = archive_index.register(runtime, archive_path)

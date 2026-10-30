@@ -1,9 +1,8 @@
 """Formal knowledge initialization from literature, requirements and a draft.
 
-The installation test proves the machine works; this module starts the research
-library.  It is gated on **both** a passed temporary test and a verified
-cleanup, so a failed or half-cleaned test can never silently define the user's
-research scope.
+This module starts the research library.  It no longer waits for the retired
+temporary keyword smoke loop: the Console's ``/frontier-init`` transport test and
+``/frontier-update-kb`` review are the current gate (ADR 0009).
 
 Input modes:
 
@@ -30,7 +29,6 @@ from pathlib import Path
 
 from archive.store import Archive
 from common import ensure_dir, now, read_json, write_json
-from hostrun import cleanup as cleanup_mod
 from hostrun import install as install_mod
 from hostrun.base import HostRunError, base_client, base_config
 
@@ -488,13 +486,10 @@ def import_remote_cards(home: Path, *, client) -> dict:
 
 
 def standard_retrieval(home: Path, *, days: int = 7) -> dict:
-    """One standard card-driven plan; the test keyword is never reused."""
+    """One standard card-driven plan."""
     home = Path(home).expanduser().resolve()
     store = Archive(home)
     cards = store.list_cards()
-    smoke_cards = [card["id"] for card in cards if card["id"].startswith("card_smoke_")]
-    if smoke_cards:
-        raise HostRunError("临时验收卡片仍在知识库中，先完成清理：" + "、".join(smoke_cards))
     if not cards:
         raise HostRunError("正式知识库还没有知识卡片")
     from frontier.model import plan as build_plan
@@ -516,7 +511,6 @@ def standard_retrieval(home: Path, *, days: int = 7) -> dict:
 def apply_draft(home: Path, *, client=None) -> dict:
     """Write confirmed cards locally, sync to the Base, then read them back."""
     home = Path(home).expanduser().resolve()
-    cleanup_mod.require_cleaned(home)
     cards = load_draft(home)
     confirmation = read_json(home / CONFIRM_REL) or {}
     hash_value = draft_hash(cards)
@@ -657,8 +651,8 @@ def adopt_existing(home: Path, *, client=None, confirmed: bool = False) -> dict:
     """Reuse an existing Base: import its cards, never rebuild or clear it.
 
     This is the *existing library* path, not new-knowledge initialization: the
-    user explicitly keeps their current library, so the temporary-test cleanup
-    gate does not apply and no card is written from a test draft.
+    user explicitly keeps their current library, so no card is written from a
+    test draft and no initialization gate applies.
     """
     home = Path(home).expanduser().resolve()
     client = client or base_client(home)
@@ -710,16 +704,11 @@ def status(home: Path) -> dict:
     confirmation = read_json(home / CONFIRM_REL) or {}
     applied = read_json(home / APPLY_REL) or {}
     try:
-        cleanup_ok = cleanup_mod.require_cleaned(home)["ok"]
-    except HostRunError:
-        cleanup_ok = False
-    try:
         cards = len(load_draft(home))
     except HostRunError:
         cards = 0
     return {
         "ok": bool(applied.get("applied_at")),
-        "gate": {"test_and_cleanup_passed": cleanup_ok},
         "requirements": literature.get("requirements", ""),
         "literature": {
             "records": len(literature.get("records") or []),
@@ -735,11 +724,9 @@ def status(home: Path) -> dict:
         "applied": applied,
         "next": (
             "init apply"
-            if cleanup_ok and cards and confirmation
+            if cards and confirmation
             else "init confirm"
-            if cleanup_ok and cards
+            if cards
             else "init propose"
-            if cleanup_ok
-            else "先通过并清理临时闭环"
         ),
     }

@@ -76,7 +76,7 @@ def log_path(home: Path, run_id: str) -> Path:
 def agent_argv(dsh: str, task: str, extra_args=(), *, json_stream: bool = True) -> list[str]:
     """The recorded-``dsh`` argv for one Agent run.
 
-    ``extra_args`` are the recorded ``listener.dsh_args`` (typically
+    ``extra_args`` are the recorded ``agent_run.dsh_args`` (typically
     ``["--patch", <overlay>]``): they are launcher flags, so they must stay
     before the app's own ``--json`` and the task.  The task remains the last
     positional argument, as the headless profile's command line requires.
@@ -92,8 +92,8 @@ def agent_argv(dsh: str, task: str, extra_args=(), *, json_stream: bool = True) 
 
 
 def recorded_dsh_args(config: dict) -> list[str]:
-    """The overlay recorded by the installation (``listener.dsh_args``)."""
-    return [str(arg) for arg in ((config.get("listener") or {}).get("dsh_args") or ())]
+    """The overlay recorded by the Console installer (``agent_run.dsh_args``)."""
+    return [str(arg) for arg in ((config.get("agent_run") or {}).get("dsh_args") or ())]
 
 
 # ------------------------------------------------------------------- parsing
@@ -253,11 +253,11 @@ def run(
     host = str(host or (config.get("host") or {}).get("product") or "host")
     run_id = str(run_id or _new_run_id(host))
     paths = config.get("paths") or {}
-    listener_config = config.get("listener") or {}
+    agent_run_config = config.get("agent_run") or {}
     timeout = int(
         timeout_seconds
         if timeout_seconds is not None
-        else (listener_config.get("derived_timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
+        else (agent_run_config.get("derived_timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
     )
     spawn = spawn or _spawn
     report = report or _install_report

@@ -79,15 +79,19 @@ Retired. Planned runs are scheduled and started by the Console; the host's own s
 _Avoid_: cron job, service, daemon
 
 **Listener（监听进程）**:
-Retired. Its Feishu event consumption, feedback polling and agent-run spawning now belong to the Console.
+Retired. Its Feishu event consumption, feedback polling and agent-run spawning now belong to the Console; its module, subcommand and start/stop scripts were removed in spec #74.
 _Avoid_: service, daemon, bot, background job
+
+**Console launcher（控制台启动脚本）**:
+The fixed `<code>/bin/frontier-console.cmd` the user double-clicks to start the Console; it forwards arguments so `console control` reaches the same program, and `console install` regenerates it without starting anything.
+_Avoid_: listener script, service, shortcut
 
 **Heartbeat（心跳）**:
 The Console's periodic liveness record, rewritten while the Console runs; the evidence used by other frontier commands to tell "running" from "process exists".
 _Avoid_: pid file, ping
 
 **Listener health check（监听巡检）**:
-Retired. Liveness is visible in the Console itself; no scheduled probe restarts anything.
+Retired. Liveness is visible in the Console itself; no scheduled probe exists in the code and nothing restarts anything.
 _Avoid_: watchdog, monitor, uptime check
 
 **Derived host run（派生运行）**:

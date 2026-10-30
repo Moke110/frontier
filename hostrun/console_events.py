@@ -1,8 +1,7 @@
 """The Console's Feishu event surface (ADR 0009 §1/§4).
 
 The Console is the single resident program, so it owns the two Feishu
-subscriptions and the mechanical background ticks that used to belong to the
-retired listener:
+subscriptions and the mechanical background ticks:
 
 - ``im.message.receive_v1`` and ``card.action.trigger`` are consumed by two
   **independent** bounded subscriptions.  Reconnecting one key never stops the
@@ -27,8 +26,8 @@ sleep, worker, pause state) is injectable, so the whole surface is driven
 offline.  The live ``lark-cli`` argv/envelope, real reconnects and the real
 knowledge pull stay ``untested`` until recorded against a real host.
 
-The message parser and feedback-poll gate are moved from ``hostrun.listener``
-(#91 retires that module; the Console must not import it).
+The message parser and feedback-poll gate are Console-owned code: no retired
+resident module is imported (#91).
 """
 
 from __future__ import annotations
@@ -519,9 +518,9 @@ def poll_feedback(home: Path, *, host: str | None = None, run=None) -> dict:
     config = load_config(home)
     if not host:
         host = str((config.get("host") or {}).get("product") or "host")
-    listener_config = config.get("listener") or {}
+    agent_run_config = config.get("agent_run") or {}
     lease_minutes = int(
-        listener_config.get("feedback_lease_minutes") or executor.DEFAULT_MINUTES
+        agent_run_config.get("feedback_lease_minutes") or executor.DEFAULT_MINUTES
     )
     result = (run or intents.run)(home, "feedback", host=host, minutes=lease_minutes)
     if not result.get("ok") and result.get("reason") == "executor_busy":
