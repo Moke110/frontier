@@ -332,6 +332,72 @@ def test_window_close_terminates_the_run_and_marks_the_request_unfinished(tmp_pa
     assert "在飞" in _events(home) or "未完成" in _events(home)
 
 
+def _failed_request(home: Path, reason: str) -> None:
+    store = QueueStore(home)
+    store.init()
+    store.request_push("manual")
+    store.try_start(20)
+    store.finish_start(False, reason)
+
+
+def test_a_failed_push_is_reported_but_not_replayed_on_the_next_start(tmp_path):
+    """S3/US35: only a console-shutdown request may be recovered automatically."""
+    home = _home(tmp_path)
+    clock = Clock(datetime(2026, 10, 30, 7, 0, tzinfo=TZ))
+    _failed_request(home, "child_failed")
+    daily = Daily()
+    agent = Agent()
+    service = _service(home, clock, daily=daily, agent=agent)
+
+    tick = service.tick()
+
+    assert tick["pushed"] is None
+    assert daily.calls == []
+    assert agent.calls == []
+    text = console.status_text(console.status_snapshot(home))
+    assert "child_failed" in text
+    assert "不会自动重试" in text
+
+
+def test_a_console_shutdown_request_is_recovered_once(tmp_path):
+    home = _home(tmp_path)
+    clock = Clock(datetime(2026, 10, 30, 7, 0, tzinfo=TZ))
+    _failed_request(home, "console_shutdown")
+    daily = Daily()
+    service = _service(home, clock, daily=daily)
+
+    tick = service.tick()
+
+    assert tick["pushed"] == "recovery"
+    assert len(daily.calls) == 1
+
+
+def test_a_push_requested_during_a_run_is_drained_after_it_finishes(tmp_path):
+    """S4: a second 推一篇 must not wait for a console restart."""
+    home = _home(tmp_path)
+    clock = Clock(datetime(2026, 10, 30, 6, 0, tzinfo=TZ))
+    daily = Daily()
+    service = _service(home, clock, daily=daily)
+
+    first = service.request_push("manual")
+    assert first["ok"] is True
+    assert len(daily.calls) == 1
+    # The second request is recorded while the first run holds the lease, then
+    # the successful finish preserves it as the next queued request.
+    store = QueueStore(home)
+    store.init()
+    store.request_push("feishu")
+    store.finish_start(True)
+    preserved = read_json(store.request_path)
+    assert preserved is not None
+    assert preserved["started_at"] is None
+
+    tick = service.tick()
+
+    assert tick["pushed"] == "queued"
+    assert len(daily.calls) == 2
+
+
 # ------------------------------------------------------------ control file
 def test_control_request_is_consumed_within_one_tick_and_names_the_initiator(tmp_path):
     home = _home(tmp_path)
@@ -449,6 +515,37 @@ def test_paused_message_replies_only_the_pause_notice(tmp_path):
     # #82 removed MESSAGE_ACK_TEXT; the non-pause fallback receipt is now the
     # intent-pending text, and the pause notice must stay distinct from it.
     assert console_events.PAUSED_TEXT != console_events.INTENT_PENDING_TEXT
+
+
+def test_paused_service_is_recoverable_with_the_feishu_resume_instruction(tmp_path):
+    """S2: `恢复` is an exact instruction and must still work while paused."""
+    home = _home(tmp_path)
+    console.write_state(home, paused=True)
+    sent: list[tuple[str, str]] = []
+    executed: list[str] = []
+
+    def execute(home, operation, params, **kwargs):
+        executed.append(operation)
+        console.write_state(home, service="running", paused=False)
+        return {"ok": True, "text": "服务已恢复。"}
+
+    outcome = console_events.handle_message(
+        home,
+        {
+            "chat_type": "p2p",
+            "sender_type": "user",
+            "sender_id": "ou_owner",
+            "text": "恢复",
+        },
+        owner="ou_owner",
+        send=lambda target, text: sent.append((target, text)) or {"ok": True},
+        execute=execute,
+    )
+
+    assert executed == ["resume"]
+    assert outcome["operation"] == "resume"
+    assert sent == [("ou_owner", "服务已恢复。")]
+    assert console.read_state(home)["paused"] is False
 
 
 def test_paused_card_callback_does_not_derive_a_run(tmp_path):

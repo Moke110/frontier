@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from archive.store import is_under_review, v3_prop_from_v2
+from archive.store import Archive, is_under_review, v3_prop_from_v2
 from common import clip, now, read_json, write_json
 from frontier.model import is_temporary_card
 
@@ -99,7 +99,7 @@ def _context(home: Path, card_id: str | None) -> dict:
             continue
         if card_id and card_id in prop.get("related_knowledge", []):
             props.append(prop)
-    raw_dir = root / "raw"
+    raw_dir = Archive(Path(home)).raw
     papers = list(raw_dir.glob("*.json")) if raw_dir.exists() else []
     archived = 0
     for path in papers:

@@ -526,11 +526,37 @@ def test_completion_applies_the_chosen_archive_and_marks_the_state(tmp_path):
     assert console.read_state(home)["service"] == "running"
 
 
+def test_an_archive_that_became_unwritable_is_rejected_at_finalize(tmp_path):
+    """S5: the write probe is re-run before the archive is persisted."""
+    home = make_home(tmp_path)
+    record_early_steps(home)
+    chosen = tmp_path / "chosen-archive"
+    chosen.mkdir()
+    console_init.record_step(
+        home, "archive", {"path": str(chosen), "default": False, "outside_code": True}
+    )
+
+    def denied(directory):
+        return {"ok": False, "reason": "permission_denied", "error": "access denied"}
+
+    result, _rendered, _fake = completion_run(
+        home, ["", "", "", "", ""], write_probe=denied
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "archive_unwritable"
+    assert "access denied" in result["text"]
+    assert state(home)["complete"] is False
+    assert console.read_state(home)["service"] == "paused"
+
+
 def test_a_second_run_reports_completion_without_recreating_anything(tmp_path):
     home = make_home(tmp_path)
     record_early_steps(home)
     completion_run(home, ["", "", "", "", ""])
     fake = FakeFacilities()
+    # US23: re-entering a completed init requires the formal service paused.
+    console.write_state(home, service="paused", paused=True)
 
     result, rendered, fake = completion_run(home, [], fake)
 

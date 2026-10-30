@@ -6,6 +6,7 @@ import math
 from datetime import date
 from pathlib import Path
 
+from archive.store import Archive
 from common import now, read_json, read_jsonl, read_yaml, write_yaml
 
 VERDICT_VALUE = {"irrelevant": 0.0, "ok": 0.5, "great": 1.0}
@@ -25,8 +26,9 @@ def fit(
 ) -> dict:
     home = Path(home)
     ratings_path = Path(ratings_path or home / "ratings.jsonl")
-    pushes_dir = Path(pushes_dir or home / "archive" / "pushes")
-    raw_dir = Path(raw_dir or home / "archive" / "raw")
+    store = Archive(home)
+    pushes_dir = Path(pushes_dir or store.pushes)
+    raw_dir = Path(raw_dir or store.raw)
 
     sums: dict[str, list[float]] = {}
     source_sums: dict[str, list[float]] = {}

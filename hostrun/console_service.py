@@ -456,21 +456,50 @@ class Service:
             return {}
 
     def _maybe_recover(self, moment: datetime) -> dict | None:
-        """Serve a request preserved by a previous shutdown, once per start."""
-        if self._recovery_done:
-            return None
-        self._recovery_done = True
+        """Serve a preserved request; drain one queued during the last push.
+
+        Recovery is once per start for a shutdown-interrupted request, but a
+        request that arrived while a push was running (``after_start`` in the
+        queue record) is preserved and drained on the next tick after that push
+        finishes, instead of waiting for a console restart (S4).
+        """
         request = self._pending_request()
         if not request or self._push_running:
             return None
-        self._log("INFO", "service", "发现上次未完成的推送请求，恢复一次")
+        last_error = str(request.get("last_error") or "")
+        if last_error and last_error != PUSH_SHUTDOWN_REASON:
+            # US35: a failed Agent run is reported, never retried automatically.
+            # The queue record stays visible in /frontier-status so the owner
+            # can decide to request a push again.
+            self._recovery_done = True
+            self._log(
+                "WARN",
+                "service",
+                "发现上次失败的推送请求"
+                f"（reason={last_error}，attempts={request.get('attempts') or 0}），"
+                "按“不自动重试”保留，不恢复；可用 /frontier-push 重新请求",
+            )
+            return None
+        # A still-started record belongs to the run that is finishing; wait for
+        # its success/failure cleanup before deciding to drain it.
+        if self._recovery_done and request.get("started_at"):
+            return None
+        queued_during_push = self._recovery_done
+        self._recovery_done = True
+        self._log(
+            "INFO",
+            "service",
+            "发现上次未完成的推送请求，恢复一次"
+            if not queued_during_push
+            else "发现推送运行期间记录的下一篇请求，继续派发一次",
+        )
         with self._lock:
             if self.paused or self._push_running:
                 return None
-            started = self._start_push("recovery")
+            started = self._start_push("recovery" if not queued_during_push else "queued")
             if not started.get("ok"):
                 return None
-        return {"pushed": "recovery"}
+        return {"pushed": "recovery" if not queued_during_push else "queued"}
 
     def _mark_unfinished(self) -> None:
         """Mark the started request ``unfinished`` using the existing queue record."""

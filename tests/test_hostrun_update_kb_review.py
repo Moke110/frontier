@@ -241,8 +241,9 @@ def test_q_aborts_applies_decided_items_and_leaves_the_rest(tmp_path):
     # Decided items take effect immediately; the undecided one does not.
     assert Archive(home).get_card("card_ok")["label"] == "标签"
     assert not (home / "archive" / "cards" / "card_three.json").exists()
-    # No completion drill while the review is incomplete.
-    assert service.events == []
+    # The review restores the service it inherited paused, but runs no
+    # completion drill while the review is incomplete.
+    assert service.events == ["start"]
     assert "中止" in output.getvalue()
     # An aborted review still records the batch it did decide.
     payload = read_json(update_kb_review.confirmation_path(home))

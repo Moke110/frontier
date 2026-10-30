@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from archive.store import Archive
 from common import append_jsonl, file_lock, now, read_json, read_jsonl, temp_dir, today
 from hostrun import layout
 from publisher import feishu
@@ -109,7 +110,7 @@ def lease_minutes(config: Config) -> int:
 
 
 def _push_ids(home: Path) -> set[str]:
-    return {path.stem for path in (Path(home) / "archive" / "pushes").glob("*.json")}
+    return {path.stem for path in Archive(Path(home)).pushes.glob("*.json")}
 
 
 def _sent_push_ids(home: Path) -> set[str]:

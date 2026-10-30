@@ -1,10 +1,13 @@
 """archive: the only writer of the knowledge store.
 
-Layers (all under <runtime>/archive):
-  1. raw/          original papers (metadata + text + PDF page anchors)
-  2. pushes/       generated pushes (long-form PDF payload + proposals)
-  3. cards/        knowledge cards (id / label / ontology / annotation)
-  4. propositions/ cross-paper claims with history and related cards
+Knowledge state lives under ``<runtime>/archive``:
+  1. cards/        knowledge cards (id / label / ontology / annotation)
+  2. propositions/ cross-paper claims with history and related cards
+  3. index/        materialized indexes
+
+Material lives in the resolved archive directory (``--archive``, ADR 0009):
+  4. originals/    original papers (metadata + text + PDF page anchors)
+  5. pushes/       generated pushes (long-form PDF payload + proposals)
 
 A knowledge card has no links of its own. Propositions are the only place that
 connects cards (``related_knowledge``, at least two cards).
@@ -371,13 +374,35 @@ def v3_prop_from_v2(prop: dict) -> dict:
 
 
 class Archive:
-    def __init__(self, home: Path):
+    def __init__(self, home: Path, archive: str | Path | None = None):
         self.home = Path(home)
+        # Knowledge state (cards/propositions/index) stays in the runtime area;
+        # research material (raw papers, page anchors, pushes) lives in the
+        # resolved archive directory as ``originals/`` and ``pushes/`` (ADR 0009,
+        # #76/#77).  Resolving through ``layout`` is what keeps migration and
+        # every reader on one path model instead of two.
         self.root = self.home / "archive"
-        self.raw = self.root / "raw"
+        from hostrun import layout
+
+        resolved = (
+            Path(archive).expanduser()
+            if archive is not None
+            else layout.archive_for_runtime(self.home)
+        )
+        if resolved is not None:
+            self.archive_root = Path(resolved).expanduser().resolve()
+            self.raw = self.archive_root / "originals"
+            self.pushes = self.archive_root / "pushes"
+            self.legacy_material = False
+        else:
+            # No layout record and no handoff yet: an uninitialized/isolated
+            # runtime keeps the legacy runtime-resident store.
+            self.archive_root = self.root
+            self.raw = self.root / "raw"
+            self.pushes = self.root / "pushes"
+            self.legacy_material = True
         self.raw_text = self.raw / "text"
         self.pages = self.raw / "pages"
-        self.pushes = self.root / "pushes"
         self.cards = self.root / "cards"
         self.props = self.root / "propositions"
         self.index = self.root / "index"
@@ -431,6 +456,29 @@ class Archive:
     # ------------------------------------------------------------ layer 1
     def _text_path(self, pid: str) -> Path:
         return self.raw_text / f"{pid}.txt"
+
+    def get_text(self, pid: str) -> str:
+        """Full text of one stored paper; raises when the material is missing."""
+        path = self._text_path(pid)
+        if not path.is_file():
+            raise ArchiveError(f"unknown paper text: {pid}")
+        return path.read_text(encoding="utf-8")
+
+    def material_path(self, relative: str | Path) -> Path:
+        """Resolve a stored ``raw/...`` or ``pushes/...`` path to its real file.
+
+        Records written before the archive split carry paths relative to the old
+        ``<runtime>/archive`` root.  After migration the same relative path means
+        ``<archive>/originals/...`` or ``<archive>/pushes/...``; this keeps those
+        recorded paths readable without rewriting every record.
+        """
+        rel = Path(relative)
+        if not self.legacy_material and rel.parts:
+            if rel.parts[0] == "raw":
+                return self.raw.joinpath(*rel.parts[1:])
+            if rel.parts[0] == "pushes":
+                return self.pushes.joinpath(*rel.parts[1:])
+        return self.root / rel
 
     def find_paper(self, source: str, source_id: str) -> dict | None:
         """Look up the dedupe key ``source:source_id`` across raw records."""

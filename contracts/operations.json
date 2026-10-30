@@ -127,6 +127,21 @@
       "phrase": "状态",
       "operation": "status",
       "params": {}
+    },
+    {
+      "phrase": "暂停",
+      "operation": "pause",
+      "params": {}
+    },
+    {
+      "phrase": "恢复",
+      "operation": "resume",
+      "params": {}
+    },
+    {
+      "phrase": "测试飞书消息",
+      "operation": "test_message",
+      "params": {}
     }
   ],
   "excluded": [

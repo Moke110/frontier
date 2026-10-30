@@ -23,7 +23,7 @@ class FrontierError(RuntimeError):
     pass
 
 
-# Acceptance cards written by ``hostrun/smoke.py`` (``card_smoke_*``) live in
+# Temporary acceptance cards (``card_smoke_*``) live in
 # the same archive as formal cards, but they are marked temporary test content,
 # never knowledge. Only the temporary test's own plan may read them, so formal
 # loading skips them; otherwise a running acceptance test would inject its

@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--include-temporary",
         action="store_true",
-        help="also validate the temporary acceptance cards owned by `hostrun smoke`",
+        help="also validate temporary acceptance cards (card_smoke_*)",
     )
     sub.add_parser("show")
 
