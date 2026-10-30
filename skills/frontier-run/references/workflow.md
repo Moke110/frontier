@@ -1,7 +1,5 @@
 # frontier 检索、写作与知识更新参考
 
-> 状态：控制台化设计已定（[ADR 0009](../../../docs/adr/0009-console-as-service.md)），代码尚未实现。本文件描述目标流程；当前仓库仍按旧流程运行。
-
 由 [frontier 运行时入口](../SKILL.md) 按需加载的完整流程参考；命令以**代码目录**为工作目录执行。agent 负责**排序（editor）与写作（writer）**；脚本负责取数、校验、入队、落盘。所有知识库写入都经过 archive / `KnowledgeStore`，agent 不直接改存储。
 
 文中的 Phase 标签表示能力来源，不能作为当前安装或云端切换已通过的证据。运行前检查安装报告与实际知识库状态；同步由控制台每 10 分钟的有界轮询承担，不单独安装系统定时器。真实验收限制见 [验收记录](../../../docs/acceptance/)。
@@ -173,8 +171,8 @@ python -m hostrun.cli --code <code> --archive <archive> feedback sync
 ### 3.8 综述题
 
 - 第 10 条证据被采纳 → 队列追加 `proposition_review` 题（`ready=false`），占住闸门。
-- 控制台在派生的一次 agent 运行中处理该题：`writer.cli review-task` → 写 review JSON → `review-check` → `review-render` →
-  `question_queue.cli review-ready` → `publisher.cli deliver`。derived 运行的单飞行、租约、时限与不重试护栏沿用运行时入口。
+- 控制台在派生的一次 Agent 运行中处理该题：`writer.cli review-task` → 写 review JSON → `review-check` → `review-render` →
+  `question_queue.cli review-ready` → `publisher.cli deliver`。Agent 运行的单飞行、租约、时限与不重试护栏沿用运行时入口。
 - 综述 HTML + 确认卡推送；`采纳此版` 写入并清零计数，`保持上一版` 保留计数。
 - 综述题不占每篇推送的 2 个实体名额。
 
@@ -299,7 +297,7 @@ python -m hostrun.cli --code <code> --archive <archive> feedback sync
 | 队列闸住 | `question_queue.cli status`，再 `retry` / `abandon` |
 | Bitable 写入部分成功（Phase 3） | 查 group journal，`retry` 从断点继续，不重复写 |
 | 取消「待复核」后检索仍不包含该卡片 | 等下一次 10 分钟 pull，或让控制台立即执行一次 `knowledge.cli pull` |
-| agent 运行没有产出 | 看 `/frontier-logs` 与 `<code>/runtime/logs/agent-<run_id>.log`；确认记录里的 `dsh` 与 `--patch` overlay 有效 |
+| agent 运行没有产出 | 看 `/frontier-logs` 与 `<code>/.frontier/logs/agent-<run_id>.log`；确认记录里的 `dsh` 与 `--patch` overlay 有效 |
 
 ## 10. 参考
 

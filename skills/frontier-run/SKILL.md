@@ -5,8 +5,6 @@ description: "Install, run, pause or recover frontier on a local host agent. Dep
 
 # frontier-run
 
-> 状态：控制台化设计已定（[ADR 0009](../../docs/adr/0009-console-as-service.md)），代码尚未实现。本文件描述目标流程；当前仓库仍按旧流程运行。
-
 本 skill 供 frontier 的宿主 agent 在安装与运行时加载。仓库开发与 Matt Pocock 规划技能的约定由仓库根 AGENTS.md 管理，不属于本 skill。
 
 ## 定位运行环境
@@ -17,7 +15,7 @@ description: "Install, run, pause or recover frontier on a local host agent. Dep
 
 ## 按请求执行
 
-- **安装或继续安装**：读取 [installation.md](references/installation.md)，按顺序执行工作区与目录迁移、代码目录私有 uv/解释器、`frontier-run` 入口指针、控制台启停脚本、飞书 CLI 三级检测、设施命名与创建、测试消息与收件人验证、首次知识库初始化。用户安装入口是 [README.md](../../README.md)。只声明实际验证过的能力，中断后从已完成步骤续接。
+- **安装或继续安装**：读取 [installation.md](references/installation.md)，按顺序执行工作区与目录迁移、代码目录私有 uv/解释器、`frontier-run` 入口指针、控制台启动脚本（`console install`）、飞书 CLI 三级检测、设施命名与创建、测试消息与收件人验证、首次知识库初始化。用户安装入口是 [README.md](../../README.md)。只声明实际验证过的能力，中断后从已完成步骤续接。
 - **启动控制台**：用记录的 `frontier-console.cmd` 或 `python -m hostrun.cli console` 启动前台控制台（窗口标题 `frontier-console`），由用户在控制台内执行 `/frontier-init` 等命令。控制台自检权限；需要飞书凭据或工作区外资料目录的写入而权限不足时，提示用户双击启动脚本以完整权限重启并保留进度。agent 不代为常驻，也不代用户输入控制台命令。
 - **操作正在运行的控制台**：用 `python -m hostrun.cli console control start|stop|status|push` 写控制文件，由控制台在下一秒内读取执行；不要启动第二个控制台或第二个执行端。
 - **检索推送**：控制台按每日时刻启动一次 agent 运行，或在用户要求「再推一篇」时启动。你若被控制台派生为这次运行（`dsh --profile headless --json`），先执行 `run --intent daily` 看闸门与续接状态；获准写作时读取 [workflow.md](references/workflow.md)，由你亲自完成排序、写作和校验，只推送一篇后报告实际完成结果。不要自行创建后台作业或宿主定时任务。
