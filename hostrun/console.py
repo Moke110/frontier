@@ -89,7 +89,7 @@ COMMANDS = {
     },
     "/frontier-update-kb": {
         "summary": "读取资料并逐条审阅知识卡片",
-        "implemented": False,
+        "implemented": True,
     },
     "/exit": {
         "summary": "退出控制台（关闭窗口同样停止服务）",
@@ -449,6 +449,7 @@ def dispatch(
     status=None,
     logs=None,
     service=None,
+    update_kb=None,
 ) -> dict:
     """Route one prompt line to one bounded action and return its text.
 
@@ -539,6 +540,33 @@ def dispatch(
             "command": name,
             "text": text,
             "service": outcome,
+        }
+    if name == "/frontier-update-kb":
+        from hostrun import update_kb as update_kb_mod
+
+        source_arg = " ".join(parsed["args"]).strip().strip('"')
+        runner = update_kb if update_kb is not None else update_kb_mod.run
+        try:
+            outcome = runner(
+                home,
+                source_dir=source_arg or None,
+                service=service,
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed read must not kill the console
+            return {
+                "ok": False,
+                "action": "update_kb",
+                "reason": "update_kb_failed",
+                "command": name,
+                "text": f"知识库读取失败：{type(exc).__name__}: {exc}",
+            }
+        return {
+            "ok": bool(outcome.get("ok")),
+            "action": "update_kb",
+            "reason": outcome.get("reason") or "",
+            "command": name,
+            "text": outcome.get("text") or "知识库更新已结束。",
+            "update_kb": outcome,
         }
     if name == "/exit":
         return {

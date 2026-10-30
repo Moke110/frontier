@@ -16,6 +16,7 @@ Modules:
   ``console_events`` the Console's Feishu event surface: two subscriptions, owner gate, 5/10-minute ticks
   ``operations``  the operation registry + exact instruction whitelist and their executors
   ``console_service`` the Console's service lifecycle: daily slot, catch-up, pause/resume, control file, shutdown
+  ``update_kb``   ``/frontier-update-kb`` read side: archive copy, shards, read-only sub-runs, unread report
   ``agent_run``   the Console's Agent run adapter: headless dsh, JSON events, log, lease
   ``facilities``  create/attach Base, tables and Drive folders by confirmed names
   ``smoke``       tagged keyword-driven temporary acceptance
