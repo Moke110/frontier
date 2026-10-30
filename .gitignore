@@ -6,5 +6,7 @@ pytest-of-*/
 .scratch/
 # Install workspace pointer and privately installed CLI (ADR 0007).
 .frontier/
+# Generated launcher scripts (migration / console install write these; ADR 0009).
+/bin/
 # Retired development agent: keep regenerated local metadata out of Git.
 .workbuddy/
