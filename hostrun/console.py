@@ -33,7 +33,7 @@ import threading
 from pathlib import Path
 
 from common import ensure_dir, file_lock, now, read_json, write_json
-from hostrun import console_gate
+from hostrun import console_gate, launcher
 from hostrun.base import load_config, update_config
 
 SCRIPT_NAME = "frontier-console.cmd"
@@ -136,11 +136,17 @@ def script_text(code: str | Path, archive: str | Path, python: str) -> str:
     ``%*`` forwards arguments, so ``frontier-console control start`` reaches
     ``python -m hostrun.cli ... console control start`` while a double-click
     still starts the resident console with no arguments (#81).
+
+    A package installation delegates to ``<code>/bin/frontier.cmd`` so the
+    launcher keeps using the bundled runtime rather than a system interpreter;
+    a source installation keeps the recorded absolute interpreter form byte for
+    byte (#95).
     """
-    return (
-        f"title {WINDOW_TITLE}\n"
-        f'cd /d "{Path(code)}"\n'
-        f'"{python}" -m hostrun.cli --code "{Path(code)}" --archive "{Path(archive)}" console %*\n'
+    return launcher.console_script_text(
+        code,
+        archive,
+        python,
+        package=launcher.package_mode(code),
     )
 
 
