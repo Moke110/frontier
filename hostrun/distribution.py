@@ -44,7 +44,7 @@ preserves every file's bytes.  The expected layout is::
     runtime/python<major><minor>.dll         # core DLL
     runtime/python<major><minor>._pth        # module search path (stdlib + Lib/site-packages)
     runtime/python<major><minor>.zip         # stdlib (or a Lib/ tree)
-    runtime/DLLs/*.pyd                       # extension modules
+    runtime/DLLs/*.pyd                       # extension modules (or flat *.pyd next to python.exe)
     runtime/Lib/site-packages/...            # PyYAML, PyMuPDF and their dependencies
 
 A bundled runtime also generates ``<package>/bin/frontier.cmd``, the launcher
@@ -271,8 +271,8 @@ def _runtime_relpaths(runtime_dir: Path) -> list[Path]:
     """Every runtime file to copy, relative to ``runtime_dir``, sorted.
 
     The walk is deterministic and skips only interpreter caches: a prepared
-    runtime is otherwise copied verbatim, including ``DLLs/`` and
-    ``Lib/site-packages/``.
+    runtime is otherwise copied verbatim, including the extension modules
+    (``DLLs/`` or flat ``*.pyd``) and ``Lib/site-packages/``.
     """
     files: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(runtime_dir):

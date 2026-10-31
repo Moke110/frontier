@@ -396,7 +396,7 @@ def _write_embeddable_zip(path: Path, python_version: str = "3.13") -> Path:
         archive.writestr(f"python{tag}.dll", b"dll")
         archive.writestr(f"python{tag}._pth", f"python{tag}.zip\r\n.\r\n")
         archive.writestr(f"python{tag}.zip", b"PK fake stdlib")
-        archive.writestr("DLLs/select.pyd", b"pyd")
+        archive.writestr("select.pyd", b"pyd")  # the real embeddable zip is flat
         archive.writestr("LICENSE.txt", "embed license\n")
     return path
 
@@ -428,13 +428,34 @@ def test_runtime_validation_accepts_the_embeddable_layout(tmp_path):
     assert summary["files"] >= 6
 
 
+def test_runtime_validation_accepts_flat_extension_modules(tmp_path):
+    """The official embeddable zip keeps its ``.pyd`` files next to python.exe.
+
+    The CI runtime is assembled from that zip; requiring a ``DLLs/`` directory
+    would reject the real download, so a flat layout must validate too.
+    """
+    runtime = tmp_path / "runtime-flat"
+    (runtime / "Lib" / "site-packages" / "yaml").mkdir(parents=True)
+    (runtime / "python.exe").write_bytes(b"MZ fake interpreter")
+    (runtime / "python313.dll").write_bytes(b"dll")
+    (runtime / "python313._pth").write_text(
+        "python313.zip\r\n.\r\n", encoding="utf-8", newline=""
+    )
+    (runtime / "python313.zip").write_bytes(b"PK fake stdlib")
+    (runtime / "select.pyd").write_bytes(b"pyd")
+
+    summary = release.validate_runtime_dir(runtime, python_version="3.13")
+
+    assert summary["ok"] is True
+
+
 @pytest.mark.parametrize(
     ("relative", "reason"),
     [
         ("python.exe", "python.exe"),
         ("python313.dll", "python313.dll"),
         ("python313._pth", "python313._pth"),
-        ("DLLs", "DLLs/"),
+        ("DLLs", "extension modules"),
         ("Lib/site-packages", "Lib/site-packages/"),
     ],
 )
@@ -480,7 +501,7 @@ def test_prepare_runtime_assembles_embeddable_zip_and_wheels(tmp_path):
     assert (out / "python.exe").is_file()
     assert (out / "python313.dll").is_file()
     assert (out / "python313.zip").is_file()
-    assert (out / "DLLs" / "select.pyd").is_file()
+    assert (out / "select.pyd").is_file()
     pth = (out / "python313._pth").read_text(encoding="utf-8")
     assert pth.splitlines()[0] == "python313.zip"
     assert "Lib\\site-packages" in pth.splitlines()

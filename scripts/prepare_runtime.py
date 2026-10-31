@@ -18,7 +18,9 @@ The result is the layout ``hostrun.distribution --runtime-dir`` copies verbatim
     runtime/python<major><minor>.dll
     runtime/python<major><minor>._pth    # gains .. (code root) and Lib\\site-packages
     runtime/python<major><minor>.zip     # stdlib from the embeddable zip
-    runtime/DLLs/
+    runtime/*.pyd                        # extension modules shipped flat by the
+                                         # embeddable zip (a full distribution
+                                         # keeps them under DLLs/ instead)
     runtime/Lib/site-packages/           # wheel contents, extracted as zips
 
 Wheels are zips, so they are extracted directly instead of trusting
