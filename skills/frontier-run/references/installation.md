@@ -59,7 +59,7 @@ frontier 的安装与日常操作由**用户可见的前台控制台**承担，�
 | `技能摘要` | `<code>/skills/frontier-run/SKILL.md` 的 sha256 | 同左 |
 | `安装锁` | `<code>/.frontier/dist.lock.json` 路径 | 同左 |
 
-`install check` 的 `verify_skill` 会重算 `技能摘要` 并比对指针与安装锁：摘要或锁版本/提交/来源不符 => `blocked`（`skill_digest_mismatch` / `lock_version_mismatch` / `lock_commit_mismatch` / `lock_distribution_mismatch`）；旧指针没有任何新字段时按源码安装处理（`ok: true`、`legacy_pointer: true`）。
+`install check` 的 `verify_skill` 会重算 `技能摘要` 并比对指针与安装锁：摘要或锁版本/提交/制品摘要/来源不符 => `blocked`（`skill_digest_mismatch` / `lock_version_mismatch` / `lock_artifact_mismatch` / `lock_commit_mismatch` / `lock_distribution_mismatch`）；旧指针没有任何新字段时按源码安装处理（`ok: true`、`legacy_pointer: true`）。
 
 ## 3. 发行包安装（用户路径）
 
