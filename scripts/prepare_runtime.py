@@ -16,7 +16,7 @@ The result is the layout ``hostrun.distribution --runtime-dir`` copies verbatim
 
     runtime/python.exe
     runtime/python<major><minor>.dll
-    runtime/python<major><minor>._pth    # gains Lib\\site-packages
+    runtime/python<major><minor>._pth    # gains .. (code root) and Lib\\site-packages
     runtime/python<major><minor>.zip     # stdlib from the embeddable zip
     runtime/DLLs/
     runtime/Lib/site-packages/           # wheel contents, extracted as zips
@@ -45,6 +45,13 @@ if str(ROOT) not in sys.path:
 from hostrun import release  # noqa: E402
 
 SITE_PACKAGES = Path("Lib") / "site-packages"
+#: Entries the assembled runtime must expose in addition to the embeddable zip's
+#: own ``python3XX.zip`` / ``.`` lines.  ``..`` is the code root: the wrapper
+#: ``cd``s there and runs ``runtime\python.exe -m hostrun.cli``, but an isolated
+#: embeddable interpreter ignores ``sys.path[0]``, so the code root must be an
+#: explicit ``._pth`` entry or ``import hostrun``/``common`` fails in a real
+#: install.  Order is the order they are appended when absent.
+REQUIRED_PTH_ENTRIES = ("..", "Lib\\site-packages")
 DATA_DIR_RE = re.compile(r"^[^/]+\.data/([^/]+)/")
 _PYTHON_VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
 
@@ -141,7 +148,14 @@ def _extract_wheel(wheel: Path, site_packages: Path) -> int:
 
 
 def _ensure_pth(runtime: Path, python_version: str) -> Path:
-    """Make the embeddable ``_pth`` expose ``Lib\\site-packages`` exactly once."""
+    """Expose the code root and ``Lib\\site-packages`` exactly once in ``._pth``.
+
+    The embeddable zip ships ``python3XX.zip`` and ``.`` (and sometimes
+    ``Lib\\site-packages``).  Those original entries are kept as-is; the entries
+    this build requires are added in canonical spelling/order when missing and
+    deduplicated (case- and slash-insensitively) when already present, so
+    re-assembling a pre-built runtime cannot accumulate duplicates.
+    """
     tag = _python_tag(python_version)
     pth = runtime / f"python{tag}._pth"
     if not pth.is_file():
@@ -149,17 +163,24 @@ def _ensure_pth(runtime: Path, python_version: str) -> Path:
             f"embeddable zip did not contain python{tag}._pth: {runtime}"
         )
     text = pth.read_text(encoding="utf-8", errors="replace")
-    lines = [line.rstrip("\r\n") for line in text.splitlines()]
-    wanted = "Lib\\site-packages"
-    present = {
-        line.strip().replace("/", "\\").lower()
-        for line in lines
-        if line.strip()
-    }
-    if wanted.lower() not in present:
-        lines.append(wanted)
+    canonical = {entry.lower(): entry for entry in REQUIRED_PTH_ENTRIES}
+    kept: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        entry = line.rstrip("\r\n").strip()
+        key = entry.replace("/", "\\").lower()
+        if key in canonical:
+            if key in seen:
+                continue
+            seen.add(key)
+            kept.append(canonical[key])
+            continue
+        kept.append(line.rstrip("\r\n"))
+    for entry in REQUIRED_PTH_ENTRIES:
+        if entry.lower() not in seen:
+            kept.append(entry)
     pth.write_text(
-        "\r\n".join(lines).rstrip("\r\n") + "\r\n",
+        "\r\n".join(kept).rstrip("\r\n") + "\r\n",
         encoding="utf-8",
         newline="",
     )

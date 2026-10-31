@@ -10,6 +10,7 @@ real-run step is only parsed elsewhere.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import platform
 import subprocess
@@ -154,6 +155,10 @@ def test_ci_install_smoke_installs_verifies_and_reports_a_package(tmp_path):
     assert commands["report"]["release"]["distribution"] == "package"
     assert commands["report"]["release"]["version"] == "0.1.0"
     assert commands["report"]["steps"]["skill"]["status"] == "ok"
+    # The wrapper-execution check is opt-in; without --check-wrapper this smoke
+    # stays a pure install check and never executes the synthetic runtime.
+    assert "wrapper" not in commands
+    assert "wrapper" not in payload
 
 
 def test_ci_install_smoke_fails_on_a_digest_mismatch_before_installing(tmp_path):
@@ -186,3 +191,73 @@ def test_ci_install_smoke_refuses_a_non_empty_code_directory(tmp_path):
     assert "empty" in payload["error"].lower()
     assert (code / "keep.txt").read_text(encoding="utf-8") == "user data\n"
     assert not (code / ".frontier" / "dist.lock.json").exists()
+
+
+def _load_smoke_script():
+    """Import the smoke script so its helper seams can be tested without a runtime."""
+    spec = importlib.util.spec_from_file_location("ci_install_smoke_script", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_wrapper_environment_cannot_leak_the_runner_python(monkeypatch):
+    """The wrapper check must not inherit PYTHONHOME/PYTHONPATH or a venv."""
+    script = _load_smoke_script()
+    monkeypatch.setenv("PYTHONHOME", r"C:\runner\python")
+    monkeypatch.setenv("PYTHONPATH", r"C:\runner\python\Lib")
+    monkeypatch.setenv("PYTHONSTARTUP", r"C:\runner\startup.py")
+    monkeypatch.setenv("VIRTUAL_ENV", r"C:\runner\.venv")
+    monkeypatch.setenv("CONDA_PREFIX", r"C:\runner\conda")
+    monkeypatch.setenv("PYTHONEXECUTABLE", r"C:\runner\python.exe")
+
+    environment = script.wrapper_environment()
+
+    assert not [name for name in environment if name.upper().startswith("PYTHON")]
+    assert "VIRTUAL_ENV" not in environment
+    assert "CONDA_PREFIX" not in environment
+    root = environment["SystemRoot"]
+    assert environment["PATH"] == rf"{root}\System32;{root}"
+
+
+def test_wrapper_check_refuses_without_a_wrapper_or_bundled_python(tmp_path):
+    """No real embedded runtime offline: the helper must refuse, not execute."""
+    script = _load_smoke_script()
+    code = tmp_path / "code"
+
+    with pytest.raises(script.SmokeError) as excinfo:
+        script.run_wrapper_check(code, tmp_path / "archive")
+    assert excinfo.value.step == "wrapper"
+    assert "frontier.cmd" in excinfo.value.message
+
+    (code / "bin").mkdir(parents=True)
+    (code / "bin" / "frontier.cmd").write_text("@echo off\r\n", encoding="ascii")
+    with pytest.raises(script.SmokeError) as excinfo:
+        script.run_wrapper_check(code, tmp_path / "archive")
+    assert excinfo.value.step == "wrapper"
+    assert "runtime" in excinfo.value.message.lower()
+
+
+def test_ci_install_smoke_check_wrapper_fails_clearly_on_a_synthetic_runtime(tmp_path):
+    """The synthetic runtime's fake python.exe cannot print usage; the check says so."""
+    built = _build(tmp_path)
+    smoke = tmp_path / "smoke"
+
+    result = _run_smoke(*_smoke_args(built, smoke), "--check-wrapper")
+
+    assert result.returncode == 1, result.stdout + "\n" + result.stderr
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert payload["step"] == "wrapper"
+    assert "frontier.cmd" in payload["error"]
+    # Captured output and the exact command go into the failure JSON so a CI log
+    # can explain a broken wrapper without guessing.
+    assert "stdout" in payload
+    assert "stderr" in payload
+    assert "returncode" in payload
+    assert any("frontier.cmd" in part for part in payload["command"])
+    # The check runs after install/skill, so the package and lock already exist.
+    assert (smoke / "code" / "manifest.json").is_file()
+    assert (smoke / "code" / ".frontier" / "dist.lock.json").is_file()
+    assert (smoke / "host-skills" / "frontier-run" / "SKILL.md").is_file()
