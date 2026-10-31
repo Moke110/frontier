@@ -98,6 +98,28 @@ _Avoid_: watchdog, monitor, uptime check
 Retired name for an Agent run.
 _Avoid_: headless agent, child session, bot run
 
+### Distribution and release
+
+**Distribution package（发行包）**:
+The self-contained artifact a user installs frontier from: program code, agent-facing assets and the runtime it needs, identified by one version.
+_Avoid_: installer, build, release, bundle
+
+**Distribution manifest（发行包清单）**:
+The in-package index of every file's digest together with the package's version and compatibility facts; it is the evidence of what an installation contains.
+_Avoid_: checksums, file list, lockfile
+
+**Install lock（安装锁）**:
+The installation's pinned record of which distribution package it runs: version, artifact digest, channel, source and install time.
+_Avoid_: version file, install record
+
+**Release channel（发布渠道）**:
+The line a distribution package is published on — stable or prerelease — and the only thing a test installation selects by default.
+_Avoid_: branch, tag, market
+
+**Source installation（源码安装）**:
+An installation run from a developer's source checkout, used for development rather than for users.
+_Avoid_: dev install, editable install
+
 ### Runtime control
 
 **Console（控制台）**:
@@ -125,7 +147,7 @@ A bounded host-agent run the Console starts for work that needs judgement, such 
 _Avoid_: headless agent, child session, bot run
 
 **Code directory（代码目录）**:
-The frontier repository checkout that also holds the installation's private environment, configuration, run state, queue, logs and archive index; it is kept separate from source documents and push artifacts.
+The frontier program directory — a source checkout in a source installation, an extracted distribution package in a normal installation — that also holds the installation's environment, configuration, run state, queue, logs and archive index; it is kept separate from source documents and push artifacts.
 _Avoid_: workspace, install directory, app folder
 
 **Data root（数据根）**:
@@ -141,8 +163,12 @@ The Code-directory ledger that registers each file in the Archive directory by b
 _Avoid_: manifest, catalog, database
 
 **Private environment（私有环境）**:
-The uv-managed Python environment and interpreter kept inside the Code directory, created by a uv resolved from outside the workspace first; later runs use the recorded absolute interpreter.
+The uv-managed Python environment and interpreter kept inside the Code directory of a source installation, created by a uv resolved from outside the workspace first; later runs use the recorded absolute interpreter.
 _Avoid_: repo venv, workspace virtualenv, system Python
+
+**Bundled runtime（内置运行时）**:
+The interpreter and libraries a distribution package carries, so an installation needs neither a toolchain nor a package manager on the user's machine.
+_Avoid_: venv, embedded Python, private environment
 
 **Source document（原文）**:
 A paper's PDF original, keyed by `paper_id`; a paper has at most one source file.
