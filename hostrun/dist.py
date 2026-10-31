@@ -21,6 +21,7 @@ other scheme are refused.  The build side lives in :mod:`hostrun.distribution`.
 
 from __future__ import annotations
 
+import filecmp
 import json
 import os
 import platform
@@ -1149,11 +1150,7 @@ def _restore_pre_operation(code: Path, marker: dict) -> dict:
             raise DistError(f"恢复快照缺少文件：{row['path']}")
         destination = code / Path(row["path"])
         ensure_dir(destination.parent)
-        shutil.copyfile(source, destination)
-        try:
-            shutil.copymode(source, destination)
-        except OSError:
-            pass
+        _copy_unless_identical(source, destination)
     (code / MANIFEST_FILENAME).write_bytes(old_bytes)
     pre_lock = marker.get("pre_lock")
     if isinstance(pre_lock, dict):
@@ -1287,6 +1284,31 @@ def _extract_and_verify(
     return [row["path"] for row in manifest["files"]]
 
 
+def _copy_unless_identical(source: Path, destination: Path) -> bool:
+    """Copy ``source`` over ``destination`` unless the bytes already match.
+
+    Returns True when a write happened.  An in-place upgrade must not rewrite a
+    file whose content is already correct: the running bundled interpreter keeps
+    ``python.exe``/``python3XX.dll``/loaded ``.pyd`` files locked on Windows, and
+    pinned runtimes ship identical bytes, so skipping identical files is what
+    makes self-upgrade work without a separate installer process.
+    """
+    if destination.is_file():
+        try:
+            if (
+                destination.stat().st_size == source.stat().st_size
+                and filecmp.cmp(source, destination, shallow=False)
+            ):
+                return False
+        except OSError:
+            pass
+    shutil.copyfile(source, destination)
+    try:
+        shutil.copymode(source, destination)
+    except OSError:
+        pass
+    return True
+
 def apply_staged(stage: str | Path, code: str | Path) -> list[str]:
     """Copy verified staged files into the code directory, manifest last.
 
@@ -1317,11 +1339,7 @@ def apply_staged(stage: str | Path, code: str | Path) -> list[str]:
             raise DistError(f"拒绝把暂存文件写入运行时区：{rel_posix}")
         target = code_path / rel
         ensure_dir(target.parent)
-        shutil.copyfile(source, target)
-        try:
-            shutil.copymode(source, target)
-        except OSError:
-            pass
+        _copy_unless_identical(source, target)
         applied.append(rel_posix)
     return applied
 
@@ -1873,11 +1891,7 @@ def rollback(code: str | Path, *, to_version: str | None = None) -> dict:
                 source = target_dir / Path(rel)
                 destination = code_path / Path(rel)
                 ensure_dir(destination.parent)
-                shutil.copyfile(source, destination)
-                try:
-                    shutil.copymode(source, destination)
-                except OSError:
-                    pass
+                _copy_unless_identical(source, destination)
             (code_path / MANIFEST_FILENAME).write_bytes(target_bytes)
             if outgoing_manifest is not None:
                 _remove_stale_files(code_path, outgoing_manifest, target)

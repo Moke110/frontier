@@ -58,6 +58,7 @@ def _build(
     version: str,
     channel: str = "stable",
     files: dict[str, str] | None = None,
+    runtime_dir: Path | None = None,
 ) -> dict:
     source = _write_tree(tmp_path / f"{name}-src", files or PACKAGE_FILES)
     return distribution.build(
@@ -67,6 +68,7 @@ def _build(
         channel=channel,
         commit="deadbeefcafe",
         compat=_host_compat(),
+        runtime_dir=runtime_dir,
     )
 
 
@@ -166,6 +168,56 @@ def test_upgrading_removes_files_only_the_previous_manifest_listed(tmp_path):
     assert payload["ok"] is True
     assert not (code / "hostrun" / "legacy_only.py").exists()
     assert dist.verify_install(code)["status"] == "verified"
+
+
+def _write_runtime_fixture(root: Path) -> Path:
+    files = {
+        "python.exe": b"MZ fake interpreter",
+        "python313.dll": b"core dll",
+        "python313._pth": b"python313.zip\r\n.\r\n..\r\nLib\\site-packages\r\n",
+        "python313.zip": b"PK fake stdlib",
+        "select.pyd": b"fake extension",
+        "Lib/site-packages/.keep": b"",
+    }
+    for rel, data in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return root
+
+
+def test_upgrade_leaves_identical_locked_runtime_files_untouched(tmp_path):
+    """A running bundled runtime locks its own binaries on Windows.
+
+    An in-place upgrade is executed by the installed runtime, so
+    ``python.exe``/``python3XX.dll``/loaded ``.pyd`` files are locked.  Pinned
+    runtime bytes are identical between versions, so the upgrade must skip them
+    instead of trying to rewrite the locked files (which would fail with
+    ``PermissionError`` and leave a half-applied tree).
+    """
+    runtime = _write_runtime_fixture(tmp_path / "runtime-fixture")
+    v1 = _build(tmp_path, name="v1", version="1.0.0", runtime_dir=runtime)
+    v2 = _build(tmp_path, name="v2", version="2.0.0", runtime_dir=runtime)
+    code = tmp_path / "code"
+    assert _install(code, v1)["ok"] is True
+    locked = [
+        code / "runtime" / "python.exe",
+        code / "runtime" / "select.pyd",
+        code / "runtime" / "python313.dll",
+        code / "runtime" / "Lib" / "site-packages" / ".keep",
+    ]
+    for path in locked:
+        path.chmod(0o444)  # read-only stands in for the running process's lock
+
+    payload = _install(code, v2)
+
+    assert payload["ok"] is True, payload
+    assert payload["status"] == "ok"
+    assert payload["version"] == "2.0.0"
+    assert (code / "runtime" / "python.exe").read_bytes() == b"MZ fake interpreter"
+    assert dist.verify_install(code)["status"] == "verified"
+    for path in locked:
+        path.chmod(0o666)
 
 
 def test_runtime_state_and_knowledge_survive_an_upgrade(tmp_path):

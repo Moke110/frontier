@@ -72,14 +72,18 @@ def _fail_on_staging_copy(monkeypatch):
 
 
 def _fail_on_retained_rollback_copy(monkeypatch, version: str):
-    original = dist.shutil.copyfile
+    # Rollback now skips files whose bytes already match (so an in-place
+    # upgrade never rewrites the running bundled runtime), so a pure
+    # ``shutil.copyfile`` patch would not fire for identical fixture files.
+    # Patch the copy decision point instead: it runs for every target file.
+    original = dist._copy_unless_identical
 
-    def copyfile(source, target):
+    def copy(source, target):
         if "releases" in Path(source).parts and version in Path(source).parts:
             raise OSError("simulated mid-rollback failure")
         return original(source, target)
 
-    monkeypatch.setattr(dist.shutil, "copyfile", copyfile)
+    monkeypatch.setattr(dist, "_copy_unless_identical", copy)
 
 
 def test_fresh_install_failure_removes_applied_files_and_marker(tmp_path, monkeypatch):
