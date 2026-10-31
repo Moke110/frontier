@@ -1080,11 +1080,14 @@ def test_workflow_pins_actions_by_major_tag_with_a_documented_follow_up():
 
 
 # ------------------------------------------------------------ repository files
-def test_committed_release_index_is_valid_and_starts_empty():
+def test_committed_release_index_is_valid():
+    """The committed index must validate whether or not releases exist yet."""
     payload = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
     release.validate_index(payload)
     assert payload["schema_version"] == 1
-    assert payload["releases"] == []
+    assert isinstance(payload["releases"], list)
+    versions = [entry["version"] for entry in payload["releases"]]
+    assert len(versions) == len(set(versions))
 
 
 def test_release_requirements_pin_exact_versions():
