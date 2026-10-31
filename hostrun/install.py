@@ -232,6 +232,31 @@ def _interpreter_facts(python: str, *, runner=subprocess.run) -> dict:
     }
 
 
+def _is_bundled_runtime(repo: Path, python_path: Path) -> bool:
+    """Whether ``python_path`` is the package runtime of a package installation.
+
+    A source installation keeps the rule that its interpreter must live outside
+    the code directory.  A distribution package deliberately carries
+    ``<code>/runtime/python.exe``; the install lock's
+    ``distribution: "package"`` is what makes that in-directory interpreter
+    legitimate (#95).
+    """
+    if not python_path.is_absolute():
+        return False
+    try:
+        lock = read_json(repo / ".frontier" / "dist.lock.json")
+    except (OSError, ValueError):
+        return False
+    if not isinstance(lock, dict) or lock.get("distribution") != "package":
+        return False
+    try:
+        resolved = python_path.resolve()
+        runtime_root = (repo / "runtime").resolve()
+    except OSError:
+        return False
+    return resolved.is_relative_to(runtime_root)
+
+
 def probe_dependencies(
     repo: str | Path,
     *,
@@ -245,7 +270,11 @@ def probe_dependencies(
 
     There is deliberately no fallback to this process's interpreter: an
     unrecorded, missing, relative or in-repo interpreter blocks the dependency
-    step with the exact toolchain repair command.
+    step with the exact toolchain repair command.  The one exception is a
+    package installation whose interpreter is the bundled
+    ``<code>/runtime/python.exe``: the install lock records
+    ``distribution: "package"`` and the probe reports ``bundled_runtime``
+    evidence instead of blocking (#95).
     """
     repo = Path(repo)
     repair_hint = repair or "install toolchain --root <workspace> --clear"
@@ -269,13 +298,14 @@ def probe_dependencies(
     outside_repo = (
         python_path.is_absolute() and not python_path.is_relative_to(repo)
     )
+    bundled_runtime = recorded and _is_bundled_runtime(repo, python_path)
     if not recorded:
         notes.append("未记录解释器的绝对路径；依赖未验证")
     elif not python_path.is_absolute():
         notes.append(f"解释器路径不是绝对路径：{python}")
     elif not python_path.is_file():
         notes.append(f"解释器不存在：{python}")
-    elif not outside_repo:
+    elif not outside_repo and not bundled_runtime:
         notes.append(f"解释器位于代码目录内，无法写运行时区：{python}")
     else:
         facts = _interpreter_facts(str(python), runner=runner or subprocess.run)
@@ -284,6 +314,8 @@ def probe_dependencies(
         has_fitz = facts["fitz"]
         expected = (Path(home) / workspace_mod.ENV_DIRNAME) if home else None
         in_data_root = bool(expected) and python_path.is_relative_to(expected)
+        if bundled_runtime:
+            notes.append(f"内置运行时：{python}")
         if not facts["ok"]:
             notes.append(f"解释器不可用：{facts['error']}")
         elif version < MIN_PYTHON:
@@ -299,7 +331,7 @@ def probe_dependencies(
         and facts["ok"]
         and python_path.is_absolute()
         and python_path.is_file()
-        and outside_repo
+        and (outside_repo or bundled_runtime)
         and version >= MIN_PYTHON
         and has_yaml
         and has_fitz
@@ -319,6 +351,7 @@ def probe_dependencies(
             "fitz": has_fitz,
             "recorded": recorded,
             "outside_repo": outside_repo,
+            "bundled_runtime": bundled_runtime,
             "in_data_root": in_data_root,
             "repair": repair_hint,
         },
@@ -618,31 +651,47 @@ def check(
 
     results: dict[str, dict] = {}
     results["host"] = probe_host(host)
+    workspace_python = ""
 
     if workspace_root:
         ws = workspace_mod.status(workspace_root)
-        repo_ok = bool(ws.get("repo")) and (Path(ws["repo"]) / ".git").exists()
+        package = ws.get("distribution") == "package"
+        repo_ok = bool(ws.get("repo")) and Path(ws["repo"]).is_dir()
+        if not package:
+            repo_ok = repo_ok and (Path(ws["repo"]) / ".git").exists()
         home_ok = bool(ws.get("home")) and Path(ws["home"]).is_dir()
-        layout_ok = repo_ok and home_ok
+        wrapper = (
+            Path(ws["repo"]) / "bin" / "frontier.cmd"
+            if package and ws.get("repo")
+            else None
+        )
+        wrapper_ok = bool(wrapper and wrapper.is_file())
+        layout_ok = repo_ok and home_ok and (wrapper_ok if package else True)
         layout_problems = []
         if not repo_ok:
             layout_problems.append(f"代码目录不可用：{ws.get('repo') or '<未记录>'}")
         if not home_ok:
             layout_problems.append(f"运行时区不可用：{ws.get('home') or '<未记录>'}")
+        if package and not wrapper_ok:
+            layout_problems.append(f"发行包启动包装器不可用：{wrapper}")
+        layout_problems.extend(ws.get("problems") or [])
         results["workspace"] = {
-            "status": "ok" if layout_ok else "blocked",
+            "status": "ok" if layout_ok and not ws.get("problems") else "blocked",
             "note": (
                 "代码目录与资料目录已记录且可用"
-                if layout_ok
-                else "；".join(layout_problems)
+                if layout_ok and not ws.get("problems")
+                else "；".join(dict.fromkeys(layout_problems))
             ),
             "evidence": {
                 "root": ws.get("root"),
                 "repo": ws.get("repo"),
                 "home": ws.get("home"),
                 "commit": ws.get("commit"),
+                "distribution": ws.get("distribution"),
+                "wrapper": str(wrapper) if wrapper else None,
             },
         }
+        workspace_python = str(ws.get("python") or "")
         skill = workspace_mod.verify_skill(ws)
         results["skill"] = {
             "status": "ok" if skill["ok"] else "blocked",
@@ -679,10 +728,11 @@ def check(
     )
     results["dependencies"] = probe_dependencies(
         repo_path,
-        python=python or config["paths"].get("python"),
+        python=python or workspace_python or config["paths"].get("python"),
         platform=platform,
         home=home,
         repair=repair,
+        runner=runner,
     )
     lark_result = probe_lark_cli(home, lark_cli or config["paths"].get("lark_cli"))
     results["lark_cli"] = lark_result
@@ -841,6 +891,59 @@ def _public_permissions(permissions: dict) -> dict:
     }
 
 
+def _release_report(home: Path) -> dict:
+    """The ``release`` block: package identity or a truthful source record.
+
+    ``home`` is the runtime area (``<code>/.frontier``); the install lock and
+    the retained releases live beside it.  A source installation never invents
+    package fields: it reports ``version: null`` and ``channel: "source"`` with
+    its commit instead (#97).  An absent lock stays ``recorded: false``.
+    """
+    from hostrun import dist as dist_mod
+
+    code = Path(home).parent
+    lock_path = dist_mod.lock_path(code)
+    lock = dist_mod.read_lock(code)
+    if lock is None:
+        detail = "没有安装锁；此安装按源码安装报告，发行包字段不可用"
+        if lock_path.is_file():
+            detail = "安装锁存在但无法读取；发行包字段不可用"
+        return {"distribution": "source", "recorded": False, "detail": detail}
+    distribution = str(lock.get("distribution") or "source")
+    if distribution == "source":
+        return {
+            "distribution": "source",
+            "version": None,
+            "channel": "source",
+            "source": lock.get("source_url"),
+            "installed_at": lock.get("installed_at"),
+            "commit": lock.get("commit"),
+            "dirty": bool(lock.get("dirty")),
+            "retained": [],
+            "lock_path": str(lock_path),
+        }
+    version = str(lock.get("version") or "")
+    if not version:
+        return {
+            "distribution": "source",
+            "recorded": False,
+            "detail": "安装锁缺少 version 字段，无法报告发行包版本",
+        }
+    return {
+        "distribution": distribution,
+        "version": version,
+        "channel": lock.get("channel"),
+        "source": lock.get("source_url"),
+        "installed_at": lock.get("installed_at"),
+        "previous_version": lock.get("previous_version") or None,
+        "rolled_back_at": lock.get("rolled_back_at") or None,
+        "retained": (
+            dist_mod.retained_releases(code) if distribution == "package" else []
+        ),
+        "lock_path": str(lock_path),
+    }
+
+
 def report(home: Path) -> dict:
     """Install report: working / blocked / untested, paths and timezone."""
     home = Path(home)
@@ -875,6 +978,7 @@ def report(home: Path) -> dict:
         "host": config.get("host") or {},
         "paths": config.get("paths") or {},
         "workspace": workspace,
+        "release": _release_report(home),
         "timezone": config.get("timezone") or default_timezone(),
         "permissions": _public_permissions(config.get("permissions") or {}),
         "working": [s["step"] for s in result["working"]],

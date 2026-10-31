@@ -1,6 +1,9 @@
 """hostrun CLI: the entry points a host agent calls.
 
     python -m hostrun.cli install check|status|report|record
+    python -m hostrun.cli install package --from <artifact> [--digest <json>] [--sha256 <hex>]
+    python -m hostrun.cli install verify
+    python -m hostrun.cli install rollback [--to <version>]
     python -m hostrun.cli kb attach|create|create-tables|verify|initial-confirm
     python -m hostrun.cli feedback setup|sync|status|submit|process|rebuild|correct
     python -m hostrun.cli run --intent daily|feedback|maintenance [--finish ok|error]
@@ -28,6 +31,7 @@ from common import emit, read_json
 from hostrun import audit as audit_mod
 from hostrun import console as console_mod
 from hostrun import console_events
+from hostrun import dist as dist_mod
 from hostrun import executor, facilities, feedback, initialize, install, intents, kb, lark
 from hostrun import layout as layout_mod
 from hostrun import workspace as workspace_mod
@@ -103,6 +107,22 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--status", required=True, choices=install.STATE_STATUSES)
     rec.add_argument("--note", default="")
     rec.add_argument("--evidence", help="JSON object")
+    pkg = isub.add_parser("package", help="install a distribution package from a local artifact")
+    pkg.add_argument(
+        "--from",
+        dest="from_source",
+        required=True,
+        help="local zip path or file:// URL",
+    )
+    pkg.add_argument("--digest", help="digest JSON path (default: sibling <artifact>.digest.json)")
+    pkg.add_argument("--sha256", help="explicit artifact SHA-256; wins over the digest file")
+    pkg.add_argument("--channel", choices=dist_mod.CHANNELS, help="installation channel")
+    isub.add_parser("verify", help="verify the install lock against the code directory")
+    rb = isub.add_parser("rollback", help="switch to a retained previous package version")
+    rb.add_argument(
+        "--to",
+        help="retained version to restore (default: the retained previous release)",
+    )
 
     # ------------------------------------------------------- install workspace
     w = isub.add_parser("workspace", help="acquire code and create the data root")
@@ -435,6 +455,27 @@ def _install(args, root: Path, resolved: dict | None = None) -> tuple[int, dict]
     from common import ensure_dir
     from hostrun.base import update_config
 
+    if args.action == "package":
+        layout = resolved or layout_mod.resolve()
+        result = dist_mod.install_package(
+            layout["code"],
+            from_source=args.from_source,
+            digest_path=args.digest,
+            sha256=args.sha256,
+            channel=args.channel,
+        )
+        return (0 if result.get("ok") else 1), result
+
+    if args.action == "verify":
+        layout = resolved or layout_mod.resolve()
+        result = dist_mod.verify_install(layout["code"])
+        return (0 if result.get("ok") else 1), result
+
+    if args.action == "rollback":
+        layout = resolved or layout_mod.resolve()
+        result = dist_mod.rollback(layout["code"], to_version=args.to)
+        return (0 if result.get("ok") else 1), result
+
     if args.action == "migrate":
         from hostrun import migration as migration_mod
 
@@ -495,6 +536,10 @@ def _install(args, root: Path, resolved: dict | None = None) -> tuple[int, dict]
                     },
                     paths={"repo": result["repo"], "home": result["home"]},
                 )
+                # A successful workspace acquisition is a source installation:
+                # record its truthful git evidence in the install lock (#97).
+                if result["ok"]:
+                    result["source_lock"] = workspace_mod.record_source_install(result)
             else:
                 report_root = Path(root)
                 ensure_dir(report_root / "install")

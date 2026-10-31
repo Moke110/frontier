@@ -2,25 +2,27 @@
 
 由 [frontier 运行时入口](../SKILL.md) 按需加载的完整流程参考；命令以**代码目录**为工作目录执行。agent 负责**排序（editor）与写作（writer）**；脚本负责取数、校验、入队、落盘。所有知识库写入都经过 archive / `KnowledgeStore`，agent 不直接改存储。
 
+**命令入口随安装方式变化**：发行包安装用 `<code>\bin\frontier.cmd` 执行 `hostrun.cli` 子命令（它调用内置运行时 `<code>\runtime\python.exe`），其他模块命令用 `<code>\runtime\python.exe -m <module>`；源码安装用安装记录里的私有解释器执行 `python -m hostrun.cli ...`。下文示例写作 `python -m hostrun.cli` 的地方，发行包安装替换为 `<code>\bin\frontier.cmd --code <code> --archive <archive>`（全局参数在子命令前），其他 `python -m <module>` 示例替换为 `<code>\runtime\python.exe -m <module>`。两种安装都不依赖系统 `python` 或 PATH 上的解释器。
+
 文中的 Phase 标签表示能力来源，不能作为当前安装或云端切换已通过的证据。运行前检查安装报告与实际知识库状态；同步由控制台每 10 分钟的有界轮询承担，不单独安装系统定时器。真实验收限制见 [验收记录](../../../docs/acceptance/)。
 
 ## 1. 前置条件、目录与运行前提
 
-1. 已按 [安装参考](installation.md) 验证本地宿主、解释器、飞书 CLI 和知识库；定时运行由控制台计时，不再依赖宿主内置调度。
+1. 已按 [安装参考](installation.md) 验证本地宿主、安装方式（发行包或源码）、飞书 CLI 和知识库；定时运行由控制台计时，不再依赖宿主内置调度。
 2. `lark-cli` 装在代码目录的运行目录并已登录；登录状态由 `hostrun install` 的 `identity` 步骤验证，不靠 `command -v` 猜。
 3. 常驻的只有用户可见、关闭即停的控制台（[ADR 0009](../../../docs/adr/0009-console-as-service.md)）：它按每日时刻启动一次 agent 运行、消费飞书消息与卡片回调、每 5 分钟反馈轮询、每 10 分钟 `knowledge.cli pull`。agent 运行是「一次有界运行 → 退出」，不挂会话。不装 systemd、不写持久环境变量。
-4. 目录拆分：代码、私有环境、配置、运行状态、日志与资料登记在**代码目录**（`<code>`，运行时区 `<code>/.frontier/`）；原文 `originals/` 与推送件 `pushes/` 在**资料目录**（`<archive>`），资料目录里没有台账。
+4. 目录拆分：代码、运行时或私有环境、配置、运行状态、日志与资料登记在**代码目录**（`<code>`，运行时区 `<code>/.frontier/`）。发行包安装的代码目录是解压后的发行包，自带 `<code>\runtime\` 与 `<code>\bin\frontier.cmd`，没有 `.venv` 与 uv；源码安装的代码目录是 git checkout，私有环境在 `<code>/.frontier/.venv`。原文 `originals/` 与推送件 `pushes/` 在**资料目录**（`<archive>`），资料目录里没有台账。
 
-所有模块命令显式传入 `--code <代码目录>` 与 `--archive <资料目录>`（旧 `--home` 已移除；安装记录里保存两者的绝对路径）：
+所有模块命令显式传入 `--code <代码目录>` 与 `--archive <资料目录>`（旧 `--home` 已移除；安装锁与安装记录里保存两者的绝对路径）：
 
-```bash
+```powershell
 python -m hostrun.cli --code <code> --archive <archive> install status
 python -m hostrun.cli --code <code> --archive <archive> status
 ```
 
-```bash
+```powershell
 # 通过安装检查验证身份，只报告就绪状态，不打印原始 auth 输出
-python -c "import yaml"
+<code>\runtime\python.exe -c "import yaml"
 ```
 
 ## 2. 领域模型
@@ -80,7 +82,7 @@ python -c "import yaml"
 
 ## 3. 主循环
 
-只有运行时入口的 daily 闸门允许后才开始以下正向链路。使用安装配置的解释器，日期由控制台按用户时区生成，所有模块命令显式传 `--code`/`--archive`；下列示例省略该重复参数。先处理已提交反馈，未答问题挡住新推送。
+只有运行时入口的 daily 闸门允许后才开始以下正向链路。使用当前安装的入口（发行包为 `<code>\bin\frontier.cmd` 与 `<code>\runtime\python.exe`，源码安装为记录的私有解释器），日期由控制台按用户时区生成，所有模块命令显式传 `--code`/`--archive`；下列示例省略该重复参数。先处理已提交反馈，未答问题挡住新推送。
 
 ### 3.1 检索计划
 
