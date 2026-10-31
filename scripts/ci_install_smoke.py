@@ -463,6 +463,28 @@ def run_smoke(
     if check_wrapper:
         wrapper_result = run_wrapper_check(code_dir, archive_dir)
         commands.append({"name": "wrapper", **wrapper_result})
+        # The wrapper just ran the installed CLI from the installed tree, which
+        # writes ``__pycache__`` bytecode caches there.  Verify must still pass
+        # afterwards: otherwise every real user's first verify would "fail" on
+        # files the installation itself created.  This re-verify is what makes
+        # that class of bug visible in CI instead of on a user's machine.
+        reverified = _run_cli(
+            interpreter,
+            code_dir,
+            archive_dir,
+            ["install", "verify"],
+            name="verify_after_wrapper",
+        )
+        _require(
+            reverified,
+            name="verify_after_wrapper",
+            ok=True,
+            status="verified",
+            distribution="package",
+        )
+        commands.append(
+            {"name": "verify_after_wrapper", **_command_view(reverified)}
+        )
 
     report = _run_cli(
         interpreter,

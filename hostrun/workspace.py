@@ -981,7 +981,7 @@ def _launcher_text(record: dict, lock: dict | None = None, digest: str = "") -> 
     if package:
         run_step = (
             f"3. 使用上面记录的入口点 `{wrapper}` 执行 frontier 子命令"
-            f"（例如 `{wrapper} --code \"{record['repo']}\" --archive \"{record['home']}\" "
+            f"（例如 `{wrapper} --code \"{record['repo']}\" --archive \"<资料目录>\" "
             "install verify`）；不要自行拼接 `-m hostrun.cli`。"
         )
     else:
