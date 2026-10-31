@@ -467,7 +467,6 @@ def test_report_for_a_package_install_shows_versions_source_and_retained(tmp_pat
 
     release = report["release"]
     assert release["distribution"] == "package"
-    assert release["recorded"] is True
     assert release["version"] == "2.0.0"
     assert release["channel"] == "prerelease"
     assert release["source"] == lock["source_url"]

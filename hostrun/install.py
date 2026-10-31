@@ -869,7 +869,6 @@ def _release_report(home: Path) -> dict:
     distribution = str(lock.get("distribution") or "source")
     return {
         "distribution": distribution,
-        "recorded": True,
         "version": version,
         "channel": lock.get("channel"),
         "source": lock.get("source_url"),
