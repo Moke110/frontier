@@ -118,6 +118,42 @@ def _package_files(package: Path) -> list[Path]:
 
 
 # ------------------------------------------------------------------ manifest
+def test_manifest_covers_generated_runtime_and_wrapper(source, tmp_path):
+    """Generated package content is indexed by the same manifest (#95)."""
+    runtime = tmp_path / "runtime"
+    (runtime / "DLLs").mkdir(parents=True)
+    (runtime / "Lib" / "site-packages").mkdir(parents=True)
+    (runtime / "python.exe").write_bytes(b"MZ fake")
+    (runtime / "python313.dll").write_bytes(b"dll")
+    (runtime / "python313._pth").write_bytes(b"python313.zip\n")
+    (runtime / "DLLs" / "select.pyd").write_bytes(b"pyd")
+    (runtime / "Lib" / "site-packages" / "yaml.py").write_bytes(b"YAML = 1\n")
+    (runtime / "__pycache__").mkdir()
+    (runtime / "__pycache__" / "stale.pyc").write_bytes(b"cache")
+
+    result = _build(source, tmp_path / "out", runtime_dir=runtime)
+    package = Path(result["package"])
+    manifest = _manifest(result)
+
+    on_disk = {
+        path.relative_to(package).as_posix(): path
+        for path in _package_files(package)
+        if path.relative_to(package).as_posix() != MANIFEST
+    }
+    listed = {row["path"]: row for row in manifest["files"]}
+    assert set(listed) == set(on_disk)
+    assert {
+        "runtime/python.exe",
+        "runtime/python313.dll",
+        "runtime/DLLs/select.pyd",
+        "runtime/Lib/site-packages/yaml.py",
+        "bin/frontier.cmd",
+    } <= set(listed)
+    assert not any("__pycache__" in path for path in listed)
+    for rel, path in on_disk.items():
+        assert listed[rel]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest(), rel
+
+
 def test_manifest_covers_every_packaged_file_with_correct_bytes_and_digest(source, tmp_path):
     result = _build(source, tmp_path / "out")
     manifest = _manifest(result)

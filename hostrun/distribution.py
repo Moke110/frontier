@@ -5,7 +5,7 @@ development inputs, while an installed frontier is an extracted distribution
 package.  This module is the single build entry both a developer and CI use:
 
     python -m hostrun.distribution --source . --version 0.1.0 \
-        --channel stable --out dist
+        --channel stable --out dist --runtime-dir <prepared-runtime>
 
 It reads a source tree, copies only runtime code and agent-readable assets into
 ``<out>/frontier-<version>-<channel>/``, then writes:
@@ -32,10 +32,29 @@ ship.  Hidden entries, caches, runtime state, private environments, tests,
 fixtures, drafts and other development-only directories never enter the
 package.
 
-The launcher wrapper and the bundled Python runtime are #95's job.  This builder
-is the seam for them: they become generated package content before the manifest
-is assembled, so the manifest automatically covers them without changing the
-schema.
+Bundled runtime (``--runtime-dir``, #95)
+----------------------------------------
+A release build passes ``--runtime-dir`` naming a prepared CPython embeddable
+tree.  The builder never downloads or synthesises an interpreter: CI (#98)
+assembles the tree, this entry copies it verbatim into ``<package>/runtime/``
+with a sorted walk (skipping ``__pycache__`` and ``*.pyc``/``*.pyo``) and
+preserves every file's bytes.  The expected layout is::
+
+    runtime/python.exe                       # interpreter the wrapper runs
+    runtime/python<major><minor>.dll         # core DLL
+    runtime/python<major><minor>._pth        # module search path (stdlib + Lib/site-packages)
+    runtime/python<major><minor>.zip         # stdlib (or a Lib/ tree)
+    runtime/DLLs/*.pyd                       # extension modules
+    runtime/Lib/site-packages/...            # PyYAML, PyMuPDF and their dependencies
+
+A bundled runtime also generates ``<package>/bin/frontier.cmd``, the launcher
+wrapper described in :mod:`hostrun.launcher` and ``contracts/distribution-runtime.md``.
+Both the runtime tree and the wrapper are written *before* the manifest is
+assembled, so the existing manifest schema covers them automatically.  A build
+without ``--runtime-dir`` keeps the #93 layout (no ``runtime/``, no wrapper) so
+development builds and their tests stay unchanged; a release build always passes
+it.  A ``--runtime-dir`` that is missing or lacks ``python.exe`` fails the build
+before any package directory is created.
 """
 
 from __future__ import annotations
@@ -54,12 +73,18 @@ import zipfile
 from pathlib import Path
 
 from common import emit
+from hostrun import launcher
 
 SCHEMA_VERSION = 1
 CHANNELS = ("stable", "prerelease")
 MANIFEST_FILENAME = "manifest.json"
 DIGEST_SUFFIX = ".digest.json"
 ARTIFACT_SUFFIX = ".zip"
+#: Package-relative layout of a bundled runtime and its wrapper (#95).
+RUNTIME_DIRNAME = "runtime"
+RUNTIME_PYTHON_NAME = "python.exe"
+RUNTIME_SKIP_DIRS = {"__pycache__"}
+RUNTIME_SKIP_SUFFIXES = {".pyc", ".pyo"}
 #: Fixed DOS epoch timestamp for every zip entry.  A timestamp from the build
 #: host would make two builds of the same source differ.
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -244,6 +269,56 @@ def _source_relpaths(source: Path, out: Path | None) -> tuple[list[Path], dict[s
     return files, excluded
 
 
+def _runtime_relpaths(runtime_dir: Path) -> list[Path]:
+    """Every runtime file to copy, relative to ``runtime_dir``, sorted.
+
+    The walk is deterministic and skips only interpreter caches: a prepared
+    runtime is otherwise copied verbatim, including ``DLLs/`` and
+    ``Lib/site-packages/``.
+    """
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(runtime_dir):
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in RUNTIME_SKIP_DIRS
+        )
+        current = Path(dirpath)
+        for name in sorted(filenames):
+            if Path(name).suffix.lower() in RUNTIME_SKIP_SUFFIXES:
+                continue
+            candidate = current / name
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            files.append(candidate.relative_to(runtime_dir))
+    return sorted(files, key=lambda path: path.as_posix())
+
+
+def _validate_runtime_dir(runtime_dir: str | Path) -> Path:
+    """Resolve and validate ``--runtime-dir`` before any package write."""
+    path = Path(runtime_dir).expanduser().resolve()
+    if not path.is_dir():
+        raise BuildError(f"runtime directory is not a directory: {path}")
+    if not (path / RUNTIME_PYTHON_NAME).is_file():
+        raise BuildError(
+            f"runtime directory must contain {RUNTIME_PYTHON_NAME}: {path}"
+        )
+    return path
+
+
+def _copy_runtime(runtime_dir: Path, package_dir: Path) -> dict:
+    """Copy the prepared runtime verbatim and generate its launcher wrapper."""
+    destination_root = package_dir / RUNTIME_DIRNAME
+    relpaths = _runtime_relpaths(runtime_dir)
+    total = 0
+    for rel in relpaths:
+        origin = runtime_dir / rel
+        destination = destination_root / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(origin, destination)
+        total += destination.stat().st_size
+    launcher.write_wrapper(package_dir / launcher.WRAPPER_REL)
+    return {"files": len(relpaths), "bytes": total, "source": str(runtime_dir)}
+
+
 def _is_executable(rel: Path, path: Path) -> bool:
     if rel.suffix.lower() in EXECUTABLE_SUFFIXES:
         return True
@@ -404,8 +479,13 @@ def build(
     channel: str,
     commit: str | None = None,
     compat: dict | None = None,
+    runtime_dir: str | Path | None = None,
 ) -> dict:
     """Build a distribution package directory, its manifest and its digest.
+
+    ``runtime_dir`` is optional: when given it must contain ``python.exe`` and is
+    copied verbatim into ``runtime/`` together with the generated wrapper; when
+    omitted the #93 layout is produced unchanged.
 
     Returns a JSON-serialisable summary with the three output paths (the
     manifest path points inside the package).  Raises :class:`BuildError` for an
@@ -416,6 +496,7 @@ def build(
     out_path = Path(out).expanduser().resolve()
     if not source_path.is_dir():
         raise BuildError(f"source tree is not a directory: {source_path}")
+    runtime_path = _validate_runtime_dir(runtime_dir) if runtime_dir is not None else None
 
     package_name = f"frontier-{version}-{channel}"
     package_dir = out_path / package_name
@@ -449,6 +530,11 @@ def build(
                 destination.chmod(mode)
             except OSError:
                 pass
+        runtime_summary = (
+            _copy_runtime(runtime_path, package_dir)
+            if runtime_path is not None
+            else None
+        )
     except OSError as exc:
         raise BuildError(f"could not write the package at {package_dir}: {exc}") from exc
 
@@ -528,6 +614,12 @@ def build(
         "files": len(files),
         "bytes": digest["bytes"],
         "manifest_sha256": digest["manifest_sha256"],
+        "runtime": runtime_summary,
+        "launcher": (
+            str(package_dir / launcher.WRAPPER_REL)
+            if runtime_summary is not None
+            else None
+        ),
         "excluded": excluded,
     }
     if warning:
@@ -557,6 +649,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--arch", help="compat.arch (default: this host)")
     parser.add_argument("--dsh", dest="dsh", help="compat.dsh minimum (default: *)")
     parser.add_argument("--python", dest="python_version", help="compat.python (default: this interpreter)")
+    parser.add_argument(
+        "--runtime-dir",
+        dest="runtime_dir",
+        help=(
+            "prepared CPython runtime to bundle verbatim under runtime/; it must "
+            f"contain {RUNTIME_PYTHON_NAME} and also generates bin/frontier.cmd "
+            "(release builds always pass it)"
+        ),
+    )
     return parser
 
 
@@ -580,6 +681,7 @@ def main(argv: list[str] | None = None) -> int:
             channel=args.channel,
             commit=args.commit,
             compat=compat,
+            runtime_dir=args.runtime_dir,
         )
     except BuildError as exc:
         emit({"ok": False, "error": str(exc)})

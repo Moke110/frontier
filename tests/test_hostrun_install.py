@@ -143,6 +143,47 @@ def test_probe_dependencies_blocks_an_interpreter_inside_the_repo(tmp_path):
     assert "--clear" in result["note"]
 
 
+def test_probe_dependencies_accepts_the_bundled_runtime_of_a_package_install(tmp_path):
+    repo = tmp_path / "repo"
+    _seed_repo_files(repo)
+    bundled = repo / "runtime" / "python.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("", encoding="utf-8")
+    lock = repo / ".frontier" / "dist.lock.json"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(
+        json.dumps({"schema_version": 1, "distribution": "package"}),
+        encoding="utf-8",
+    )
+
+    result = install.probe_dependencies(
+        repo,
+        python=str(bundled),
+        runner=_import_probe_runner(["3.13.1", "6.0.1", "1.24.0"]),
+    )
+
+    assert result["status"] == "ok"
+    assert result["evidence"]["bundled_runtime"] is True
+    # The interpreter is still inside the code directory; the package lock is
+    # what makes that legitimate.
+    assert result["evidence"]["outside_repo"] is False
+    assert "内置运行时" in result["note"]
+
+
+def test_probe_dependencies_blocks_an_in_repo_runtime_for_a_source_install(tmp_path):
+    repo = tmp_path / "repo"
+    _seed_repo_files(repo)
+    bundled = repo / "runtime" / "python.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("", encoding="utf-8")
+
+    result = install.probe_dependencies(repo, python=str(bundled))
+
+    assert result["status"] == "blocked"
+    assert result["evidence"]["bundled_runtime"] is False
+    assert "代码目录" in result["note"]
+
+
 def test_probe_dependencies_accepts_an_existing_outside_interpreter(tmp_path):
     import sys
 

@@ -232,6 +232,31 @@ def _interpreter_facts(python: str, *, runner=subprocess.run) -> dict:
     }
 
 
+def _is_bundled_runtime(repo: Path, python_path: Path) -> bool:
+    """Whether ``python_path`` is the package runtime of a package installation.
+
+    A source installation keeps the rule that its interpreter must live outside
+    the code directory.  A distribution package deliberately carries
+    ``<code>/runtime/python.exe``; the install lock's
+    ``distribution: "package"`` is what makes that in-directory interpreter
+    legitimate (#95).
+    """
+    if not python_path.is_absolute():
+        return False
+    try:
+        lock = read_json(repo / ".frontier" / "dist.lock.json")
+    except (OSError, ValueError):
+        return False
+    if not isinstance(lock, dict) or lock.get("distribution") != "package":
+        return False
+    try:
+        resolved = python_path.resolve()
+        runtime_root = (repo / "runtime").resolve()
+    except OSError:
+        return False
+    return resolved.is_relative_to(runtime_root)
+
+
 def probe_dependencies(
     repo: str | Path,
     *,
@@ -245,7 +270,11 @@ def probe_dependencies(
 
     There is deliberately no fallback to this process's interpreter: an
     unrecorded, missing, relative or in-repo interpreter blocks the dependency
-    step with the exact toolchain repair command.
+    step with the exact toolchain repair command.  The one exception is a
+    package installation whose interpreter is the bundled
+    ``<code>/runtime/python.exe``: the install lock records
+    ``distribution: "package"`` and the probe reports ``bundled_runtime``
+    evidence instead of blocking (#95).
     """
     repo = Path(repo)
     repair_hint = repair or "install toolchain --root <workspace> --clear"
@@ -269,13 +298,14 @@ def probe_dependencies(
     outside_repo = (
         python_path.is_absolute() and not python_path.is_relative_to(repo)
     )
+    bundled_runtime = recorded and _is_bundled_runtime(repo, python_path)
     if not recorded:
         notes.append("未记录解释器的绝对路径；依赖未验证")
     elif not python_path.is_absolute():
         notes.append(f"解释器路径不是绝对路径：{python}")
     elif not python_path.is_file():
         notes.append(f"解释器不存在：{python}")
-    elif not outside_repo:
+    elif not outside_repo and not bundled_runtime:
         notes.append(f"解释器位于代码目录内，无法写运行时区：{python}")
     else:
         facts = _interpreter_facts(str(python), runner=runner or subprocess.run)
@@ -284,6 +314,8 @@ def probe_dependencies(
         has_fitz = facts["fitz"]
         expected = (Path(home) / workspace_mod.ENV_DIRNAME) if home else None
         in_data_root = bool(expected) and python_path.is_relative_to(expected)
+        if bundled_runtime:
+            notes.append(f"内置运行时：{python}")
         if not facts["ok"]:
             notes.append(f"解释器不可用：{facts['error']}")
         elif version < MIN_PYTHON:
@@ -299,7 +331,7 @@ def probe_dependencies(
         and facts["ok"]
         and python_path.is_absolute()
         and python_path.is_file()
-        and outside_repo
+        and (outside_repo or bundled_runtime)
         and version >= MIN_PYTHON
         and has_yaml
         and has_fitz
@@ -319,6 +351,7 @@ def probe_dependencies(
             "fitz": has_fitz,
             "recorded": recorded,
             "outside_repo": outside_repo,
+            "bundled_runtime": bundled_runtime,
             "in_data_root": in_data_root,
             "repair": repair_hint,
         },
