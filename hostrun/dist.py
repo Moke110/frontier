@@ -21,19 +21,27 @@ a local file, and a remote source is refused.  The build side lives in
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import platform
 import re
 import shutil
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-from common import ensure_dir, now, read_json, write_json
+from common import (
+    ensure_dir,
+    now,
+    read_json,
+    sha256_bytes,
+    sha256_file,
+    write_json,
+    write_text_bytes,
+)
 from hostrun import distribution
 
 SCHEMA_VERSION = 1
@@ -46,6 +54,7 @@ LOCK_REL = Path(".frontier") / "dist.lock.json"
 STAGING_REL = Path(".frontier") / "staging"
 RELEASES_REL = Path(".frontier") / "releases"
 CURRENT_REL = Path(".frontier") / "current"
+PENDING_REL = Path(".frontier") / "dist.pending.json"
 RELEASE_FILENAME = "release.json"
 RELEASE_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = distribution.MANIFEST_FILENAME
@@ -59,6 +68,11 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~-]*$")
 _MANIFEST_LIMIT = 16 * 1024 * 1024
+_MANIFEST_KEYS = frozenset(
+    {"schema_version", "version", "channel", "built_from_commit", "compat", "files"}
+)
+_COMPAT_KEYS = frozenset({"os", "arch", "dsh", "python"})
+_FILE_KEYS = frozenset({"path", "bytes", "sha256", "executable"})
 # Two release versions exist at any time: the active tree and one retained
 # previous tree.  Installing a third version prunes the oldest retained tree.
 RETAINED_LIMIT = 1
@@ -196,8 +210,7 @@ def read_current(code: str | Path) -> str | None:
 
 def _write_current(code: str | Path, version: str) -> Path:
     path = current_path(code)
-    ensure_dir(path.parent)
-    path.write_text(f"{version}\n", encoding="utf-8")
+    write_text_bytes(path, version)
     return path
 
 
@@ -237,7 +250,7 @@ def _tree_disagreements(tree: Path, manifest: dict) -> tuple[list[str], list[str
         except OSError:
             missing.append(rel)
             continue
-        if len(data) != row["bytes"] or _sha256_bytes(data) != row["sha256"]:
+        if len(data) != row["bytes"] or sha256_bytes(data) != row["sha256"]:
             mismatch.append(rel)
     return missing, mismatch
 
@@ -330,7 +343,7 @@ def _retain_tree(
         "version": version,
         "channel": channel,
         "artifact_sha256": artifact_sha256,
-        "manifest_sha256": _sha256_bytes(manifest_bytes),
+        "manifest_sha256": sha256_bytes(manifest_bytes),
         "package_file_count": len(manifest["files"]),
         "source_url": source_url,
         "installed_at": installed_at,
@@ -340,15 +353,36 @@ def _retain_tree(
 
 
 def _prune_releases(code: Path, keep: str | None) -> list[str]:
-    """Remove every retained release except ``keep``; return removed versions."""
+    """Keep at most ``RETAINED_LIMIT`` retained trees, always including ``keep``.
+
+    The active tree is not in this directory, so ``RETAINED_LIMIT = 1`` means the
+    active version plus one previous version.  Keeping this decision here stops
+    the retention count and the pruning walk from drifting apart.
+    """
     root = releases_path(code)
     if not root.is_dir():
         return []
     keep = keep or ""
+    records = {str(record.get("version") or ""): record for record in _release_records(code)}
+    entries = [entry for entry in root.iterdir() if entry.is_dir()]
+    if keep:
+        entries.sort(
+            key=lambda entry: (
+                entry.name != keep,
+                str((records.get(entry.name) or {}).get("installed_at") or ""),
+                entry.name,
+            )
+        )
+    else:
+        entries.sort(
+            key=lambda entry: (
+                str((records.get(entry.name) or {}).get("installed_at") or ""),
+                entry.name,
+            ),
+            reverse=True,
+        )
     removed: list[str] = []
-    for entry in sorted(root.iterdir()):
-        if not entry.is_dir() or entry.name == keep:
-            continue
+    for entry in entries[RETAINED_LIMIT:]:
         shutil.rmtree(entry)
         removed.append(entry.name)
     return removed
@@ -399,16 +433,29 @@ def _remove_stale_files(code: Path, old_manifest: dict, new_manifest: dict) -> l
     return removed
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def _remove_applied_files(code: Path, files: list[str]) -> list[str]:
+    """Best-effort removal of the package files a failed fresh apply created."""
+    removed: list[str] = []
+    for rel in files:
+        if not _safe_relpath(rel) or _reserved_relpath(rel) or rel == MANIFEST_FILENAME:
+            continue
+        target = (code / Path(rel)).resolve()
+        try:
+            target.relative_to(code.resolve())
+        except ValueError:
+            continue
+        try:
+            if target.is_file():
+                target.unlink()
+                removed.append(rel)
+                _remove_empty_parents(target.parent, code.resolve())
+        except OSError:
+            continue
+    try:
+        (code / MANIFEST_FILENAME).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return removed
 
 
 def _blocked(reason: str, note: str, **extra) -> dict:
@@ -553,6 +600,9 @@ def _validate_manifest(manifest: object) -> list[str]:
     errors: list[str] = []
     if not isinstance(manifest, dict):
         return ["manifest 必须是 JSON 对象"]
+    unknown = sorted(set(manifest) - _MANIFEST_KEYS)
+    if unknown:
+        errors.append(f"manifest 含未知字段：{', '.join(unknown)}")
     if manifest.get("schema_version") != SCHEMA_VERSION:
         errors.append("schema_version 必须为 1")
     for key in ("version", "channel", "built_from_commit"):
@@ -564,6 +614,9 @@ def _validate_manifest(manifest: object) -> list[str]:
     if not isinstance(compat, dict):
         errors.append("缺少 compat 对象")
     else:
+        unknown_compat = sorted(set(compat) - _COMPAT_KEYS)
+        if unknown_compat:
+            errors.append(f"compat 含未知字段：{', '.join(unknown_compat)}")
         for key in ("os", "arch", "dsh", "python"):
             if not isinstance(compat.get(key), str) or not compat[key].strip():
                 errors.append(f"缺少 compat.{key}")
@@ -577,6 +630,9 @@ def _validate_manifest(manifest: object) -> list[str]:
         if not isinstance(row, dict):
             errors.append(f"{prefix} 必须是对象")
             continue
+        unknown_file = sorted(set(row) - _FILE_KEYS)
+        if unknown_file:
+            errors.append(f"{prefix} 含未知字段：{', '.join(unknown_file)}")
         path = row.get("path")
         if not isinstance(path, str) or not _safe_relpath(path):
             errors.append(f"{prefix}.path 不安全或为空：{path!r}")
@@ -597,6 +653,43 @@ def _validate_manifest(manifest: object) -> list[str]:
         if not isinstance(row.get("executable"), bool):
             errors.append(f"{prefix}.executable 必须是布尔值")
     return errors
+
+
+def _resolve_channel(
+    explicit_channel: str | None,
+    digest_channel: str,
+    manifest_channel: str | None,
+) -> str:
+    """Resolve the effective channel once for install and archive validation.
+
+    Precedence is explicit ``--channel`` → digest → manifest.  A conflict is a
+    ``blocked`` result, not a silent override, so the two paths cannot drift.
+    """
+    explicit = str(explicit_channel or "").strip()
+    from_digest = str(digest_channel or "").strip()
+    from_manifest = str(manifest_channel or "").strip()
+    if explicit and explicit not in CHANNELS:
+        _stop("invalid_channel", f"channel 必须是 {'/'.join(CHANNELS)}：{explicit}")
+    if from_digest and from_digest not in CHANNELS:
+        _stop("invalid_digest", f"摘要文件的 channel 不受支持：{from_digest}")
+    if explicit and from_digest and explicit != from_digest:
+        _stop(
+            "channel_conflict",
+            f"显式 channel {explicit} 与摘要文件 channel {from_digest} 冲突",
+            expected=from_digest,
+            actual=explicit,
+        )
+    channel = explicit or from_digest or from_manifest
+    if channel not in CHANNELS:
+        _stop("invalid_channel", f"channel 必须是 {'/'.join(CHANNELS)}：{channel}")
+    if from_manifest and channel != from_manifest:
+        _stop(
+            "channel_mismatch",
+            f"安装渠道 {channel} 与发行包清单渠道 {from_manifest} 不一致",
+            expected=from_manifest,
+            actual=channel,
+        )
+    return channel
 
 
 def _read_archive(
@@ -685,7 +778,7 @@ def _read_archive(
                 entries=missing,
             )
 
-        manifest_sha = _sha256_bytes(manifest_bytes)
+        manifest_sha = sha256_bytes(manifest_bytes)
         if digest is not None:
             expected_manifest_sha = str(digest.get("manifest_sha256") or "").strip().lower()
             if expected_manifest_sha and expected_manifest_sha != manifest_sha:
@@ -713,25 +806,9 @@ def _read_archive(
                 )
 
         digest_channel = str((digest or {}).get("channel") or "").strip()
-        if digest_channel and digest_channel not in CHANNELS:
-            _stop("invalid_digest", f"摘要文件的 channel 不受支持：{digest_channel}")
-        channel = (explicit_channel or digest_channel or manifest["channel"]).strip()
-        if channel not in CHANNELS:
-            _stop("invalid_channel", f"channel 必须是 {'/'.join(CHANNELS)}：{channel}")
-        if digest_channel and channel != digest_channel:
-            _stop(
-                "channel_conflict",
-                f"显式 channel {channel} 与摘要文件 channel {digest_channel} 冲突",
-                expected=digest_channel,
-                actual=channel,
-            )
-        if channel != manifest["channel"]:
-            _stop(
-                "channel_mismatch",
-                f"安装渠道 {channel} 与发行包清单渠道 {manifest['channel']} 不一致",
-                expected=manifest["channel"],
-                actual=channel,
-            )
+        channel = _resolve_channel(
+            explicit_channel, digest_channel, manifest["channel"]
+        )
         return archive, manifest_bytes, manifest, manifest_sha, channel
     except Exception:
         archive.close()
@@ -787,6 +864,352 @@ def _check_compat(manifest: dict) -> None:
             )
 
 
+_VERSION_COMPONENT_RE = re.compile(r"^(?P<op>>=|<=|==|=|>|<)?\s*v?(?P<version>\d+(?:\.\d+){0,2})(?:[-+].*)?$")
+_VERSION_NUMBER_RE = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)")
+
+
+def _version_tuple(text: str) -> tuple[int, int, int]:
+    parts = [int(part) for part in text.split(".")]
+    return tuple((parts + [0, 0, 0])[:3])  # type: ignore[return-value]
+
+
+def _parse_host_version(output: str) -> str:
+    match = _VERSION_NUMBER_RE.search(output or "")
+    return match.group(0) if match else ""
+
+
+def _dsh_requirement_matches(requirement: str, version: str) -> bool | None:
+    """Return True/False for a parsable requirement, ``None`` when unparsable."""
+    requirement = str(requirement or "").strip()
+    if requirement == "*":
+        return True
+    match = _VERSION_COMPONENT_RE.fullmatch(requirement)
+    if not match:
+        return None
+    wanted = _version_tuple(match.group("version"))
+    actual = _version_tuple(version)
+    operator = match.group("op") or "=="
+    if operator in ("==", "="):
+        return actual == wanted
+    if operator == ">=":
+        return actual >= wanted
+    if operator == ">":
+        return actual > wanted
+    if operator == "<=":
+        return actual <= wanted
+    if operator == "<":
+        return actual < wanted
+    return None
+
+
+def dsh_compatibility(
+    code: str | Path,
+    requirement: str,
+    *,
+    runner=subprocess.run,
+) -> dict:
+    """Check the optional ``compat.dsh`` requirement against the recorded dsh.
+
+    A wildcard passes.  A recorded ``paths.dsh`` that runs and prints a parsable
+    version yields ``ok`` or ``mismatch``.  Anything that prevents a trustworthy
+    answer yields ``unverified`` with a note: the install is not silently
+    reported as compatible.
+    """
+    requirement = str(requirement or "").strip() or "*"
+    if requirement == "*":
+        return {
+            "status": "ok",
+            "required": requirement,
+            "host": "",
+            "note": "compat.dsh=*；不做宿主版本限制",
+            "evidence": {"checked": False},
+        }
+    code_path = Path(code).expanduser().resolve()
+    config = read_json(code_path / ".frontier" / "install" / "config.json") or {}
+    dsh = str(((config.get("paths") or {}).get("dsh") or "")).strip()
+    if not dsh:
+        return {
+            "status": "unverified",
+            "required": requirement,
+            "host": "",
+            "note": "compat.dsh 非 *，但未记录 paths.dsh；宿主 dsh 版本未验证",
+            "evidence": {"checked": False, "dsh": ""},
+        }
+    if not Path(dsh).is_absolute() or not Path(dsh).is_file():
+        return {
+            "status": "unverified",
+            "required": requirement,
+            "host": "",
+            "note": f"compat.dsh 非 *，但记录的 paths.dsh 不存在或不是绝对路径：{dsh}；宿主版本未验证",
+            "evidence": {"checked": False, "dsh": dsh},
+        }
+    try:
+        proc = runner(
+            [dsh, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "status": "unverified",
+            "required": requirement,
+            "host": "",
+            "note": f"compat.dsh 非 *，但运行 {dsh} --version 失败：{exc}；宿主版本未验证",
+            "evidence": {"checked": False, "dsh": dsh, "error": str(exc)},
+        }
+    if proc.returncode != 0:
+        return {
+            "status": "unverified",
+            "required": requirement,
+            "host": "",
+            "note": f"compat.dsh 非 *，但 {dsh} --version 退出码非零；宿主版本未验证",
+            "evidence": {"checked": False, "dsh": dsh, "returncode": proc.returncode},
+        }
+    output = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+    host = _parse_host_version(output)
+    if not host:
+        return {
+            "status": "unverified",
+            "required": requirement,
+            "host": "",
+            "note": f"compat.dsh 非 *，但无法从 {dsh} --version 解析版本；宿主版本未验证",
+            "evidence": {"checked": False, "dsh": dsh, "output": output.strip()[:200]},
+        }
+    matched = _dsh_requirement_matches(requirement, host)
+    if matched is None:
+        return {
+            "status": "unverified",
+            "required": requirement,
+            "host": host,
+            "note": f"compat.dsh 要求 {requirement!r} 无法解析；宿主 dsh {host} 未判定",
+            "evidence": {"checked": False, "dsh": dsh, "host": host},
+        }
+    return {
+        "status": "ok" if matched else "mismatch",
+        "required": requirement,
+        "host": host,
+        "note": (
+            f"宿主 dsh {host} 满足 compat.dsh {requirement}"
+            if matched
+            else f"发行包要求 compat.dsh {requirement}，当前宿主 dsh 为 {host}"
+        ),
+        "evidence": {"checked": True, "dsh": dsh, "host": host},
+    }
+
+
+def _check_dsh_compat(code: Path, manifest: dict, *, runner=None) -> dict:
+    result = dsh_compatibility(
+        code,
+        manifest.get("compat", {}).get("dsh", "*"),
+        runner=runner or subprocess.run,
+    )
+    if result["status"] == "mismatch":
+        _stop(
+            "compat_dsh_mismatch",
+            result["note"],
+            field="compat.dsh",
+            required=result["required"],
+            host=result["host"],
+        )
+    return result
+
+
+# -------------------------------------------------------------- pending marker
+def pending_path(code: str | Path) -> Path:
+    return Path(code).expanduser().resolve() / PENDING_REL
+
+
+def read_pending(code: str | Path) -> dict | None:
+    """Read the destructive-operation marker, or ``None`` when absent."""
+    path = pending_path(code)
+    if not path.is_file():
+        return None
+    try:
+        marker = read_json(path)
+    except (OSError, ValueError):
+        return {"schema_version": 1, "operation": "unknown", "unreadable": True}
+    return marker if isinstance(marker, dict) else {"operation": "unknown"}
+
+
+def _write_pending_marker(code: Path, marker: dict) -> dict:
+    payload = {"schema_version": 1, "started_at": now(), **marker}
+    write_json(pending_path(code), payload)
+    return payload
+
+
+def _clear_pending_marker(code: Path) -> None:
+    try:
+        pending_path(code).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _pending_blocked(code: Path, marker: dict) -> dict:
+    return _blocked(
+        "pending_operation_incomplete",
+        (
+            "检测到未完成的破坏性安装操作留下的 .frontier/dist.pending.json；"
+            "为避免把两个版本的文件混在一起，本次安装已停止。"
+            "请先检查 pending_marker 与 recovery 字段：能恢复时按记录手工恢复，"
+            "确认现有代码树完整后再删除该标记并重试；不要直接覆盖代码目录。"
+        ),
+        code=str(code),
+        pending_marker=str(pending_path(code)),
+        operation=marker.get("operation", "unknown"),
+        target_version=marker.get("target_version"),
+        pre_operation_version=marker.get("pre_operation_version"),
+        retained=marker.get("retained"),
+        recovery=marker.get("recovery"),
+        guidance="检查标记指向的保留版本/恢复快照；确认树完整后删除 dist.pending.json 再重试",
+    )
+
+
+def _remove_paths(code: Path, relpaths: list[str]) -> list[str]:
+    removed: list[str] = []
+    code_root = code.resolve()
+    for rel in relpaths:
+        if not _safe_relpath(rel) or _reserved_relpath(rel) or rel == MANIFEST_FILENAME:
+            continue
+        target = (code / Path(rel)).resolve()
+        try:
+            target.relative_to(code_root)
+        except ValueError:
+            continue
+        try:
+            if target.is_file():
+                target.unlink()
+                removed.append(rel)
+                _remove_empty_parents(target.parent, code_root)
+        except OSError:
+            continue
+    return removed
+
+
+def _restore_pre_operation(code: Path, marker: dict) -> dict:
+    """Restore the tree, lock and current pointer recorded by the marker.
+
+    Fresh installs only have package files to remove.  Upgrades and rollbacks
+    keep the pre-operation tree in ``.frontier/releases/<version>`` (or a
+    same-version recovery snapshot) and restore it file by file; the lock and
+    ``current`` bytes are restored from the marker's snapshot.
+    """
+    operation = str(marker.get("operation") or "")
+    target_files = [str(rel) for rel in (marker.get("target_files") or [])]
+    if operation == "install":
+        removed = _remove_applied_files(code, target_files)
+        # A fresh install may have written the lock/current pointer before the
+        # failure; they did not exist before this operation, so remove them.
+        if marker.get("pre_lock") is None:
+            try:
+                lock_path(code).unlink(missing_ok=True)
+            except OSError:
+                pass
+        if marker.get("pre_current") is None:
+            try:
+                current_path(code).unlink(missing_ok=True)
+            except OSError:
+                pass
+        return {"restored": True, "restored_version": None, "removed": removed}
+
+    retained_text = str(marker.get("retained") or "")
+    retained = Path(retained_text).expanduser().resolve() if retained_text else None
+    if retained is None or not retained.is_dir():
+        raise DistError(f"恢复快照不存在：{retained_text or '<未记录>'}")
+    current = _manifest_at(retained)
+    if current is None:
+        raise DistError(f"恢复快照的 manifest.json 缺失或无效：{retained}")
+    old_bytes, old_manifest = current
+    old_paths = {row["path"] for row in old_manifest["files"]}
+    _remove_paths(code, [rel for rel in target_files if rel not in old_paths])
+    for row in old_manifest["files"]:
+        source = retained / Path(row["path"])
+        if not source.is_file():
+            raise DistError(f"恢复快照缺少文件：{row['path']}")
+        destination = code / Path(row["path"])
+        ensure_dir(destination.parent)
+        shutil.copyfile(source, destination)
+        try:
+            shutil.copymode(source, destination)
+        except OSError:
+            pass
+    (code / MANIFEST_FILENAME).write_bytes(old_bytes)
+    pre_lock = marker.get("pre_lock")
+    if isinstance(pre_lock, dict):
+        write_lock(code, pre_lock)
+    else:
+        raise DistError("恢复标记中没有 pre_lock 快照")
+    pre_current = marker.get("pre_current")
+    if isinstance(pre_current, str) and pre_current.strip():
+        _write_current(code, pre_current.strip())
+    else:
+        try:
+            current_path(code).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {
+        "restored": True,
+        "restored_version": str(old_manifest.get("version") or ""),
+        "removed": [],
+    }
+
+
+def _failed_operation(
+    code: Path,
+    payload: dict,
+    marker: dict,
+) -> dict:
+    """Try to restore; if restoring fails keep the marker and say so."""
+    try:
+        recovery = _restore_pre_operation(code, marker)
+    except (OSError, DistError) as exc:
+        return {
+            **payload,
+            "ok": False,
+            "status": "blocked",
+            "restored": False,
+            "recovery_incomplete": True,
+            "pending_marker": str(pending_path(code)),
+            "recovery_note": (
+                f"回退失败：{exc}；已保留 {pending_path(code)} 与 "
+                f"{marker.get('retained') or '恢复快照'}，请按该标记手工恢复后再删除它"
+            ),
+        }
+    _clear_pending_marker(code)
+    return {
+        **payload,
+        "ok": False,
+        "status": "blocked",
+        "restored": True,
+        "recovery_incomplete": False,
+        "recovery": recovery,
+        "pending_marker": str(pending_path(code)),
+        "recovery_note": (
+            f"写入失败后已恢复到 {recovery.get('restored_version') or '操作前状态'}，"
+            "临时标记已清除"
+        ),
+    }
+
+
+def _snapshot_for_repair(code: Path, manifest: dict, backup: Path) -> Path:
+    """Copy the existing files (even a partially broken tree) for same-version repair."""
+    if backup.exists():
+        shutil.rmtree(backup)
+    ensure_dir(backup)
+    for row in manifest["files"]:
+        source = code / Path(row["path"])
+        if source.is_file():
+            destination = backup / Path(row["path"])
+            ensure_dir(destination.parent)
+            shutil.copyfile(source, destination)
+    source_manifest = code / MANIFEST_FILENAME
+    if source_manifest.is_file():
+        (backup / MANIFEST_FILENAME).write_bytes(source_manifest.read_bytes())
+    return backup
+
+
 # ------------------------------------------------------------------- install
 def _foreign_entries(code: Path) -> list[str]:
     if not code.is_dir():
@@ -830,10 +1253,10 @@ def _extract_and_verify(
                 bad.append(row["path"])
             continue
         data = target.read_bytes()
-        if len(data) != row["bytes"] or _sha256_bytes(data) != row["sha256"]:
+        if len(data) != row["bytes"] or sha256_bytes(data) != row["sha256"]:
             if row["path"] not in bad:
                 bad.append(row["path"])
-    if _sha256_bytes((stage / MANIFEST_FILENAME).read_bytes()) != _sha256_bytes(manifest_bytes):
+    if sha256_bytes((stage / MANIFEST_FILENAME).read_bytes()) != sha256_bytes(manifest_bytes):
         bad.append(MANIFEST_FILENAME)
     if bad:
         shutil.rmtree(stage, ignore_errors=True)
@@ -894,6 +1317,7 @@ def _success(
     extracted: bool,
     installed_at: str,
     previous_version: str = "",
+    dsh_compat: dict | None = None,
 ) -> dict:
     manifest_files = manifest["files"]
     total_bytes = sum(row["bytes"] for row in manifest_files)
@@ -904,6 +1328,8 @@ def _success(
         )
     else:
         note = "同一版本且校验通过，本次未重复解压，安装锁与磁盘均未改动"
+    if dsh_compat and dsh_compat.get("status") == "unverified":
+        note = f"{note}；宿主 dsh 兼容性未验证：{dsh_compat.get('note', '')}"
     return {
         "ok": True,
         "status": "ok",
@@ -920,11 +1346,11 @@ def _success(
         "previous_version": previous_version,
         "retained": retained_releases(code),
         "files": len(manifest_files),
-        "file_count": len(manifest_files),
         "package_file_count": len(manifest_files),
         "bytes": total_bytes,
         "extracted": extracted,
         "installed_at": installed_at,
+        "compat_dsh": dsh_compat or {},
         "note": note,
     }
 
@@ -936,15 +1362,20 @@ def install_package(
     digest_path: str | Path | None = None,
     sha256: str | None = None,
     channel: str | None = None,
+    runner=subprocess.run,
 ) -> dict:
     """Install a distribution package and write its install lock.
 
     Failure is a structured ``status=blocked`` payload; the code directory and
     the lock are not modified before the artifact, manifest and compatibility
-    checks all pass.
+    checks all pass.  Before any destructive write a ``dist.pending.json`` marker
+    records how to undo it; a later install refuses to mix trees while it exists.
     """
     code_path = Path(code).expanduser().resolve()
     try:
+        pending = read_pending(code_path)
+        if pending is not None:
+            return _pending_blocked(code_path, pending)
         try:
             artifact = _source_path(from_source)
         except DistError as exc:
@@ -958,7 +1389,7 @@ def install_package(
         source_url = artifact.as_uri()
         expected_sha, digest, _digest_file = _resolve_expected(artifact, digest_path, sha256)
 
-        actual_sha = _sha256(artifact)
+        actual_sha = sha256_file(artifact)
         if actual_sha != expected_sha:
             _stop(
                 "digest_mismatch",
@@ -977,23 +1408,12 @@ def install_package(
                     actual=artifact.stat().st_size,
                 )
         explicit_channel = str(channel or "").strip() or None
-        if explicit_channel and explicit_channel not in CHANNELS:
-            _stop("invalid_channel", f"channel 必须是 {'/'.join(CHANNELS)}：{explicit_channel}")
-        if digest is not None:
-            digest_channel = str(digest.get("channel") or "").strip()
-            if explicit_channel and digest_channel and explicit_channel != digest_channel:
-                _stop(
-                    "channel_conflict",
-                    f"显式 channel {explicit_channel} 与摘要文件 channel {digest_channel} 冲突",
-                    expected=digest_channel,
-                    actual=explicit_channel,
-                )
-
         archive, manifest_bytes, manifest, manifest_sha, effective_channel = _read_archive(
             artifact, digest, explicit_channel
         )
         try:
             _check_compat(manifest)
+            dsh_compat = _check_dsh_compat(code_path, manifest, runner=runner)
 
             lock = read_lock(code_path)
             if (
@@ -1012,6 +1432,7 @@ def install_package(
                         effective_channel,
                         False,
                         str(lock.get("installed_at") or ""),
+                        dsh_compat=dsh_compat,
                     )
 
             conflicts = _foreign_entries(code_path)
@@ -1029,77 +1450,101 @@ def install_package(
 
         previous_manifest: dict | None = None
         previous_version = ""
-        try:
-            if lock is not None:
-                lock_version = str(lock.get("version") or "")
-                if manifest["version"] != lock_version:
-                    if lock.get("distribution") != DISTRIBUTION:
-                        _stop(
-                            "unsupported_distribution",
-                            "当前安装不是发行包安装，拒绝按发行包升级",
-                            distribution=lock.get("distribution"),
-                        )
-                    previous = _manifest_at(code_path)
-                    if previous is None:
-                        _stop(
-                            "previous_manifest_unreadable",
-                            "代码目录现有 manifest.json 缺失或无效；无法保留可回滚的旧版本",
-                            version=lock_version,
-                        )
-                    previous_bytes, previous_manifest = previous
-                    if previous_manifest["version"] != lock_version:
-                        _stop(
-                            "previous_manifest_unreadable",
-                            "代码目录的 manifest.json 版本与安装锁不一致，无法保留旧版本",
-                            expected=lock_version,
-                            actual=previous_manifest["version"],
-                        )
-                    if _sha256_bytes(previous_bytes) != str(
-                        lock.get("manifest_sha256") or ""
-                    ):
-                        _stop(
-                            "previous_install_unverified",
-                            "现有安装的 manifest.json 摘要与安装锁不一致；拒绝在没有可回滚副本时升级",
-                            version=lock_version,
-                        )
-                    missing, mismatch = _tree_disagreements(code_path, previous_manifest)
-                    if missing or mismatch:
-                        _stop(
-                            "previous_install_unverified",
-                            "现有安装的文件与清单不一致；请先重新安装当前版本修复，再升级",
-                            version=lock_version,
-                            missing=missing[:20],
-                            mismatch=mismatch[:20],
-                        )
-                    _retain_tree(
-                        code_path,
-                        previous_manifest,
-                        previous_bytes,
-                        artifact_sha256=str(lock.get("artifact_sha256") or ""),
-                        channel=str(lock.get("channel") or ""),
-                        source_url=str(lock.get("source_url") or ""),
-                        installed_at=str(lock.get("installed_at") or ""),
+        retained_tree: Path | None = None
+        if lock is not None:
+            lock_version = str(lock.get("version") or "")
+            if manifest["version"] != lock_version:
+                if lock.get("distribution") != DISTRIBUTION:
+                    _stop(
+                        "unsupported_distribution",
+                        "当前安装不是发行包安装，拒绝按发行包升级",
+                        distribution=lock.get("distribution"),
                     )
-                    previous_version = lock_version
-                    _prune_releases(code_path, keep=previous_version)
+                previous = _manifest_at(code_path)
+                if previous is None:
+                    _stop(
+                        "previous_manifest_unreadable",
+                        "代码目录现有 manifest.json 缺失或无效；无法保留可回滚的旧版本",
+                        version=lock_version,
+                    )
+                previous_bytes, previous_manifest = previous
+                if previous_manifest["version"] != lock_version:
+                    _stop(
+                        "previous_manifest_unreadable",
+                        "代码目录的 manifest.json 版本与安装锁不一致，无法保留旧版本",
+                        expected=lock_version,
+                        actual=previous_manifest["version"],
+                    )
+                if sha256_bytes(previous_bytes) != str(
+                    lock.get("manifest_sha256") or ""
+                ):
+                    _stop(
+                        "previous_install_unverified",
+                        "现有安装的 manifest.json 摘要与安装锁不一致；拒绝在没有可回滚副本时升级",
+                        version=lock_version,
+                    )
+                missing, mismatch = _tree_disagreements(code_path, previous_manifest)
+                if missing or mismatch:
+                    _stop(
+                        "previous_install_unverified",
+                        "现有安装的文件与清单不一致；请先重新安装当前版本修复，再升级",
+                        version=lock_version,
+                        missing=missing[:20],
+                        mismatch=mismatch[:20],
+                    )
+                retained_tree = _retain_tree(
+                    code_path,
+                    previous_manifest,
+                    previous_bytes,
+                    artifact_sha256=str(lock.get("artifact_sha256") or ""),
+                    channel=str(lock.get("channel") or ""),
+                    source_url=str(lock.get("source_url") or ""),
+                    installed_at=str(lock.get("installed_at") or ""),
+                )
+                previous_version = lock_version
+                _prune_releases(code_path, keep=previous_version)
+            else:
+                # Same-version repair: preserve whatever tree exists (it failed
+                # verify, so it may be incomplete) before overwriting it.
+                previous_version = lock_version
+                backup = (
+                    code_path
+                    / ".frontier"
+                    / "pending"
+                    / actual_sha[:16]
+                    / "pre-repair"
+                )
+                retained_tree = _snapshot_for_repair(code_path, manifest, backup)
 
-            apply_staged(stage, code_path)
-            if previous_manifest is not None:
-                _remove_stale_files(code_path, previous_manifest, manifest)
-        except _InstallBlocked:
-            shutil.rmtree(stage, ignore_errors=True)
-            raise
-        except (OSError, DistError) as exc:
-            shutil.rmtree(stage, ignore_errors=True)
-            _stop("apply_failed", f"写入代码目录失败：{exc}")
-        shutil.rmtree(stage, ignore_errors=True)
+        pre_current = None
         try:
-            stage.parent.rmdir()
-        except OSError:
-            pass
+            pre_current = current_path(code_path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            pre_current = None
+        pending = _write_pending_marker(
+            code_path,
+            {
+                "operation": "install" if lock is None else "upgrade",
+                "target_version": manifest["version"],
+                "pre_operation_version": (
+                    str(lock.get("version") or "") if lock is not None else None
+                ),
+                "retained": str(retained_tree) if retained_tree is not None else None,
+                "target_files": [row["path"] for row in manifest["files"]],
+                "pre_lock": dict(lock) if lock is not None else None,
+                "pre_current": pre_current,
+            },
+        )
+
+        def cleanup_stage() -> None:
+            shutil.rmtree(stage, ignore_errors=True)
+            try:
+                stage.parent.rmdir()
+            except OSError:
+                pass
 
         installed_at = now()
-        lock = {
+        new_lock = {
             "schema_version": SCHEMA_VERSION,
             "distribution": DISTRIBUTION,
             "version": manifest["version"],
@@ -1113,9 +1558,25 @@ def install_package(
             "manifest_sha256": manifest_sha,
         }
         if previous_version:
-            lock["previous_version"] = previous_version
-        write_lock(code_path, lock)
-        _write_current(code_path, manifest["version"])
+            new_lock["previous_version"] = previous_version
+        try:
+            apply_staged(stage, code_path)
+            if previous_manifest is not None:
+                _remove_stale_files(code_path, previous_manifest, manifest)
+            write_lock(code_path, new_lock)
+            _write_current(code_path, manifest["version"])
+        except _InstallBlocked as exc:
+            cleanup_stage()
+            return _failed_operation(code_path, exc.payload, pending)
+        except (OSError, DistError) as exc:
+            cleanup_stage()
+            return _failed_operation(
+                code_path,
+                _blocked("apply_failed", f"写入代码目录失败：{exc}"),
+                pending,
+            )
+        cleanup_stage()
+        _clear_pending_marker(code_path)
         return _success(
             code_path,
             manifest,
@@ -1126,6 +1587,7 @@ def install_package(
             True,
             installed_at,
             previous_version,
+            dsh_compat=dsh_compat,
         )
     except _InstallBlocked as exc:
         return exc.payload
@@ -1187,6 +1649,9 @@ def rollback(code: str | Path, *, to_version: str | None = None) -> dict:
     """
     code_path = Path(code).expanduser().resolve()
     try:
+        pending = read_pending(code_path)
+        if pending is not None:
+            return _pending_blocked(code_path, pending)
         lock = read_lock(code_path)
         if lock is None:
             return _blocked(
@@ -1266,7 +1731,7 @@ def rollback(code: str | Path, *, to_version: str | None = None) -> dict:
                 version=target_version,
             )
         target_bytes, target = target_manifest
-        target_manifest_sha = _sha256_bytes(target_bytes)
+        target_manifest_sha = sha256_bytes(target_bytes)
         if target_manifest_sha != release["manifest_sha256"]:
             return _blocked(
                 "release_manifest_mismatch",
@@ -1295,50 +1760,75 @@ def rollback(code: str | Path, *, to_version: str | None = None) -> dict:
             )
 
         outgoing_version = active_version
-        outgoing_manifest: dict | None = None
         outgoing_info = _manifest_at(code_path)
-        if outgoing_info is not None:
-            outgoing_bytes, outgoing_manifest = outgoing_info
-            if outgoing_manifest.get("version") == outgoing_version:
-                outgoing_missing, outgoing_mismatch = _tree_disagreements(
-                    code_path, outgoing_manifest
-                )
-                if not outgoing_missing and not outgoing_mismatch and _usable_version(
-                    outgoing_version
-                ):
-                    _retain_tree(
-                        code_path,
-                        outgoing_manifest,
-                        outgoing_bytes,
-                        artifact_sha256=str(lock.get("artifact_sha256") or ""),
-                        channel=str(lock.get("channel") or ""),
-                        source_url=str(lock.get("source_url") or ""),
-                        installed_at=str(lock.get("installed_at") or ""),
-                    )
-        retained_outgoing = bool(
-            outgoing_manifest is not None
-            and outgoing_manifest.get("version") == outgoing_version
-            and (releases_path(code_path) / outgoing_version).is_dir()
+        if outgoing_info is None:
+            return _blocked(
+                "rollback_not_recoverable",
+                "当前活动树缺少可读的 manifest.json；无法在替换后恢复，拒绝回滚",
+                code=str(code_path),
+                version=outgoing_version,
+            )
+        outgoing_bytes, outgoing_manifest = outgoing_info
+        if outgoing_manifest.get("version") != outgoing_version:
+            return _blocked(
+                "rollback_not_recoverable",
+                "当前活动树的 manifest.json 版本与安装锁不一致；无法在替换后恢复，拒绝回滚",
+                code=str(code_path),
+                expected=outgoing_version,
+                actual=outgoing_manifest.get("version"),
+            )
+        outgoing_missing, outgoing_mismatch = _tree_disagreements(
+            code_path, outgoing_manifest
         )
+        retained_outgoing = False
+        retained_tree: Path | None = None
+        if (
+            not outgoing_missing
+            and not outgoing_mismatch
+            and _usable_version(outgoing_version)
+        ):
+            retained_tree = _retain_tree(
+                code_path,
+                outgoing_manifest,
+                outgoing_bytes,
+                artifact_sha256=str(lock.get("artifact_sha256") or ""),
+                channel=str(lock.get("channel") or ""),
+                source_url=str(lock.get("source_url") or ""),
+                installed_at=str(lock.get("installed_at") or ""),
+            )
+            retained_outgoing = True
+        else:
+            # The active tree already differs from its manifest; a full retained
+            # release cannot be built, but a repair snapshot still makes the
+            # destructive swap reversible.
+            backup = (
+                code_path
+                / ".frontier"
+                / "pending"
+                / str(target_version)
+                / "pre-rollback"
+            )
+            retained_tree = _snapshot_for_repair(
+                code_path, outgoing_manifest, backup
+            )
 
-        for row in target["files"]:
-            rel = row["path"]
-            source = target_dir / Path(rel)
-            destination = code_path / Path(rel)
-            ensure_dir(destination.parent)
-            shutil.copyfile(source, destination)
-            try:
-                shutil.copymode(source, destination)
-            except OSError:
-                pass
-        (code_path / MANIFEST_FILENAME).write_bytes(target_bytes)
-        if outgoing_manifest is not None:
-            _remove_stale_files(code_path, outgoing_manifest, target)
-
-        _prune_releases(
-            code_path, keep=outgoing_version if retained_outgoing else None
+        pre_current = None
+        try:
+            pre_current = current_path(code_path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            pre_current = None
+        pending = _write_pending_marker(
+            code_path,
+            {
+                "operation": "rollback",
+                "target_version": target_version,
+                "pre_operation_version": outgoing_version,
+                "retained": str(retained_tree) if retained_tree is not None else None,
+                "target_files": [row["path"] for row in target["files"]],
+                "pre_lock": dict(lock),
+                "pre_current": pre_current,
+            },
         )
-
         rolled_back_at = now()
         new_lock = dict(lock)
         new_lock.update(
@@ -1358,8 +1848,34 @@ def rollback(code: str | Path, *, to_version: str | None = None) -> dict:
                 "rolled_back_at": rolled_back_at,
             }
         )
-        write_lock(code_path, new_lock)
-        _write_current(code_path, target_version)
+        try:
+            for row in target["files"]:
+                rel = row["path"]
+                source = target_dir / Path(rel)
+                destination = code_path / Path(rel)
+                ensure_dir(destination.parent)
+                shutil.copyfile(source, destination)
+                try:
+                    shutil.copymode(source, destination)
+                except OSError:
+                    pass
+            (code_path / MANIFEST_FILENAME).write_bytes(target_bytes)
+            if outgoing_manifest is not None:
+                _remove_stale_files(code_path, outgoing_manifest, target)
+            _prune_releases(
+                code_path, keep=outgoing_version if retained_outgoing else None
+            )
+            write_lock(code_path, new_lock)
+            _write_current(code_path, target_version)
+        except _InstallBlocked as exc:
+            return _failed_operation(code_path, exc.payload, pending)
+        except (OSError, DistError) as exc:
+            return _failed_operation(
+                code_path,
+                _blocked("rollback_failed", f"回滚过程遇到文件系统错误：{exc}"),
+                pending,
+            )
+        _clear_pending_marker(code_path)
         return {
             "ok": True,
             "status": "ok",
@@ -1558,7 +2074,7 @@ def verify_install(code: str | Path) -> dict:
                 }
             )
             continue
-        actual_sha = _sha256_bytes(data)
+        actual_sha = sha256_bytes(data)
         if len(data) != row["bytes"] or actual_sha != row["sha256"]:
             fields = []
             if len(data) != row["bytes"]:
@@ -1590,7 +2106,7 @@ def verify_install(code: str | Path) -> dict:
             if rel not in listed:
                 extra.append(rel)
 
-    lock_mismatch = _lock_comparisons(manifest, _sha256_bytes(manifest_bytes), lock)
+    lock_mismatch = _lock_comparisons(manifest, sha256_bytes(manifest_bytes), lock)
     if missing or mismatch or extra or lock_mismatch:
         return _mismatch_payload(
             code_path,

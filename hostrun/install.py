@@ -651,31 +651,47 @@ def check(
 
     results: dict[str, dict] = {}
     results["host"] = probe_host(host)
+    workspace_python = ""
 
     if workspace_root:
         ws = workspace_mod.status(workspace_root)
-        repo_ok = bool(ws.get("repo")) and (Path(ws["repo"]) / ".git").exists()
+        package = ws.get("distribution") == "package"
+        repo_ok = bool(ws.get("repo")) and Path(ws["repo"]).is_dir()
+        if not package:
+            repo_ok = repo_ok and (Path(ws["repo"]) / ".git").exists()
         home_ok = bool(ws.get("home")) and Path(ws["home"]).is_dir()
-        layout_ok = repo_ok and home_ok
+        wrapper = (
+            Path(ws["repo"]) / "bin" / "frontier.cmd"
+            if package and ws.get("repo")
+            else None
+        )
+        wrapper_ok = bool(wrapper and wrapper.is_file())
+        layout_ok = repo_ok and home_ok and (wrapper_ok if package else True)
         layout_problems = []
         if not repo_ok:
             layout_problems.append(f"代码目录不可用：{ws.get('repo') or '<未记录>'}")
         if not home_ok:
             layout_problems.append(f"运行时区不可用：{ws.get('home') or '<未记录>'}")
+        if package and not wrapper_ok:
+            layout_problems.append(f"发行包启动包装器不可用：{wrapper}")
+        layout_problems.extend(ws.get("problems") or [])
         results["workspace"] = {
-            "status": "ok" if layout_ok else "blocked",
+            "status": "ok" if layout_ok and not ws.get("problems") else "blocked",
             "note": (
                 "代码目录与资料目录已记录且可用"
-                if layout_ok
-                else "；".join(layout_problems)
+                if layout_ok and not ws.get("problems")
+                else "；".join(dict.fromkeys(layout_problems))
             ),
             "evidence": {
                 "root": ws.get("root"),
                 "repo": ws.get("repo"),
                 "home": ws.get("home"),
                 "commit": ws.get("commit"),
+                "distribution": ws.get("distribution"),
+                "wrapper": str(wrapper) if wrapper else None,
             },
         }
+        workspace_python = str(ws.get("python") or "")
         skill = workspace_mod.verify_skill(ws)
         results["skill"] = {
             "status": "ok" if skill["ok"] else "blocked",
@@ -712,10 +728,11 @@ def check(
     )
     results["dependencies"] = probe_dependencies(
         repo_path,
-        python=python or config["paths"].get("python"),
+        python=python or workspace_python or config["paths"].get("python"),
         platform=platform,
         home=home,
         repair=repair,
+        runner=runner,
     )
     lark_result = probe_lark_cli(home, lark_cli or config["paths"].get("lark_cli"))
     results["lark_cli"] = lark_result

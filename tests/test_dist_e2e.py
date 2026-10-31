@@ -175,6 +175,7 @@ def test_distribution_package_install_skill_upgrade_rollback_end_to_end(tmp_path
     v1 = _build_package(tmp_path, version="1.0.0", commit="1111111", marker="V1")
     v2 = _build_package(tmp_path, version="2.0.0", commit="2222222", marker="V2")
     v1_manifest = _manifest(v1)
+    v2_manifest = _manifest(v2)
 
     workspace_root = tmp_path / "workspace"
     code = workspace_root / "code"
@@ -249,7 +250,9 @@ def test_distribution_package_install_skill_upgrade_rollback_end_to_end(tmp_path
     assert f"发行包来源：{lock['source_url']}" in pointer
     assert f"技能摘要：{digest}" in pointer
     assert f"安装锁：{code / '.frontier' / 'dist.lock.json'}" in pointer
-    assert f"- 解释器：{code / 'bin' / 'frontier.cmd'}" in pointer
+    assert f"- 入口点：{code / 'bin' / 'frontier.cmd'}" in pointer
+    assert "使用上面记录的入口点" in pointer
+    assert "不要自行拼接 `-m hostrun.cli`" in pointer
 
     record = workspace.load_record(code)
     assert record["repo"] == str(code.resolve())
@@ -257,7 +260,8 @@ def test_distribution_package_install_skill_upgrade_rollback_end_to_end(tmp_path
     assert record["root"] == str(code.resolve())
     assert record["repo_url"] == lock["source_url"]
     assert record["commit"] == v1_manifest["built_from_commit"]
-    assert record["python"] == str(code / "bin" / "frontier.cmd")
+    assert record["python"] == str(code / "runtime" / "python.exe")
+    assert record["entry"] == str(code / "bin" / "frontier.cmd")
     assert record["dirty"] is False
     assert lock["distribution"] == "package"
     assert lock["version"] == "1.0.0"
@@ -306,7 +310,10 @@ def test_distribution_package_install_skill_upgrade_rollback_end_to_end(tmp_path
     assert workspace.verify_skill(workspace.load_record(code))["ok"] is True
 
     # 5. run state survives every package swap byte for byte.
-    state_path = code / ".frontier" / "install" / "state.json"
+    # A package swap must leave every runtime file alone.  This sentinel is not
+    # ``install/state.json`` because re-running the documented ``install skill``
+    # remediation legitimately records the refreshed skill step there.
+    state_path = code / ".frontier" / "e2e-run-state.json"
     sentinel = b'{"schema_version": 1, "steps": {}, "sentinel": "e2e-run-state"}\n'
     state_path.write_bytes(sentinel)
     console_before = console_path.read_bytes()
@@ -338,6 +345,26 @@ def test_distribution_package_install_skill_upgrade_rollback_end_to_end(tmp_path
     assert console_path.read_bytes() == console_before
     assert (code / "bin" / "frontier.cmd").read_bytes() == wrapper_before
 
+    # 6b. the documented remediation: re-run install skill, then verify_skill.
+    exit_code, payload, _ = _cli(
+        capsys,
+        code,
+        archive,
+        "install",
+        "skill",
+        "--root",
+        str(code),
+        "--target",
+        str(host_skills),
+    )
+    assert exit_code == 0
+    assert payload["ok"] is True
+    refreshed = workspace.load_record(code)
+    assert refreshed["version"] == "2.0.0"
+    assert refreshed["commit"] == v2_manifest["built_from_commit"]
+    assert workspace.verify_skill(refreshed)["ok"] is True
+    assert "发行版本：2.0.0" in pointer_path.read_text(encoding="utf-8")
+
     # 7. rollback -> v1 again, same run state, launcher still valid, verify passes.
     exit_code, payload, _ = _cli(capsys, code, archive, "install", "rollback")
     assert exit_code == 0
@@ -350,6 +377,26 @@ def test_distribution_package_install_skill_upgrade_rollback_end_to_end(tmp_path
     assert console_path.read_bytes() == console_before
     assert (code / "bin" / "frontier.cmd").read_bytes() == wrapper_before
     assert dist.verify_install(code)["status"] == "verified"
+
+    # 7b. the same refresh works after rollback.
+    exit_code, payload, _ = _cli(
+        capsys,
+        code,
+        archive,
+        "install",
+        "skill",
+        "--root",
+        str(code),
+        "--target",
+        str(host_skills),
+    )
+    assert exit_code == 0
+    assert payload["ok"] is True
+    refreshed = workspace.load_record(code)
+    assert refreshed["version"] == "1.0.0"
+    assert refreshed["commit"] == v1_manifest["built_from_commit"]
+    assert workspace.verify_skill(refreshed)["ok"] is True
+    assert "发行版本：1.0.0" in pointer_path.read_text(encoding="utf-8")
 
     # 8. report shows the active v1 and the retained v2.
     _, report, _ = _cli(capsys, code, archive, "install", "report")

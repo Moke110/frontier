@@ -830,6 +830,95 @@ def test_skill_pointer_names_the_package_version_and_artifact(tmp_path):
     assert status["version"] == "1.2.3"
 
 
+def _package_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    root = tmp_path / "pkgws"
+    repo = _seed_repo(root / "code")
+    shutil.rmtree(repo / ".git")
+    (repo / "bin").mkdir()
+    (repo / "bin" / "frontier.cmd").write_text("@echo off\r\n", encoding="utf-8")
+    (repo / "runtime").mkdir()
+    (repo / "runtime" / "python.exe").write_bytes(b"MZ fake")
+    (repo / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "version": "1.2.3",
+                "channel": "stable",
+                "built_from_commit": "abc123",
+                "compat": {"os": "windows", "arch": "x86_64", "dsh": "*", "python": "3.13"},
+                "files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _package_lock(repo)
+    home = repo / ".frontier"
+    return repo, home, root / "host-skills" / "frontier-run"
+
+
+def test_package_pointer_advertises_the_wrapper_and_records_the_runtime(tmp_path):
+    repo, home, target = _package_tree(tmp_path)
+
+    result = workspace.register_skill(repo, target)
+
+    assert result["ok"] is True
+    record = workspace.load_record(repo)
+    runtime_python = repo / "runtime" / "python.exe"
+    wrapper = repo / "bin" / "frontier.cmd"
+    assert record["python"] == str(runtime_python)
+    assert record["entry"] == str(wrapper)
+    assert record["version"] == "1.2.3"
+    pointer = (target / "SKILL.md").read_text(encoding="utf-8")
+    assert f"入口点：{wrapper}" in pointer
+    assert "使用上面记录的入口点" in pointer
+    assert "不要自行拼接 `-m hostrun.cli`" in pointer
+    assert workspace.verify_skill(record)["ok"] is True
+
+
+def test_package_wrapper_missing_blocks_skill_registration(tmp_path):
+    repo, home, target = _package_tree(tmp_path)
+    (repo / "bin" / "frontier.cmd").unlink()
+
+    result = workspace.register_skill(repo, target)
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "package_wrapper_missing"
+    assert "bin" in result["wrapper"]
+    assert not workspace.load_record(repo)
+
+
+def test_package_record_refreshes_version_and_commit_without_losing_skill_paths(tmp_path):
+    repo, home, target = _package_tree(tmp_path)
+    assert workspace.register_skill(repo, target)["ok"] is True
+    first = workspace.load_record(repo)
+
+    manifest = json.loads((repo / "manifest.json").read_text(encoding="utf-8"))
+    manifest["version"] = "2.0.0"
+    manifest["built_from_commit"] = "def456"
+    (repo / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _package_lock(repo, version="2.0.0", artifact_sha256="c" * 64)
+
+    assert workspace.register_skill(repo, target)["ok"] is True
+
+    refreshed = workspace.load_record(repo)
+    assert refreshed["version"] == "2.0.0"
+    assert refreshed["commit"] == "def456"
+    assert refreshed["skill"] == first["skill"]
+    assert refreshed["skill_target"] == first["skill_target"]
+    assert workspace.verify_skill(refreshed)["ok"] is True
+
+
+def test_package_status_does_not_require_git_uv_or_a_private_venv(tmp_path):
+    repo, home, target = _package_tree(tmp_path)
+    assert workspace.register_skill(repo, target)["ok"] is True
+
+    status = workspace.status(repo)
+
+    assert status["ok"] is True
+    assert status["distribution"] == "package"
+    assert status["problems"] == []
+
+
 def test_register_skill_backfills_a_source_lock_for_a_pre_97_install(tmp_path):
     root, repo, home = _workspace(tmp_path)
     assert not (repo / ".frontier").exists()

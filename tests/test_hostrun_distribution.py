@@ -393,6 +393,57 @@ def test_version_and_channel_name_the_package_and_are_validated(source, tmp_path
         _build(source, tmp_path / "out-bad", version="../escape")
 
 
+def test_version_strips_a_leading_v_before_naming_the_package(source, tmp_path):
+    result = _build(source, tmp_path / "out", version="v1.2.3", channel="stable")
+
+    assert Path(result["package"]).name == "frontier-1.2.3-stable"
+    assert Path(result["artifact"]["path"]).name == "frontier-1.2.3-stable.zip"
+    assert _manifest(result)["version"] == "1.2.3"
+    assert result["version"] == "1.2.3"
+    assert result["requested_version"] == "v1.2.3"
+    assert result["version_normalized"] is True
+
+
+def test_version_help_does_not_advertise_a_v_prefixed_input():
+    from hostrun import distribution
+
+    help_text = distribution.build_parser().format_help()
+    assert "v0.1.0" not in help_text
+    assert "不带 v" in help_text or "leading 'v'" in help_text
+
+
+def test_cli_normalizes_a_v_prefixed_version(source, tmp_path):
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            "-m",
+            "hostrun.distribution",
+            "--source",
+            str(source),
+            "--out",
+            str(tmp_path / "out"),
+            "--version",
+            "v0.1.0",
+            "--channel",
+            "stable",
+            "--built-from-commit",
+            "deadbeefcafe",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    summary = json.loads(completed.stdout)
+    assert summary["version"] == "0.1.0"
+    assert Path(summary["artifact"]["path"]).name == "frontier-0.1.0-stable.zip"
+    assert summary["version_normalized"] is True
+
+
 def test_cli_prints_a_json_summary_and_exits_zero(source, tmp_path):
     completed = subprocess.run(
         [

@@ -30,7 +30,6 @@ Rules that the functions below keep:
 
 from __future__ import annotations
 
-import hashlib
 import io
 import os
 import platform as platform_mod
@@ -44,7 +43,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from common import ensure_dir, now, read_json, write_json
+from common import ensure_dir, now, read_json, sha256_file, write_json
 from hostrun import dist as dist_mod
 from hostrun.base import HostRunError, resolve_executable, update_config
 
@@ -881,17 +880,9 @@ _POINTER_KEYS = {
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-def _sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def entry_digest(repo: str | Path) -> str:
     """SHA-256 of the checkout's ``skills/frontier-run/SKILL.md`` (#97)."""
-    return _sha256_file(Path(repo) / SKILL_ENTRY)
+    return sha256_file(Path(repo) / SKILL_ENTRY)
 
 
 def _pointer_values(record: dict, lock: dict | None = None) -> dict:
@@ -959,15 +950,18 @@ def _parse_pointer(text: str) -> dict:
 
 def _launcher_text(record: dict, lock: dict | None = None, digest: str = "") -> str:
     values = _pointer_values(record, lock)
+    package = values["distribution"] == "package"
+    wrapper = Path(record["repo"]) / "bin" / "frontier.cmd"
     lines = [
         f"- 仓库：{record['repo']}",
         f"- 运行时区：{record['home']}",
-        f"- 解释器：{record.get('python') or '<由 install toolchain 记录>'}",
+        f"- 入口点：{wrapper if package else record.get('python') or '<由 install toolchain 记录>'}",
+        f"- 解释器：{record.get('python') or '<内置运行时解释器未记录>'}",
         f"- 安装记录：{Path(record['root']) / RECORD_REL}",
         f"- {POINTER_DISTRIBUTION}：{values['distribution']}",
         f"- {POINTER_VERSION}：{values['version']}",
     ]
-    if values["distribution"] == "package":
+    if package:
         lines += [
             f"- {POINTER_CHANNEL}：{values['channel']}",
             f"- {POINTER_ARTIFACT}：{values['artifact_sha256']}",
@@ -984,6 +978,14 @@ def _launcher_text(record: dict, lock: dict | None = None, digest: str = "") -> 
         f"- {POINTER_LOCK}：{values['lock']}",
     ]
     bullets = "\n".join(lines)
+    if package:
+        run_step = (
+            f"3. 使用上面记录的入口点 `{wrapper}` 执行 frontier 子命令"
+            f"（例如 `{wrapper} --code \"{record['repo']}\" --archive \"{record['home']}\" "
+            "install verify`）；不要自行拼接 `-m hostrun.cli`。"
+        )
+    else:
+        run_step = "3. 以仓库根为工作目录，用上面记录的解释器执行 `python -m hostrun.cli ...`。"
     return f"""---
 name: {SKILL_NAME}
 description: "Install, run, pause or recover frontier on this host. Read the repository entry and references before acting."
@@ -999,7 +1001,7 @@ description: "Install, run, pause or recover frontier on this host. Read the rep
 
 1. 读取 `{Path(record["repo"]) / SKILL_ENTRY}`。
 2. 读取它引用的 `references/installation.md` 与 `references/workflow.md`。
-3. 以仓库根为工作目录，用上面记录的解释器执行 `python -m hostrun.cli ...`。
+{run_step}
 4. 不要根据本文件所在位置推断仓库；路径变化时重新运行 `install skill`。
 
 本文件不含凭据，也不修改环境变量、PATH 或注册表。
@@ -1013,19 +1015,33 @@ def _package_workspace_record(root: str | Path) -> dict:
     ``install workspace``: its evidence is the install lock plus the package
     manifest, not a source checkout.  The record points at the code directory
     itself (which carries ``skills/``), keeps the runtime area as the data root,
-    and advertises the package's bundled wrapper as the interpreter.  Nothing
+    advertises the package's bundled wrapper as the entry point, and records the
+    real bundled interpreter in ``python`` when the package carries one.  Nothing
     here invents a git commit or a source lock.
+
+    A derived record carries ``derived_from``: ``register_skill`` uses it to
+    refresh the version/commit after an upgrade or rollback without ever
+    overwriting a user/source record.
     """
     root_path = Path(root).expanduser().resolve()
     lock = dist_mod.read_lock(root_path)
     if not isinstance(lock, dict) or lock.get("distribution") != "package":
         return {}
+    wrapper = root_path / "bin" / "frontier.cmd"
+    if not wrapper.is_file():
+        return {
+            "error": "package_wrapper_missing",
+            "root": str(root_path),
+            "wrapper": str(wrapper),
+            "lock": str(dist_mod.lock_path(root_path)),
+        }
     try:
         manifest = read_json(root_path / dist_mod.MANIFEST_FILENAME)
     except (OSError, ValueError):
         manifest = None
     manifest = manifest if isinstance(manifest, dict) else {}
     source_url = str(lock.get("source_url") or "")
+    runtime_python = root_path / "runtime" / "python.exe"
     return {
         "root": str(root_path),
         "repo": str(root_path),
@@ -1034,7 +1050,8 @@ def _package_workspace_record(root: str | Path) -> dict:
         "origin": source_url,
         "commit": str(manifest.get("built_from_commit") or ""),
         "dirty": False,
-        "python": str(root_path / "bin" / "frontier.cmd"),
+        "python": str(runtime_python) if runtime_python.is_file() else "",
+        "entry": str(wrapper),
         "distribution": "package",
         "version": str(lock.get("version") or ""),
         "channel": str(lock.get("channel") or ""),
@@ -1056,14 +1073,35 @@ def register_skill(
     install lock, so ``verify_skill`` can prove they still agree.
     """
     record = load_record(root)
+    derived = _package_workspace_record(root) if not record or record.get("derived_from") else {}
+    if derived.get("error") == "package_wrapper_missing":
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "package_wrapper_missing",
+            "code": derived["root"],
+            "wrapper": derived["wrapper"],
+            "lock": derived["lock"],
+            "note": (
+                f"发行包安装缺少启动包装器：{derived['wrapper']}；"
+                "请重新执行 install package 修复安装，再注册技能入口"
+            ),
+        }
+    if derived:
+        # Refresh every derived package fact (version/commit/python) after an
+        # upgrade or rollback, but keep the registered skill paths.
+        preserved = {
+            key: record[key]
+            for key in ("skill", "skill_target")
+            if record.get(key)
+        }
+        record = {**derived, **preserved}
     if not record.get("repo") or not record.get("home"):
         if record:
             # A partial workspace record is authoritative evidence that a
             # source install happened; never paper over it with package fields.
             raise HostRunError("工作区记录不完整；先运行 install workspace 或修复安装记录")
-        record = _package_workspace_record(root)
-        if not record:
-            raise HostRunError("先执行 install workspace，工作区尚未记录代码与数据目录")
+        raise HostRunError("先执行 install workspace，工作区尚未记录代码与数据目录")
     target_dir = Path(target).expanduser().resolve()
     launcher = target_dir / "SKILL.md"
     repo = Path(record["repo"])
@@ -1188,7 +1226,7 @@ def verify_skill(record: dict) -> dict:
     for path in [entry, *references]:
         if not path.is_file():
             problems.append(f"缺少参考文件：{path}")
-    digest = _sha256_file(entry) if entry.is_file() else ""
+    digest = sha256_file(entry) if entry.is_file() else ""
     lock = dist_mod.read_lock(repo) if record.get("repo") else None
     lock_file = str(dist_mod.lock_path(repo)) if record.get("repo") else ""
     pointer = _parse_pointer(text) if text else {}
@@ -1274,25 +1312,43 @@ def status(root: str | Path) -> dict:
         return {"ok": False, "status": "pending", "note": "工作区尚未安装"}
     repo = Path(record.get("repo") or "")
     home = Path(record.get("home") or "")
+    lock = dist_mod.read_lock(repo) if repo.is_dir() else None
+    package = bool(
+        record.get("distribution") == "package"
+        or (isinstance(lock, dict) and lock.get("distribution") == "package")
+    )
     python = Path(record.get("python") or "")
     uv = Path(record.get("uv") or "")
     venv = Path(record.get("venv") or "")
     problems = []
-    if not (repo / ".git").exists():
-        problems.append(f"代码目录不可用：{repo}")
-    if not home.is_dir():
-        problems.append(f"运行时区不可用：{home}")
-    if venv and not venv.is_dir():
-        problems.append(f"私有环境不可用：{venv}")
-    if not python.is_file():
-        problems.append(f"解释器不可用：{python}")
-    if not uv.is_file():
-        problems.append(f"uv 不可用：{uv}")
+    if package:
+        wrapper = repo / "bin" / "frontier.cmd"
+        runtime_python = repo / "runtime" / "python.exe"
+        if not repo.is_dir():
+            problems.append(f"代码目录不可用：{repo}")
+        if not home.is_dir():
+            problems.append(f"运行时区不可用：{home}")
+        if not wrapper.is_file():
+            problems.append(f"发行包启动包装器不可用：{wrapper}")
+        if not runtime_python.is_file():
+            problems.append(f"内置运行时解释器不可用：{runtime_python}")
+    else:
+        if not (repo / ".git").exists():
+            problems.append(f"代码目录不可用：{repo}")
+        if not home.is_dir():
+            problems.append(f"运行时区不可用：{home}")
+        if venv and not venv.is_dir():
+            problems.append(f"私有环境不可用：{venv}")
+        if not python.is_file():
+            problems.append(f"解释器不可用：{python}")
+        if not uv.is_file():
+            problems.append(f"uv 不可用：{uv}")
     skill = verify_skill(record)
     problems.extend(skill["problems"])
     return {
         "ok": not problems,
         "status": "ok" if not problems else "blocked",
         **record,
+        "distribution": "package" if package else record.get("distribution", "source"),
         "problems": problems,
     }
