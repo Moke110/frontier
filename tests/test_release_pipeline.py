@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -911,13 +912,86 @@ def test_workflow_updates_the_index_and_commits_it_to_main_with_a_retry():
     assert "github-actions[bot]" in text
     assert "git push origin HEAD:main" in text
     assert "merge-base --is-ancestor" in text
-    assert "git merge --ff-only origin/main" in text
     update = next(
         step
         for step in steps
         if "scripts/update_release_index.py" in _run_text([step])
     )
     assert "inputs.dry_run" in str(update.get("if", ""))
+
+
+def test_workflow_index_retry_resolves_the_tag_once_and_rebuilds_from_origin_main():
+    steps = _steps(_workflow())
+    update = next(
+        step
+        for step in steps
+        if "scripts/update_release_index.py" in _run_text([step])
+    )
+    text = str(update["run"])
+
+    # The tag commit is evidence about the artifact, not about whatever HEAD is
+    # after a merge/reset, so resolve it exactly once before the attempt loop.
+    assert text.count("$tagCommit =") == 1
+    assert text.index("$tagCommit =") < text.index("for ($attempt")
+
+    # Every attempt starts from a clean origin/main, then regenerates the index;
+    # a rejected push must never retry on top of the previous local commit.
+    reset_at = text.index("git reset --hard origin/main")
+    regenerate_at = text.index("scripts/update_release_index.py")
+    assert reset_at < regenerate_at
+    assert "git merge --ff-only origin/main" not in text
+    assert "$head = (git rev-parse HEAD)" not in text
+
+    # Ancestry is checked against the precomputed tag commit, after the reset
+    # and regeneration, and before the commit is pushed.
+    ancestry = text.index("git merge-base --is-ancestor $tagCommit origin/main")
+    commit_at = text.index('git commit -m "chore(release)')
+    assert reset_at < regenerate_at < ancestry < commit_at
+    assert "git merge-base --is-ancestor $head origin/main" not in text
+
+    # At most one retry, and the final failure still names the Release and the
+    # manual index step.
+    assert "for ($attempt = 1; $attempt -le 2; $attempt++)" in text
+    assert "-le 3" not in text
+    assert "$releaseUrl" in text
+    assert "update releases/index.json manually" in text
+
+
+def test_workflow_runs_the_package_install_smoke_after_building_it():
+    steps = _steps(_workflow())
+    build_at = next(
+        index
+        for index, step in enumerate(steps)
+        if "hostrun.distribution" in _run_text([step])
+    )
+    smoke_at = next(
+        index
+        for index, step in enumerate(steps)
+        if "scripts/ci_install_smoke.py" in _run_text([step])
+    )
+    assert smoke_at > build_at, "the install smoke must run on the built artifact"
+
+    assert (ROOT / "scripts" / "ci_install_smoke.py").is_file()
+    text = _run_text([steps[smoke_at]])
+    for fragment in (
+        "--zip",
+        "--code",
+        "--archive",
+        "--dsh",
+        "--skills-target",
+        "install-smoke",
+        "RUNNER_TEMP",
+    ):
+        assert fragment in text
+    # The smoke step must fail the job, not merely print a reason.
+    assert "throw" in text
+
+
+def test_workflow_pins_actions_by_major_tag_with_a_documented_follow_up():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "SHA-pinning" in text
+    # No secret is consumed besides the workflow token.
+    assert set(re.findall(r"secrets\.([A-Za-z0-9_]+)", text)) == {"GITHUB_TOKEN"}
 
 
 # ------------------------------------------------------------ repository files

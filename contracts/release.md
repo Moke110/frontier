@@ -40,8 +40,9 @@
    ```
 
    第二次输出到 `dist-repro/`。随后 `python -m hostrun.release verify-artifact --zip ...` 校验 zip 含 `manifest.json`、`runtime/python.exe`、`bin/frontier.cmd`；`python -m hostrun.release check-reproducible --first-dir dist --second-dir dist-repro ...` 比对两次的制品 sha256 与 manifest sha256，不一致时打印两个 hash 并失败。
-5. **创建 GitHub Release**：`gh release create <tag> --verify-tag`，上传 `.zip`、`.digest.json` 与包内 `manifest.json`。`channel == prerelease` 时加 `--prerelease` 且仅此时；`stable` 绝不带该标记。稳定/预发布是两个互斥的步骤，条件都包含 `dry_run` 判断。
-6. **更新发布索引并提交到 `main`**：合并一条索引记录后提交，提交身份为 `github-actions[bot]`。先 `git fetch origin main` 并确认 tag 提交在 `main` 历史中，再 `git merge --ff-only origin/main` 后写入；push 被拒时重试一次：`git reset --hard origin/main` 重新合并索引条目、重新提交、再 push。若分支保护仍拒绝 token，任务失败并说明 Release 已创建、索引需手工更新。最后 `gh release upload <tag> releases/index.json --clobber`，使 Release 也带索引。
+5. **安装冒烟**：构建完成后，在运行器上把制品 zip 解压到临时 bootstrap 目录，再用 `python scripts/ci_install_smoke.py --zip ... --code ... --archive ... --dsh ... --skills-target ...` 依次执行 `install package --from <zip> --sha256 <制品 sha256>`、`install verify`、`console install --dsh <绝对 dummy>`、`install skill --root <code> --target <临时技能目录>` 与 `install report`；任一命令未返回预期状态（安装为 `status=ok`、校验为 `status=verified`、控制台为 `status=ok`、报告 `release.distribution=package` 且 `skill` 步骤为 `ok`）就以非零退出并指明失败步骤。其余探针在 CI 中可为 pending/blocked，不做断言。该步骤使用运行器 Python 执行 CLI，验证的是解压安装后的代码目录，而不是运行器环境。
+6. **创建 GitHub Release**：`gh release create <tag> --verify-tag`，上传 `.zip`、`.digest.json` 与包内 `manifest.json`。`channel == prerelease` 时加 `--prerelease` 且仅此时；`stable` 绝不带该标记。稳定/预发布是两个互斥的步骤，条件都包含 `dry_run` 判断。
+7. **更新发布索引并提交到 `main`**：在重试循环**外**先解析一次 tag 提交 SHA（`git rev-parse refs/tags/<tag>^{commit}`）。随后最多尝试两次，每次顺序固定：`git fetch origin main` → `git reset --hard origin/main`（每次尝试都从干净的 `origin/main` 开始，绝不在被拒绝的本地提交上重试）→ 用 `scripts/update_release_index.py` 合并索引记录 → `git merge-base --is-ancestor <tag-commit> origin/main` 确认 tag 提交仍在 `main` 历史中 → 以 `github-actions[bot]` 提交 → `git push origin HEAD:main`。push 被拒时只重试一次；若分支保护仍拒绝 token，任务失败并说明 Release 已创建、索引需手工更新。最后 `gh release upload <tag> releases/index.json --clobber`，使 Release 也带索引。
 
 选择「提交到 `main`」而不是只挂 Release 资产：仓库内索引可被 `git log`/代码审查审计，也能被离线读取；失败语义见上。`dry_run` 时只执行构建与校验，不创建 Release、不改索引。
 
@@ -84,7 +85,8 @@
 | 下载缺失/损坏、wheel 缺失 | 失败并指明缺失的输入或 zip |
 | 运行时布局不完整 | `prepare_runtime` 或 `verify-artifact` 指出缺失路径/模块 |
 | 两次构建摘要不同 | 失败并打印两次 sha256 |
+| 安装冒烟任一步骤失败 | `scripts/ci_install_smoke.py` 非零退出并指明失败步骤与原因 |
 | Release 创建失败 | 不写索引；任务失败 |
 | 索引提交被分支保护阻止 | 重试一次后失败，说明 Release 已创建、索引需手工更新 |
 
-真实 tag 触发、GitHub Release 创建与分支保护下的索引提交属于需要 Lead 批准的线上验收；离线测试只覆盖 tag/渠道映射、索引合并与校验、运行时组装、构建参数、zip 布局与可复现性、以及本工作流 YAML 的不变量（解析而不执行）。
+真实 tag 触发、GitHub Release 创建与分支保护下的索引提交属于需要 Lead 批准的线上验收；离线测试覆盖 tag/渠道映射、索引合并与校验、运行时组装、构建参数、zip 布局与可复现性、安装冒烟脚本（用本地构建的制品与合成运行时，不联网）、以及本工作流 YAML 的不变量（解析而不执行）。真实 tag 上的冒烟步骤本身仍未在 CI 中执行过。

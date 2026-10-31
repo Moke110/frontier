@@ -12,12 +12,17 @@ name: release
 #
 # The release index `releases/index.json` is the repository's record of
 # published artifacts.  After a successful build and Release, the workflow
-# merges one entry (version, channel, artifact digest, manifest digest, compat,
-# published_at, release_url) and commits it to `main` with the workflow token.
-# The step fetches and fast-forwards before writing, and retries once on a
-# rejected push; if branch protection still blocks the token, the job fails with
-# the Release URL and says the index must be updated manually.  The resulting
-# index is also uploaded as a Release asset.
+# resolves the tag commit once, then makes at most two attempts.  Each attempt
+# fetches and hard-resets to `origin/main`, regenerates the index entry, checks
+# that the tag commit is still an ancestor of `origin/main`, commits as
+# `github-actions[bot]` and pushes; a rejected push therefore retries from a
+# clean origin/main base, never on top of the rejected local commit.  If branch
+# protection still blocks the token, the job fails with the Release URL and says
+# the index must be updated manually.  The resulting index is also uploaded as a
+# Release asset.
+#
+# Actions are pinned by major tag for readability.  SHA-pinning (a full commit
+# SHA per action) is a follow-up only if repository policy requires it.
 
 "on":
   push:
@@ -114,6 +119,22 @@ jobs:
           python -m hostrun.release check-reproducible --first-dir $env:DIST_DIR --second-dir $env:DIST_REPRO_DIR --version $version --channel $channel
           if ($LASTEXITCODE -ne 0) { throw "the same tag metadata did not produce the same artifact sha256" }
 
+      # Spec #92 testing seam 5: the released zip must install and report as a
+      # package installation on a clean runner.  The runner's Python only runs
+      # the CLI; the point is the installed tree under the temporary code dir.
+      - name: Smoke-test installing the built package into a clean code directory
+        shell: pwsh
+        run: |
+          $version = "${{ steps.release.outputs.version }}"
+          $channel = "${{ steps.release.outputs.channel }}"
+          $zip = "$env:DIST_DIR/frontier-$version-$channel.zip"
+          $smoke = Join-Path $env:RUNNER_TEMP "install-smoke"
+          $dsh = Join-Path $smoke "dsh.cmd"
+          New-Item -ItemType Directory -Force -Path $smoke | Out-Null
+          Set-Content -Path $dsh -Value "@echo off`r`nexit /b 0" -Encoding ascii
+          python scripts/ci_install_smoke.py --zip $zip --code (Join-Path $smoke "code") --archive (Join-Path $smoke "archive") --dsh $dsh --skills-target (Join-Path $smoke "host-skills/frontier-run") --bootstrap (Join-Path $smoke "bootstrap")
+          if ($LASTEXITCODE -ne 0) { throw "the built artifact failed the install smoke test; the JSON above names the failing step" }
+
       - name: Render release notes
         shell: pwsh
         run: |
@@ -159,25 +180,25 @@ jobs:
           $publishedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:sszzz")
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The tagged commit is fixed evidence about the artifact, so resolve it
+          # exactly once.  Resolving it inside the loop would make attempt 2
+          # compare the rejected local index commit (HEAD), not the tag.
+          $tagCommit = (git rev-parse "refs/tags/$tag^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $tagCommit) { throw "could not resolve the commit for release tag $tag" }
           $pushed = $false
           for ($attempt = 1; $attempt -le 2; $attempt++) {
             git fetch origin main
             if ($LASTEXITCODE -ne 0) { throw "could not fetch origin main" }
-            $head = (git rev-parse HEAD).Trim()
-            if ($LASTEXITCODE -ne 0) { throw "could not resolve the checked-out commit" }
-            git merge-base --is-ancestor $head origin/main
-            if ($LASTEXITCODE -ne 0) {
-              throw "the release tag commit is not on main's history; the index was not committed. Merge it into main and rerun."
-            }
-            if ($attempt -eq 1) {
-              git merge --ff-only origin/main
-            } else {
-              # The first push lost a race: rebuild the index commit on the new tip.
-              git reset --hard origin/main
-            }
-            if ($LASTEXITCODE -ne 0) { throw "could not update the checkout to origin/main" }
+            # Every attempt starts from a clean origin/main.  A rejected push must
+            # never retry on top of the local commit it just failed to push.
+            git reset --hard origin/main
+            if ($LASTEXITCODE -ne 0) { throw "could not reset the checkout to origin/main" }
             python scripts/update_release_index.py --index $env:RELEASE_INDEX --digest "$env:DIST_DIR/frontier-$version-$channel.digest.json" --release-url $releaseUrl --published-at $publishedAt
             if ($LASTEXITCODE -ne 0) { throw "release index update failed" }
+            git merge-base --is-ancestor $tagCommit origin/main
+            if ($LASTEXITCODE -ne 0) {
+              throw "the release tag commit $tagCommit is not on main's history; the index was not committed. Merge it into main and rerun."
+            }
             git add $env:RELEASE_INDEX
             git diff --cached --quiet
             if ($LASTEXITCODE -eq 0) { Write-Host "release index already up to date"; $pushed = $true; break }
@@ -185,7 +206,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "could not commit the release index" }
             git push origin HEAD:main
             if ($LASTEXITCODE -eq 0) { $pushed = $true; break }
-            Write-Host "push attempt $attempt was rejected; retrying once after fetching main"
+            Write-Host "push attempt $attempt was rejected; retrying once from a clean origin/main"
           }
           if (-not $pushed) {
             throw "could not commit the release index to main after two attempts (branch protection or a persistent race). The GitHub Release exists at $releaseUrl; update releases/index.json manually."
