@@ -86,6 +86,15 @@
       "type": "string",
       "pattern": "^(|[0-9a-f]{64})$",
       "description": "SHA-256 of the extracted manifest.json bytes; empty only for a source installation."
+    },
+    "previous_version": {
+      "type": "string",
+      "description": "The retained previous version (ticket #96). Present after an upgrade that retained a release; after a rollback it names the version that was active before the rollback. Absent for a first install."
+    },
+    "rolled_back_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 local time of the most recent rollback (ticket #96). Absent until a rollback happens; an upgrade writes a fresh lock without it."
     }
   }
 }

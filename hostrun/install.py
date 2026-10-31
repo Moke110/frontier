@@ -874,6 +874,47 @@ def _public_permissions(permissions: dict) -> dict:
     }
 
 
+def _release_report(home: Path) -> dict:
+    """The ``release`` block: package identity or an honest source-install note.
+
+    ``home`` is the runtime area (``<code>/.frontier``); the install lock and
+    the retained releases live beside it.  A source installation never invents
+    package fields: ticket #97 refines its reporting, while an absent lock is
+    reported as ``recorded: false`` here.
+    """
+    from hostrun import dist as dist_mod
+
+    code = Path(home).parent
+    lock_path = dist_mod.lock_path(code)
+    lock = dist_mod.read_lock(code)
+    if lock is None:
+        detail = "没有安装锁；此安装按源码安装报告，发行包字段不可用"
+        if lock_path.is_file():
+            detail = "安装锁存在但无法读取；发行包字段不可用"
+        return {"distribution": "source", "recorded": False, "detail": detail}
+    version = str(lock.get("version") or "")
+    if not version:
+        return {
+            "distribution": "source",
+            "recorded": False,
+            "detail": "安装锁缺少 version 字段，无法报告发行包版本",
+        }
+    distribution = str(lock.get("distribution") or "source")
+    return {
+        "distribution": distribution,
+        "version": version,
+        "channel": lock.get("channel"),
+        "source": lock.get("source_url"),
+        "installed_at": lock.get("installed_at"),
+        "previous_version": lock.get("previous_version") or None,
+        "rolled_back_at": lock.get("rolled_back_at") or None,
+        "retained": (
+            dist_mod.retained_releases(code) if distribution == "package" else []
+        ),
+        "lock_path": str(lock_path),
+    }
+
+
 def report(home: Path) -> dict:
     """Install report: working / blocked / untested, paths and timezone."""
     home = Path(home)
@@ -908,6 +949,7 @@ def report(home: Path) -> dict:
         "host": config.get("host") or {},
         "paths": config.get("paths") or {},
         "workspace": workspace,
+        "release": _release_report(home),
         "timezone": config.get("timezone") or default_timezone(),
         "permissions": _public_permissions(config.get("permissions") or {}),
         "working": [s["step"] for s in result["working"]],

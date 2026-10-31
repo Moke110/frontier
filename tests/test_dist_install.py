@@ -550,6 +550,8 @@ def test_reinstalling_the_same_artifact_is_idempotent_and_keeps_installed_at(tmp
     lock_path = code / ".frontier" / "dist.lock.json"
     lock_bytes = lock_path.read_bytes()
     installed_at = json.loads(lock_bytes)["installed_at"]
+    current_path = code / ".frontier" / "current"
+    current_bytes = current_path.read_bytes()
     mtime = (code / "hostrun" / "cli.py").stat().st_mtime_ns
     lock_mtime = lock_path.stat().st_mtime_ns
 
@@ -561,6 +563,7 @@ def test_reinstalling_the_same_artifact_is_idempotent_and_keeps_installed_at(tmp
     assert second["installed_at"] == installed_at
     assert lock_path.read_bytes() == lock_bytes
     assert lock_path.stat().st_mtime_ns == lock_mtime
+    assert current_path.read_bytes() == current_bytes
     assert (code / "hostrun" / "cli.py").stat().st_mtime_ns == mtime
     assert first["artifact_sha256"] == second["artifact_sha256"]
 
@@ -579,6 +582,9 @@ def test_a_different_artifact_reinstalls_over_the_existing_package(tmp_path):
     lock = json.loads((code / ".frontier" / "dist.lock.json").read_text(encoding="utf-8"))
     assert lock["version"] == "0.2.0"
     assert lock["artifact_sha256"] == second["artifact"]["sha256"]
+    assert lock["previous_version"] == "0.1.0"
+    assert (code / ".frontier" / "releases" / "0.1.0" / "manifest.json").is_file()
+    assert (code / ".frontier" / "current").read_text(encoding="utf-8").strip() == "0.2.0"
 
 
 # -------------------------------------------------------------------- verify

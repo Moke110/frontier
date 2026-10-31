@@ -3,6 +3,7 @@
     python -m hostrun.cli install check|status|report|record
     python -m hostrun.cli install package --from <artifact> [--digest <json>] [--sha256 <hex>]
     python -m hostrun.cli install verify
+    python -m hostrun.cli install rollback [--to <version>]
     python -m hostrun.cli kb attach|create|create-tables|verify|initial-confirm
     python -m hostrun.cli feedback setup|sync|status|submit|process|rebuild|correct
     python -m hostrun.cli run --intent daily|feedback|maintenance [--finish ok|error]
@@ -117,6 +118,11 @@ def build_parser() -> argparse.ArgumentParser:
     pkg.add_argument("--sha256", help="explicit artifact SHA-256; wins over the digest file")
     pkg.add_argument("--channel", choices=dist_mod.CHANNELS, help="installation channel")
     isub.add_parser("verify", help="verify the install lock against the code directory")
+    rb = isub.add_parser("rollback", help="switch to a retained previous package version")
+    rb.add_argument(
+        "--to",
+        help="retained version to restore (default: the retained previous release)",
+    )
 
     # ------------------------------------------------------- install workspace
     w = isub.add_parser("workspace", help="acquire code and create the data root")
@@ -463,6 +469,11 @@ def _install(args, root: Path, resolved: dict | None = None) -> tuple[int, dict]
     if args.action == "verify":
         layout = resolved or layout_mod.resolve()
         result = dist_mod.verify_install(layout["code"])
+        return (0 if result.get("ok") else 1), result
+
+    if args.action == "rollback":
+        layout = resolved or layout_mod.resolve()
+        result = dist_mod.rollback(layout["code"], to_version=args.to)
         return (0 if result.get("ok") else 1), result
 
     if args.action == "migrate":
