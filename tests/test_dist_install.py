@@ -155,27 +155,42 @@ def test_install_lock_schema_declares_the_same_contract():
 
     assert schema["type"] == "object"
     assert schema["additionalProperties"] is True
+    # Fields every installation records, whatever its distribution (#97).
     assert set(schema["required"]) == {
         "schema_version",
         "distribution",
-        "version",
-        "channel",
-        "artifact_sha256",
         "source_url",
         "installed_at",
         "requires",
         "skill_digest",
-        "package_file_count",
-        "manifest_sha256",
     }
     assert schema["properties"]["distribution"]["enum"] == ["package", "source"]
     assert schema["properties"]["channel"]["enum"] == ["stable", "prerelease"]
-    assert set(schema["properties"]["requires"]["required"]) == {
+    # The package compatibility facts stay declared; the package branch requires
+    # them and the source branch keeps requires as an empty object.
+    assert set(schema["properties"]["requires"]["properties"]) == {
         "os",
         "arch",
         "dsh",
         "python",
     }
+    branches = {branch["if"]["properties"]["distribution"]["const"]: branch for branch in schema["allOf"]}
+    package = branches["package"]["then"]
+    source = branches["source"]["then"]
+    assert set(package["required"]) == {
+        "version",
+        "channel",
+        "artifact_sha256",
+        "package_file_count",
+        "manifest_sha256",
+    }
+    assert set(package["properties"]["requires"]["required"]) == {
+        "os",
+        "arch",
+        "dsh",
+        "python",
+    }
+    assert set(source["required"]) == {"commit", "dirty"}
 
 
 def test_build_writes_a_zip_and_the_digest_records_it(tmp_path):

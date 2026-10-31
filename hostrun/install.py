@@ -875,12 +875,12 @@ def _public_permissions(permissions: dict) -> dict:
 
 
 def _release_report(home: Path) -> dict:
-    """The ``release`` block: package identity or an honest source-install note.
+    """The ``release`` block: package identity or a truthful source record.
 
     ``home`` is the runtime area (``<code>/.frontier``); the install lock and
     the retained releases live beside it.  A source installation never invents
-    package fields: ticket #97 refines its reporting, while an absent lock is
-    reported as ``recorded: false`` here.
+    package fields: it reports ``version: null`` and ``channel: "source"`` with
+    its commit instead (#97).  An absent lock stays ``recorded: false``.
     """
     from hostrun import dist as dist_mod
 
@@ -892,6 +892,19 @@ def _release_report(home: Path) -> dict:
         if lock_path.is_file():
             detail = "安装锁存在但无法读取；发行包字段不可用"
         return {"distribution": "source", "recorded": False, "detail": detail}
+    distribution = str(lock.get("distribution") or "source")
+    if distribution == "source":
+        return {
+            "distribution": "source",
+            "version": None,
+            "channel": "source",
+            "source": lock.get("source_url"),
+            "installed_at": lock.get("installed_at"),
+            "commit": lock.get("commit"),
+            "dirty": bool(lock.get("dirty")),
+            "retained": [],
+            "lock_path": str(lock_path),
+        }
     version = str(lock.get("version") or "")
     if not version:
         return {
@@ -899,7 +912,6 @@ def _release_report(home: Path) -> dict:
             "recorded": False,
             "detail": "安装锁缺少 version 字段，无法报告发行包版本",
         }
-    distribution = str(lock.get("distribution") or "source")
     return {
         "distribution": distribution,
         "version": version,

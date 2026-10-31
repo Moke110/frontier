@@ -38,6 +38,10 @@ from hostrun import distribution
 
 SCHEMA_VERSION = 1
 DISTRIBUTION = "package"
+SOURCE_DISTRIBUTION = "source"
+#: A source installation has no distribution manifest, so it declares no
+#: compatibility requirements; the empty object is recorded explicitly (#97).
+SOURCE_REQUIRES: dict = {}
 LOCK_REL = Path(".frontier") / "dist.lock.json"
 STAGING_REL = Path(".frontier") / "staging"
 RELEASES_REL = Path(".frontier") / "releases"
@@ -92,6 +96,85 @@ def write_lock(code: str | Path, lock: dict) -> Path:
     path = lock_path(code)
     write_json(path, lock)
     return path
+
+
+def source_lock(
+    *,
+    commit: str,
+    dirty: bool,
+    source_url: str,
+    installed_at: str | None = None,
+    skill_digest: str = "",
+) -> dict:
+    """The truthful lock for a source installation (#97).
+
+    It records only evidence a source checkout has: the git commit, whether the
+    checkout was dirty, the repository URL, the install time and the skill
+    pointer digest.  Package-only fields (version, channel, artifact/manifest
+    digests, file count) are deliberately absent; a source install never
+    pretends to be a distribution package.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "distribution": SOURCE_DISTRIBUTION,
+        "commit": str(commit or ""),
+        "dirty": bool(dirty),
+        "source_url": str(source_url or ""),
+        "installed_at": str(installed_at or now()),
+        "requires": dict(SOURCE_REQUIRES),
+        "skill_digest": str(skill_digest or ""),
+    }
+
+
+def write_source_lock(
+    code: str | Path,
+    *,
+    commit: str,
+    dirty: bool,
+    source_url: str,
+    installed_at: str | None = None,
+    skill_digest: str = "",
+) -> dict:
+    """Write (or refresh) a source install lock for the code directory.
+
+    A package installation is never overwritten by a source install: the
+    returned payload is skipped instead.  Re-running the workspace install
+    keeps the original ``installed_at`` and any digest a skill registration
+    already recorded, so the lock stays idempotent and truthful.
+    """
+    code_path = Path(code).expanduser().resolve()
+    existing = read_lock(code_path)
+    if existing is not None and existing.get("distribution") != SOURCE_DISTRIBUTION:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "package_install",
+            "distribution": existing.get("distribution"),
+            "lock": str(lock_path(code_path)),
+            "note": "当前代码目录是发行包安装；未用源码安装锁覆盖它",
+        }
+    previous = existing or {}
+    lock = source_lock(
+        commit=commit,
+        dirty=dirty,
+        source_url=source_url,
+        installed_at=installed_at
+        or str(previous.get("installed_at") or "")
+        or now(),
+        skill_digest=skill_digest or str(previous.get("skill_digest") or ""),
+    )
+    path = write_lock(code_path, lock)
+    return {
+        "ok": True,
+        "skipped": False,
+        "distribution": SOURCE_DISTRIBUTION,
+        "commit": lock["commit"],
+        "dirty": lock["dirty"],
+        "source_url": lock["source_url"],
+        "installed_at": lock["installed_at"],
+        "skill_digest": lock["skill_digest"],
+        "lock": str(path),
+    }
 
 
 def releases_path(code: str | Path) -> Path:
@@ -1265,6 +1348,9 @@ def rollback(code: str | Path, *, to_version: str | None = None) -> dict:
                 "version": target_version,
                 "channel": release["channel"],
                 "artifact_sha256": release["artifact_sha256"],
+                # Keep the source URL of the version that is now active, not the
+                # outgoing artifact's URL (#96 review fix, #97).
+                "source_url": release["source_url"],
                 "manifest_sha256": release["manifest_sha256"],
                 "package_file_count": release["package_file_count"],
                 "requires": dict(target["compat"]),
@@ -1379,6 +1465,32 @@ def verify_install(code: str | Path) -> dict:
             code=str(code_path),
             lock=str(lock_path(code_path)),
         )
+    if str(lock.get("distribution") or "") == SOURCE_DISTRIBUTION:
+        # A source installation has no manifest and no artifact to check.  The
+        # lock itself is the evidence; reporting a mismatch would be wrong.
+        return {
+            "ok": True,
+            "status": "source_install",
+            "distribution": SOURCE_DISTRIBUTION,
+            "version": None,
+            "channel": "source",
+            "commit": lock.get("commit"),
+            "dirty": bool(lock.get("dirty")),
+            "source_url": lock.get("source_url"),
+            "installed_at": lock.get("installed_at"),
+            "skill_digest": lock.get("skill_digest"),
+            "code": str(code_path),
+            "lock": str(lock_path(code_path)),
+            "manifest": None,
+            "missing": [],
+            "mismatch": [],
+            "extra_manifest_files": [],
+            "lock_mismatch": [],
+            "note": (
+                "源码安装没有发行包清单可校验；安装锁记录的是源码来源，"
+                "不是发行包制品"
+            ),
+        }
     manifest_path = code_path / MANIFEST_FILENAME
     if not manifest_path.is_file():
         return _mismatch_payload(

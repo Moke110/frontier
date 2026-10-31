@@ -536,6 +536,10 @@ def _install(args, root: Path, resolved: dict | None = None) -> tuple[int, dict]
                     },
                     paths={"repo": result["repo"], "home": result["home"]},
                 )
+                # A successful workspace acquisition is a source installation:
+                # record its truthful git evidence in the install lock (#97).
+                if result["ok"]:
+                    result["source_lock"] = workspace_mod.record_source_install(result)
             else:
                 report_root = Path(root)
                 ensure_dir(report_root / "install")
