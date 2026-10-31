@@ -100,6 +100,7 @@ Remove-Item "<temp>" -Recurse -Force
 - `install package` 先校验摘要与 `compat.os/arch`（以及非 `*` 的 `python`/`dsh`），再解压到 `<code>/.frontier/staging/<id>` 逐文件核对，通过后才复制进代码目录；防 zip-slip。
 - 安装锁写在 `<code>/.frontier/dist.lock.json`：`distribution: "package"`、`version`、`channel`、`artifact_sha256`、`source_url`、`installed_at`、`requires`、`skill_digest`、`package_file_count`、`manifest_sha256`（升级/回滚时另有 `previous_version`/`rolled_back_at`）。
 - 同一版本同一制品重复安装且 `install verify` 通过时是幂等 no-op：不改安装锁、`current` 与保留记录，保留 `installed_at`。
+- 在替换代码树之前写 `<code>/.frontier/dist.pending.json`（operation、target_version、started_at、操作前版本与保留树/恢复快照）。成功即删除；失败时尽量恢复操作前的文件、安装锁与 `current` 再删除标记；恢复失败则保留标记并报告 `recovery_incomplete`。之后任何安装/回滚若发现残留标记，都会以 `pending_operation_incomplete` 停止并提示先按标记恢复，绝不在两个版本的混合树上继续。
 
 ### 3.4 控制台启动脚本
 
@@ -125,7 +126,7 @@ Remove-Item "<temp>" -Recurse -Force
 ```
 
 - 指针记录 §2.1 的发行包字段与 `技能摘要`、`安装锁`；同一摘要写入安装锁的 `skill_digest`。步骤可重复执行，已完成的组件不重做。
-- 发行包安装没有 `install workspace` 生成的工作区记录 `<code>/.frontier/install.json` 时，本步骤从 `<code>/.frontier/dist.lock.json` 与发行包 `manifest.json` 推导记录：代码目录即仓库，运行时区是数据根，`repo_url`/`origin` 取安装锁的 `source_url`，`commit` 取 `built_from_commit`（缺失时为空），解释器指向 `<code>\bin\frontier.cmd` 内置运行时包装器；不会伪造源码提交或源码安装锁。该记录只在指针写入成功后落盘，已有工作区记录不会被覆盖。
+- 发行包安装没有 `install workspace` 生成的工作区记录 `<code>/.frontier/install.json` 时，本步骤从 `<code>/.frontier/dist.lock.json` 与发行包 `manifest.json` 推导记录：代码目录即仓库，运行时区是数据根，`repo_url`/`origin` 取安装锁的 `source_url`，`commit` 取 `built_from_commit`（缺失时为空）；入口点指向 `<code>\bin\frontier.cmd`，解释器记录包内 `<code>\runtime\python.exe`（存在时），不会把包装器冒充成解释器；不会伪造源码提交或源码安装锁。该记录只在指针写入成功后落盘，已有源码/用户记录不会被覆盖；之后升级或回滚重跑本步骤会刷新派生记录的版本与提交。
 - 升级或回滚后可重跑本步骤刷新指针中的发行版本与制品摘要；安装锁与发行包清单仍是安装内容的权威证据。
 
 ### 3.6 升级、校验、回滚与报告
@@ -139,7 +140,7 @@ Remove-Item "<temp>" -Recurse -Force
 
 - **升级**：重复 §3.2–§3.3 安装新版本。升级前把旧版本完整保留到 `<code>/.frontier/releases/<旧版本>/`（全部包文件 + `manifest.json` + `release.json`），只保留最近一个旧版本；新版本只替换发行包文件，删除「旧清单有、新清单无」的陈旧文件，不触碰 `<code>/.frontier/` 下的运行状态与知识库数据。
 - **verify**：无安装锁 => `blocked`/`no_install_lock`；源码锁 => `source_install`（没有发行包清单可校验）；发行包安装逐文件比对清单，报告 missing/mismatch/extra，mismatch => exit 1。
-- **rollback**：默认切回保留的上一版本，也可 `--to <version>`；先校验保留树的 `release.json`、`manifest.json` 摘要并逐文件核对，未知/缺失/损坏目标一律 `blocked` 且不改动任何文件。成功时先保留当前树，只替换包文件与 `manifest.json`，`<code>/.frontier/` 运行状态与知识库数据不变，因此**不需要重新执行 `/frontier-init`**；第二次回滚可以返回。
+- **rollback**：默认切回保留的上一版本，也可 `--to <version>`；先校验保留树的 `release.json`、`manifest.json` 摘要并逐文件核对，未知/缺失/损坏目标一律 `blocked` 且不改动任何文件。成功时先保留当前树，从保留版本替换包文件与 `manifest.json` 并切换 `current` 指针；不重新下载、解压或构建，`<code>/.frontier/` 运行状态与知识库数据不变，因此**不需要重新执行 `/frontier-init`**；第二次回滚可以返回。
 - **report**：`release` 块给出 `distribution`、`version`、`channel`、`source`、`installed_at`、`retained`、`lock_path`；源码安装如实报告 `version: null` 与 commit，不虚构发行包字段。
 
 ### 3.7 启动控制台与 `/frontier-init`
@@ -342,7 +343,7 @@ python -m hostrun.cli feedback rebuild
 
 - 暂停：控制台 `/frontier-stop` 或飞书 `暂停`；关闭控制台窗口即停止整个服务。没有需要另行停用的宿主任务。
 - 查看：`install report`、`status`、`console control status`、`/frontier-logs`。
-- 回滚到上一发行版：`install rollback`；它只切包文件与安装锁，不重新初始化知识库、不改运行状态。
+- 回滚到上一发行版：`install rollback`；它从保留版本替换包文件与 `manifest.json` 并切换 `current` 指针，不重新下载、解压或构建，不重新初始化知识库、不改 `.frontier` 运行状态。
 - 清理旧 WSL/systemd 安装只在确实装过时执行；删运行配置不等于删飞书知识库或唯一离线备份。
 
 ## 8. 自检与验收

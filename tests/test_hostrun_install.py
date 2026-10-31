@@ -214,6 +214,76 @@ def _import_probe_runner(lines):
     return lambda argv, **kwargs: Proc()
 
 
+def _package_install_tree(tmp_path: Path) -> Path:
+    repo = tmp_path / "code"
+    _seed_repo_files(repo)
+    (repo / "bin").mkdir(parents=True)
+    (repo / "bin" / "frontier.cmd").write_text("@echo off\r\n", encoding="utf-8")
+    (repo / "runtime").mkdir()
+    (repo / "runtime" / "python.exe").write_bytes(b"MZ fake")
+    (repo / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "version": "1.2.3",
+                "channel": "stable",
+                "built_from_commit": "abc123",
+                "compat": {"os": "windows", "arch": "x86_64", "dsh": "*", "python": "3.13"},
+                "files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (repo / ".frontier").mkdir()
+    (repo / ".frontier" / "dist.lock.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "distribution": "package",
+                "version": "1.2.3",
+                "channel": "stable",
+                "artifact_sha256": "a" * 64,
+                "source_url": (tmp_path / "frontier-1.2.3-stable.zip").as_uri(),
+                "installed_at": "2026-10-31T10:00:00+08:00",
+                "requires": {"os": "windows", "arch": "x86_64", "dsh": "*", "python": "3.13"},
+                "skill_digest": "",
+                "package_file_count": 0,
+                "manifest_sha256": "b" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert workspace_mod.register_skill(
+        repo, tmp_path / "host-skills" / "frontier-run"
+    )["ok"] is True
+    return repo
+
+
+def test_install_check_for_a_package_reports_workspace_and_bundled_dependencies(tmp_path):
+    repo = _package_install_tree(tmp_path)
+    runtime_python = repo / "runtime" / "python.exe"
+    wrapper = repo / "bin" / "frontier.cmd"
+
+    result = install.check(
+        repo / ".frontier",
+        workspace_root=repo,
+        host=_host(),
+        runner=_import_probe_runner(["3.13.1", "6.0.1", "1.24.0"]),
+    )
+
+    assert result["steps"]["workspace"] == "ok"
+    assert result["steps"]["dependencies"] == "ok"
+    evidence = install.load_state(repo / ".frontier")["steps"]["dependencies"]["evidence"]
+    assert evidence["bundled_runtime"] is True
+    assert evidence["python"] == str(runtime_python)
+    config = json.loads(
+        (repo / ".frontier" / "install" / "config.json").read_text(encoding="utf-8")
+    )
+    assert config["paths"]["python"] == str(runtime_python)
+    assert config["paths"]["python"] != str(wrapper)
+    assert (wrapper).is_file()
+
+
 def test_probe_dependencies_blocks_an_interpreter_without_pymupdf(tmp_path):
     # yaml imports, fitz does not: PyMuPDF is a required dependency, not an
     # optional extra (workspace.check_runtime asserts both).

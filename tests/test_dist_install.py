@@ -445,6 +445,118 @@ def test_incompatible_os_arch_or_python_blocks_before_writes(tmp_path, field, va
     assert not code.exists()
 
 
+def _recorded_dsh(code: Path, path: Path) -> None:
+    config = code / ".frontier" / "install" / "config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        json.dumps({"schema_version": 1, "paths": {"dsh": str(path)}}),
+        encoding="utf-8",
+    )
+
+
+def _version_runner(output: str, *, returncode: int = 0):
+    class Proc:
+        pass
+
+    proc = Proc()
+    proc.returncode = returncode
+    proc.stdout = output
+    proc.stderr = ""
+    return lambda argv, **kwargs: proc
+
+
+@pytest.mark.parametrize("requirement", [">=0.2.1", "0.2.3"])
+def test_dsh_compat_match_is_reported(tmp_path, requirement):
+    compat = _host_compat()
+    compat["dsh"] = requirement
+    result = _build(tmp_path, compat=compat)
+    code = tmp_path / "code"
+    dsh = tmp_path / "dsh.exe"
+    dsh.write_text("", encoding="utf-8")
+    _recorded_dsh(code, dsh)
+
+    payload = dist.install_package(
+        code,
+        from_source=str(result["artifact"]["path"]),
+        runner=_version_runner("dsh 0.2.3\n"),
+    )
+
+    assert payload["ok"] is True
+    assert payload["compat_dsh"]["status"] == "ok"
+    assert payload["compat_dsh"]["host"] == "0.2.3"
+
+
+def test_dsh_compat_mismatch_blocks_before_extraction(tmp_path):
+    compat = _host_compat()
+    compat["dsh"] = ">=0.2.1"
+    result = _build(tmp_path, compat=compat)
+    code = tmp_path / "code"
+    dsh = tmp_path / "dsh.exe"
+    dsh.write_text("", encoding="utf-8")
+    _recorded_dsh(code, dsh)
+
+    payload = dist.install_package(
+        code,
+        from_source=str(result["artifact"]["path"]),
+        runner=_version_runner("dsh 0.1.0\n"),
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "compat_dsh_mismatch"
+    assert payload["field"] == "compat.dsh"
+    assert not (code / "manifest.json").exists()
+    assert not (code / ".frontier" / "dist.lock.json").exists()
+    assert not (code / ".frontier" / "staging").exists()
+
+
+@pytest.mark.parametrize(
+    ("runner", "note_fragment"),
+    [
+        (_version_runner("not a version"), "无法从"),
+        (_version_runner("dsh 0.2.3", returncode=1), "退出码非零"),
+    ],
+    ids=["unparsable", "runner-failure"],
+)
+def test_dsh_compat_unavailable_is_unverified_never_silent(
+    tmp_path, runner, note_fragment
+):
+    compat = _host_compat()
+    compat["dsh"] = ">=0.2.1"
+    result = _build(tmp_path, compat=compat)
+    code = tmp_path / "code"
+    dsh = tmp_path / "dsh.exe"
+    dsh.write_text("", encoding="utf-8")
+    _recorded_dsh(code, dsh)
+
+    payload = dist.install_package(
+        code,
+        from_source=str(result["artifact"]["path"]),
+        runner=runner,
+    )
+
+    assert payload["ok"] is True
+    assert payload["compat_dsh"]["status"] == "unverified"
+    assert note_fragment in payload["compat_dsh"]["note"]
+    assert "宿主 dsh 兼容性未验证" in payload["note"]
+
+
+def test_dsh_compat_without_a_recorded_dsh_is_unverified(tmp_path):
+    compat = _host_compat()
+    compat["dsh"] = ">=0.2.1"
+    result = _build(tmp_path, compat=compat)
+    code = tmp_path / "code"
+
+    payload = dist.install_package(
+        code,
+        from_source=str(result["artifact"]["path"]),
+        runner=_version_runner("dsh 0.2.3\n"),
+    )
+
+    assert payload["ok"] is True
+    assert payload["compat_dsh"]["status"] == "unverified"
+    assert "未记录 paths.dsh" in payload["compat_dsh"]["note"]
+
+
 def test_wildcard_compatibility_accepts_every_host(tmp_path):
     result = _build(
         tmp_path,
@@ -509,6 +621,40 @@ def test_invalid_manifest_is_blocked_before_extraction(tmp_path):
 
     assert payload["status"] == "blocked"
     assert payload["reason"] == "invalid_manifest"
+    assert not code.exists()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda manifest: manifest.__setitem__("unknown_root", True),
+        lambda manifest: manifest["compat"].__setitem__("unknown_compat", "1"),
+        lambda manifest: manifest["files"][0].__setitem__("unknown_file", "x"),
+    ],
+    ids=["unknown-root", "unknown-compat", "unknown-file"],
+)
+def test_manifest_unknown_fields_block_before_any_write(tmp_path, mutate):
+    result = _build(tmp_path)
+    artifact = Path(result["artifact"]["path"])
+    manifest = json.loads(zipfile.ZipFile(artifact).read("manifest.json"))
+    mutate(manifest)
+    tampered_manifest = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode()
+    artifact.write_bytes(
+        _rewrite_zip(artifact, replace={"manifest.json": tampered_manifest})
+    )
+    digest = _digest(result["digest"])
+    digest["manifest_sha256"] = hashlib.sha256(tampered_manifest).hexdigest()
+    Path(result["digest"]).write_text(
+        json.dumps(digest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    _refresh_artifact_digest(Path(result["digest"]), artifact)
+    code = tmp_path / "code"
+
+    payload = _install(code, artifact)
+
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "invalid_manifest"
+    assert any("未知字段" in error or "unknown" in error for error in payload["errors"])
     assert not code.exists()
 
 

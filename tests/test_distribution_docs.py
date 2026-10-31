@@ -214,6 +214,15 @@ def test_agents_documents_tag_and_channel_rules() -> None:
     assert re.search(r"\d+ passed, 3 skipped", text), "AGENTS.md has no current green-suite baseline"
 
 
+def test_latest_suite_count_agrees_between_agents_and_acceptance() -> None:
+    agents_count = re.search(r"(\d+) passed, 3 skipped", _read(AGENTS))
+    assert agents_count, "AGENTS.md has no suite count"
+    section = _section(_read(ACCEPTANCE), "2026-10-31 发行包安装验收")
+    acceptance_counts = set(re.findall(r"\*\*(\d+) passed, 3 skipped\*\*", section))
+    assert acceptance_counts, "acceptance section has no suite count"
+    assert agents_count.group(1) in acceptance_counts
+
+
 def test_acceptance_records_the_distribution_items_as_untested() -> None:
     text = _read(ACCEPTANCE)
     assert "## 2026-10-31" in text
@@ -229,8 +238,22 @@ def test_adr_status_records_the_implementation_on_this_branch() -> None:
     text = _read(ADR)
     assert "## 实现状态" in text
     assert "2026-10-31" in text
+    assert "#93–#100" in text
     assert "docs/acceptance" in text
     assert "实现未开始" not in text
+
+
+def test_rollback_docs_do_not_claim_a_pointer_only_butterfly() -> None:
+    """The implementation swaps package files from the retained tree (#92)."""
+    for path in (
+        ROOT / "contracts" / "README.md",
+        ADR,
+        INSTALLATION,
+        ACCEPTANCE,
+    ):
+        text = _read(path)
+        assert "不重新下载" in text, f"{path} does not state rollback skips re-download"
+        assert "替换包文件" in text, f"{path} does not state rollback swaps package files"
 
 
 def test_workflow_reference_no_longer_requires_a_source_checkout() -> None:

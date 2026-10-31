@@ -60,8 +60,6 @@ before any package directory is created.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import os
 import platform as platform_mod
 import re
@@ -72,7 +70,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-from common import emit
+from common import emit, sha256_bytes, sha256_file, write_json_bytes
 from hostrun import launcher
 
 SCHEMA_VERSION = 1
@@ -328,20 +326,20 @@ def _is_executable(rel: Path, path: Path) -> bool:
         return False
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def normalize_version(version: str) -> str:
+    """Strip the tag's leading ``v``; the prefix never enters a version/name.
+
+    ``contracts/release.md`` §1 makes ``v`` tag syntax only, so the build entry
+    accepts the same string a maintainer types for a tag and normalizes it once.
+    """
+    text = str(version or "").strip()
+    if text.startswith("v"):
+        text = text[1:]
+    return text
 
 
 def _write_json(path: Path, payload: dict) -> bytes:
-    data = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as handle:
-        handle.write(data)
-    return data
+    return write_json_bytes(path, payload)
 
 
 def _zip_mode(executable: bool) -> int:
@@ -466,7 +464,7 @@ def _validate_request(version: str, channel: str) -> None:
     if not isinstance(version, str) or not _VERSION_RE.match(version):
         raise BuildError(
             "version must be a non-empty filename-safe string such as 0.1.0 "
-            f"or v0.1.0; got {version!r}"
+            f"(without the tag's leading 'v'); got {version!r}"
         )
 
 
@@ -491,6 +489,8 @@ def build(
     manifest path points inside the package).  Raises :class:`BuildError` for an
     invalid request and leaves no package behind when validation fails.
     """
+    requested_version = str(version or "").strip()
+    version = normalize_version(requested_version)
     _validate_request(version, channel)
     source_path = Path(source).expanduser().resolve()
     out_path = Path(out).expanduser().resolve()
@@ -554,7 +554,7 @@ def build(
         {
             "path": path.relative_to(package_dir).as_posix(),
             "bytes": path.stat().st_size,
-            "sha256": _sha256(path),
+            "sha256": sha256_file(path),
             "executable": _is_executable(path.relative_to(package_dir), path),
         }
         for path in package_files
@@ -573,7 +573,7 @@ def build(
         _write_artifact(package_dir, artifact_path)
     except (OSError, zipfile.BadZipFile) as exc:
         raise BuildError(f"could not write the package artifact at {artifact_path}: {exc}") from exc
-    artifact_sha256 = _sha256(artifact_path)
+    artifact_sha256 = sha256_file(artifact_path)
     artifact_bytes = artifact_path.stat().st_size
 
     digest = {
@@ -584,7 +584,7 @@ def build(
         "built_from_commit": built_from_commit,
         "compat": compatibility,
         "manifest": MANIFEST_FILENAME,
-        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "manifest_sha256": sha256_bytes(manifest_bytes),
         "files": len(files),
         "bytes": sum(row["bytes"] for row in files),
         "artifact": {
@@ -607,6 +607,8 @@ def build(
             "sha256": artifact_sha256,
         },
         "version": version,
+        "requested_version": requested_version,
+        "version_normalized": requested_version != version,
         "channel": channel,
         "built_from_commit": built_from_commit,
         "commit_source": commit_source,
@@ -635,7 +637,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--source", required=True, help="source tree to package")
     parser.add_argument("--out", required=True, help="directory that receives the package and digest")
-    parser.add_argument("--version", required=True, help="package version, e.g. 0.1.0 or v0.1.0")
+    parser.add_argument(
+        "--version",
+        required=True,
+        help="package version without the tag prefix, e.g. 0.1.0 (a leading 'v' is stripped)",
+    )
     parser.add_argument("--channel", required=True, choices=CHANNELS)
     parser.add_argument(
         "--built-from-commit",
