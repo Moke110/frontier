@@ -11,7 +11,9 @@ tested offline:
   and rebuilding the same inputs must reproduce the same artifact digest;
 - the bundled runtime directory has one expected CPython embeddable layout.
 
-Everything here is stdlib-only and network-free.  The CI workflow calls the
+Everything here is stdlib-only.  One function reaches the network, and only for
+an explicit ``https://`` release-artifact URL: ``resolve_release_source`` (the
+rest of the module stays network-free).  The CI workflow calls the
 ``python -m hostrun.release`` CLI for the same functions the tests exercise.
 """
 
@@ -22,9 +24,13 @@ import hashlib
 import json
 import re
 import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 SCHEMA_VERSION = 1
 STABLE = "stable"
@@ -406,6 +412,143 @@ def entry_from_digest(
 
 
 # ------------------------------------------------------------------ artifacts
+#: Default read timeout for one ``https://`` release-artifact download.
+RELEASE_URL_TIMEOUT = 30.0
+#: A Windows drive path, which ``urlsplit`` would otherwise read as a scheme.
+_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _release_url_label(parsed: urllib.parse.SplitResult) -> str:
+    """A URL label safe for logs: no query string or fragment (no tokens)."""
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+def _file_uri_path(parsed: urllib.parse.SplitResult) -> Path:
+    path_text = urllib.request.url2pathname(parsed.path)
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        path_text = f"//{parsed.netloc}{path_text}"
+    return Path(path_text)
+
+
+def resolve_release_source(
+    source: str | Path,
+    *,
+    download_dir: str | Path | None = None,
+    timeout: float = RELEASE_URL_TIMEOUT,
+    urlopen=None,
+) -> Path:
+    """Resolve a distribution-artifact source to one local file path.
+
+    Accepted sources (spec #92: ``--from`` takes a local file or a URL):
+
+    - a local path (relative or absolute, including a Windows drive/UNC path);
+    - a ``file://`` URL;
+    - an ``https://`` URL, downloaded into ``download_dir`` (a fresh temporary
+      directory when omitted) with a read timeout.
+
+    Plain ``http://`` and every other scheme are refused: a release artifact
+    comes over TLS or from disk, never in clear text.  Every failure raises
+    :class:`ReleaseError` with a reason that names the offending source, so a
+    caller can report it as a blocked install instead of guessing.
+
+    ``urlopen`` is injectable so tests (and offline callers) can supply a fake
+    ``urllib.request.urlopen``; the default is the real one, called as
+    ``urlopen(url, timeout=timeout)``.
+
+    This is the one function in this module that may touch the network; the
+    sibling ``hostrun/dist.py`` ``_source_path`` should delegate its URL branch
+    here instead of refusing ``https://``.
+    """
+    raw = str(source or "").strip()
+    if not raw:
+        raise ReleaseError(
+            "release source is empty; pass a local path, file:// URL or "
+            "https:// URL"
+        )
+
+    if _DRIVE_RE.match(raw) or raw.startswith("\\\\"):
+        return Path(raw).expanduser().resolve()
+
+    parsed = urllib.parse.urlsplit(raw)
+    scheme = parsed.scheme.lower()
+    if not scheme:
+        return Path(raw).expanduser().resolve()
+    if scheme == "file":
+        return _file_uri_path(parsed).expanduser().resolve()
+    if scheme != "https":
+        raise ReleaseError(
+            f"unsupported release source scheme {parsed.scheme!r}; use a local "
+            "path, file:// URL or https:// URL"
+        )
+
+    if any(character.isspace() for character in raw):
+        raise ReleaseError(
+            "release URL contains whitespace; percent-encode it or pass a "
+            "local path"
+        )
+    if not parsed.hostname:
+        raise ReleaseError("release URL must include a host")
+    filename = PurePosixPath(urllib.parse.unquote(parsed.path)).name
+    if not filename or filename in {".", ".."} or parsed.path.endswith("/"):
+        raise ReleaseError(
+            "release URL must name the artifact filename, e.g. "
+            "https://host/frontier-0.1.0-stable.zip"
+        )
+    try:
+        seconds = float(timeout)
+    except (TypeError, ValueError) as exc:
+        raise ReleaseError(
+            f"download timeout must be a number of seconds: {timeout!r}"
+        ) from exc
+    if seconds <= 0:
+        raise ReleaseError("download timeout must be greater than zero")
+
+    if download_dir is None:
+        destination_dir = Path(tempfile.mkdtemp(prefix="frontier-release-"))
+    else:
+        destination_dir = Path(download_dir).expanduser().resolve()
+    try:
+        destination_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ReleaseError(
+            f"could not create the download directory {destination_dir}: {exc}"
+        ) from exc
+    target = destination_dir / filename
+    label = _release_url_label(parsed)
+    opener = urlopen or urllib.request.urlopen
+
+    try:
+        response = opener(raw, timeout=seconds)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise ReleaseError(
+            f"could not download release artifact {label}: {exc}"
+        ) from exc
+
+    written = 0
+    try:
+        with target.open("wb") as handle:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                written += len(chunk)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        target.unlink(missing_ok=True)
+        raise ReleaseError(
+            f"could not download release artifact {label}: {exc}"
+        ) from exc
+    finally:
+        close = getattr(response, "close", None)
+        if close is not None:
+            close()
+
+    if written == 0:
+        target.unlink(missing_ok=True)
+        raise ReleaseError(f"downloaded release artifact is empty: {label}")
+    return target.resolve()
+
+
 def artifact_sha256(path: str | Path) -> str:
     """SHA-256 of a file, read in bounded chunks."""
     digest = hashlib.sha256()
