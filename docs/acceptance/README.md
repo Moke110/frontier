@@ -2,6 +2,27 @@
 
 本文件只记录验收证据与缺口，不替代 [GitHub 任务](https://github.com/Moke110/frontier/issues/29)。以下按日期归并证据；规格 [#51](https://github.com/Moke110/frontier/issues/51) 的历史离线实现与本轮文档修订分开记录。历史阻塞须在目标宿主重新探测，不能直接当作当前结果。代码通过离线测试不等于产品通过真实验收。
 
+## 2026-10-31 发行包安装验收（spec #92 / ADR 0010；真实证据未取得，保持 `untested`）
+
+本轮对应 spec #92 / ADR 0010 的 ticket #99：把 README 安装段与 `skills/frontier-run` 参考切换为发行包安装，补齐 tag/渠道开发指引与验收项。本轮**未取得真实证据**，也没有执行真实 tag 发布、GitHub Release 下载或真实安装；以下每一项都是 `untested`，在 Lead 的线上 CI 与真实安装运行取得证据前，不得把本节当作验收通过，也不得把“命令存在”当成安装方式已切换。
+
+| 验收项 | 结果 | 离线覆盖 / 待补证据 |
+|---|---|---|
+| 用户在没有 git、uv、pip 或系统 Python 的机器上从 GitHub Release 安装（稳定或预发布渠道） | `untested` | 文档与命令面由离线测试覆盖；真实“无系统 Python”机器安装待 #100 与 Lead 的线上运行 |
+| 下载不完整或被篡改时，摘要校验在解压前失败且不改代码目录 | `untested` | `hostrun/dist.py` 的摘要/清单/兼容性失败语义有离线测试；真实下载失败场景未执行 |
+| 安装锁如实报告版本、渠道、来源与安装时间 | `untested` | 锁字段、`install verify` 与 `install report` 的 `release` 块有离线测试；真实安装锁未取得 |
+| 升级只替换发行包，资料目录、运行状态与知识库数据不变 | `untested` | 保留/替换/清理陈旧文件的离线测试存在；真实升级未执行 |
+| 回滚到上一版且不需要重新执行 `/frontier-init` | `untested` | 回滚切树、锁字段与运行状态不变的离线测试存在；真实回滚未执行 |
+| 用户机器上不出现 git、uv、pip、`.venv` 或工具链目录 | `untested` | 发行包布局与包装器不引用 PATH 的离线测试存在；真实机器检查未做 |
+| 测试工作区使用独立飞书设施（独立 Base + 两个 `-test` 云盘目录），不抢正式执行端 | `untested` | 仅有文档约束；真实测试安装与设施创建未执行 |
+| CI 在 `v*` tag 上构建可重复的发行包并发布 Release | `untested` | tag→版本/渠道映射、两次构建同摘要、工作流 YAML 不变量有离线测试；真实 tag 触发需要 Lead 批准 |
+| 发布索引记录 version/channel/artifact sha256 并由 `github-actions[bot]` 提交到 `main` | `untested` | 索引合并/校验/排序有离线测试；真实 Release 与索引提交未执行 |
+| `/frontier-init` 在发行包安装上走完全流程 | `untested` | 控制台与初始化流程有既有离线覆盖；发行包安装的真实初始化未执行 |
+| `install verify` / `install report` 与磁盘内容一致 | `untested` | 逐文件比对与报告字段有离线测试；真实安装上的执行未做 |
+| 现有源码安装不被新发布流程自动改动 | `untested` | 源码锁与 `source_install` 报告有离线测试；真实既有安装未观察 |
+
+**离线套件覆盖的机制（不等于验收）**：本轮离线全量 **956 passed, 3 skipped**（2026-10-31，仓库 `.venv`，`python -X utf8 -m pytest -q`）；它只证明机制与文档一致，不构成真实安装证据。覆盖内容包括：发行包清单与 zip 可复现、摘要不符在解压前失败、安装锁字段、升级保留与回滚、`install report` 区分发行包/源码、启动包装器与内置运行时布局、tag→渠道映射、发布索引合并、文档中的命令与 CLI 子命令一致。ticket #100 的离线端到端（fixture 源码 + 合成 runtime → 安装 → 技能指针 → verify/report → 升级 → 回滚）完成后另记其结果；真实 CI tag 运行、Release 下载、独立飞书设施的测试安装仍需 Lead 批准。
+
 ## 2026-10-30 控制台化验收（spec #74 / ADR 0009；仅执行本机可安全运行项）
 
 本轮按 ticket #91 执行**不发送真实飞书消息、不使用凭据、不迁移本机既有安装**的验收。离线全量：**723 passed, 3 skipped**（命令见 `E:\Desktop\frontier-dev\.spec74-notes\impl\91\report.md`；比 #87 基线少的部分是随监听进程/smoke/cleanup/schedules 一并删除的旧测试）。以下“pass”只表示对应命令在本机真实执行并得到记录的结果；ADR 0009 的九项真实验收不因离线或本地替身运行而改变状态。

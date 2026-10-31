@@ -1,7 +1,7 @@
 # ADR 0010：安装改为发行包，源码仓库只负责开发
 
 - 日期：2026-10-31
-- 状态：已接受；实现未开始
+- 状态：已接受；实现已在 `spec92-integration` 完成（2026-10-31），真实安装验收待补
 - 相关：[ADR 0009](0009-console-as-service.md)（控制台与目录模型）、[ADR 0004](0004-native-windows-python.md)（原生 Windows Python）、[ADR 0007](0007-reuse-configured-lark-cli.md)（复用已配置的 lark-cli）
 
 ## 背景
@@ -39,4 +39,4 @@ DeepSeek Harness 的插件体系给出了现成参照：**开发用源码仓库�
 
 ## 实现状态
 
-未开始。在上述改造完成并取得真实安装证据之前，README 声明的安装方式仍是旧的 git 方式；验收记录不得把"命令存在"当作安装方式已切换。
+2026-10-31：已在 `spec92-integration` 上实现（tickets #93–#99：构建入口与发行包、安装锁、内置运行时与包装器、保留/回滚/报告、发行包与源码安装的区分及技能指针摘要、tag 发布流水线与发布索引、安装 Prompt 与文档切换）。离线测试覆盖摘要校验、安装锁、升级/回滚、包装器与运行时布局、发布索引与文档命令一致性。真实安装证据仍待补：真实 tag 触发的 CI 发布、GitHub Release 下载、无系统 Python 的真实安装与 `/frontier-init` 均未执行，保持 `untested`；证据与缺口见 [docs/acceptance/README.md](../acceptance/README.md)。在取得真实证据前，不得把本 ADR 的实现状态当作产品验收通过。
