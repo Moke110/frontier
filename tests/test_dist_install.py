@@ -9,10 +9,13 @@ from a local path or ``file://`` URL; nothing reaches the network.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import platform
 import shutil
 import sys
+import urllib.error
+import urllib.request
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -279,6 +282,74 @@ def test_install_from_a_file_uri_succeeds(tmp_path):
 
     assert payload["ok"] is True
     assert payload["source_url"] == artifact.resolve().as_uri()
+
+
+def test_https_source_downloads_the_artifact_and_installs_it(tmp_path, monkeypatch):
+    result = _build(tmp_path)
+    artifact = Path(result["artifact"]["path"])
+    code = tmp_path / "code"
+    seen: dict[str, object] = {}
+
+    def fake_urlopen(url, timeout=None):
+        seen["url"] = url
+        seen["timeout"] = timeout
+        return io.BytesIO(artifact.read_bytes())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    url = f"https://example.invalid/releases/{artifact.name}"
+
+    payload = dist.install_package(
+        code, from_source=url, digest_path=str(result["digest"])
+    )
+
+    assert payload["ok"] is True
+    assert payload["status"] == "ok"
+    assert payload["version"] == "0.1.0"
+    assert payload["channel"] == "stable"
+    assert payload["artifact_sha256"] == result["artifact"]["sha256"]
+    assert (code / "manifest.json").is_file()
+    assert (code / ".frontier" / "dist.lock.json").is_file()
+    assert seen["url"] == url
+    assert seen["timeout"] is not None
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "http://example.invalid/frontier-0.1.0-stable.zip",
+        "ftp://example.invalid/frontier-0.1.0-stable.zip",
+    ],
+    ids=["http", "ftp"],
+)
+def test_insecure_or_unknown_schemes_stay_blocked_without_writes(tmp_path, source):
+    code = tmp_path / "code"
+
+    payload = dist.install_package(code, from_source=source)
+
+    assert payload["ok"] is False
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "unsupported_source"
+    assert "https" in payload["note"].lower()
+    assert not code.exists()
+
+
+def test_https_download_failure_blocks_before_any_write(tmp_path, monkeypatch):
+    code = tmp_path / "code"
+
+    def failing_urlopen(url, timeout=None):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", failing_urlopen)
+
+    payload = dist.install_package(
+        code, from_source="https://example.invalid/frontier-0.1.0-stable.zip"
+    )
+
+    assert payload["ok"] is False
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "unsupported_source"
+    assert "download" in payload["note"].lower()
+    assert not code.exists()
 
 
 def test_sibling_digest_is_discovered_for_zip_and_zip_digest_names(tmp_path):
