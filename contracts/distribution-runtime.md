@@ -22,7 +22,8 @@
   python313.dll                    # 核心 DLL
   python313._pth                   # 模块搜索路径：python313.zip、.、..、Lib\site-packages
   python313.zip                    # 标准库
-  DLLs/*.pyd                       # 扩展模块（含 PyMuPDF 的二进制依赖）
+  *.pyd                            # 扩展模块：官方 embeddable zip 平铺在 python.exe 旁；
+                                   # 完整发行版布局则放在 DLLs/ 下（两种都接受）
   Lib/site-packages/               # PyYAML、PyMuPDF 及其依赖
 ```
 

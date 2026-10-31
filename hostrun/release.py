@@ -679,8 +679,12 @@ def validate_runtime_dir(
             missing.append(relative)
     if not (root / f"python{tag}.zip").is_file() and not (root / "Lib").is_dir():
         missing.append(f"python{tag}.zip or Lib/")
-    if not (root / "DLLs").is_dir():
-        missing.append("DLLs/")
+    # The official embeddable zip ships its extension modules flat next to
+    # python.exe (select.pyd, _ctypes.pyd, ...), while a full distribution
+    # layout keeps them under DLLs/.  Accept either; the embeddable zip itself
+    # is hash-pinned, so this check only catches an obviously wrong input.
+    if not (root / "DLLs").is_dir() and not any(root.glob("*.pyd")):
+        missing.append("extension modules (DLLs/ or *.pyd next to python.exe)")
     site_packages = root / "Lib" / "site-packages"
     if not site_packages.is_dir() or not any(site_packages.iterdir()):
         missing.append("Lib/site-packages/ (non-empty)")
