@@ -2,6 +2,21 @@
   "schema_version": 1,
   "releases": [
     {
+      "version": "0.1.0-rc.4",
+      "channel": "prerelease",
+      "artifact_sha256": "082ecf69857ac1832505c22e98899dc4fec60d92f11c1805a0fa9b8dd8278e5d",
+      "artifact_name": "frontier-0.1.0-rc.4-prerelease.zip",
+      "manifest_sha256": "872b90e52f1146c459c60138a7095c5b3eb0d4abe01829685defc3acdbcc21a8",
+      "compat": {
+        "os": "windows",
+        "arch": "x86_64",
+        "dsh": "*",
+        "python": "3.13"
+      },
+      "published_at": "2026-10-31T07:30:55+00:00",
+      "release_url": "https://github.com/Moke110/frontier/releases/tag/v0.1.0-rc.4"
+    },
+    {
       "version": "0.1.0-rc.3",
       "channel": "prerelease",
       "artifact_sha256": "b7932c152b4c950d964eda449a516ec282ee247bff2e1eb7fd012e92b4108459",
