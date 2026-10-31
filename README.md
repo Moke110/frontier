@@ -33,7 +33,7 @@ frontier 依赖一款能在本机执行命令、使用技能并启动前台控�
 8. 我完成 /frontier-init 后，如实报告已运行、阻塞与未实测项；把命令成功、任务计划与真实交付分开。
 ```
 
-整条用户路径不需要 git、uv、pip 或系统 Python：代码目录、内置运行时与安装锁都由发行包和安装命令提供。发行包与源码的一致性由发行包清单里的 `built_from_commit` 记录，它只是证据，不参与安装判断。发行包安装没有 `install workspace` 生成的记录时，`install skill` 会从 `<code>\.frontier\dist.lock.json` 与 `manifest.json` 推导工作区记录（不伪造源码锁或 git commit），并让入口指针指向 `<code>\bin\frontier.cmd` 内置运行时包装器；该步骤可重复执行。
+整条用户路径不需要 git、uv、pip 或系统 Python：代码目录、内置运行时与安装锁都由发行包和安装命令提供。发行包与源码的一致性由发行包清单里的 `built_from_commit` 记录，它只是证据，不参与安装判断。发行包安装没有 `install workspace` 生成的记录时，`install skill` 会从 `<code>\.frontier\dist.lock.json` 与 `manifest.json` 推导工作区记录（不伪造源码锁或 git commit），把 `<code>\bin\frontier.cmd` 记为首选入口点、把内置解释器 `<code>\runtime\python.exe` 记为解释器；升级或回滚后重跑该步骤会刷新记录与指针，该步骤可重复执行。
 
 安装后的维护命令：
 
@@ -63,7 +63,8 @@ frontier 依赖一款能在本机执行命令、使用技能并启动前台控�
 只有开发 frontier 本身时才使用源码安装；普通用户走上节的发行包安装，两条路径不要混用。源码安装需要 git、uv 与 uv 提供的 Python 3.13，在源码 checkout 上执行：
 
 ```powershell
-git clone https://github.com/Moke110/frontier.git <workspace>\frontier
+git clone https://github.com/Moke110/frontier.git "<workspace>\frontier"
+cd "<workspace>\frontier"
 python -m hostrun.cli install workspace --root "<workspace>" --repo-url https://github.com/Moke110/frontier.git
 python -m hostrun.cli --code "<code>" install toolchain --root "<workspace>"
 python -m hostrun.cli --code "<code>" --archive "<archive>" console install --dsh "<dsh 绝对路径>"
