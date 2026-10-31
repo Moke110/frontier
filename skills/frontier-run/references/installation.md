@@ -59,7 +59,7 @@ frontier 的安装与日常操作由**用户可见的前台控制台**承担，�
 | `技能摘要` | `<code>/skills/frontier-run/SKILL.md` 的 sha256 | 同左 |
 | `安装锁` | `<code>/.frontier/dist.lock.json` 路径 | 同左 |
 
-`install check` 的 `verify_skill` 会重算 `技能摘要` 并比对指针与安装锁：摘要或锁版本/提交/来源不符 => `blocked`（`skill_digest_mismatch` / `lock_version_mismatch` / `lock_commit_mismatch` / `lock_distribution_mismatch`）；旧指针没有任何新字段时按源码安装处理（`ok: true`、`legacy_pointer: true`）。
+`install check` 的 `verify_skill` 会重算 `技能摘要` 并比对指针与安装锁：摘要或锁版本/提交/制品摘要/来源不符 => `blocked`（`skill_digest_mismatch` / `lock_version_mismatch` / `lock_artifact_mismatch` / `lock_commit_mismatch` / `lock_distribution_mismatch`）；旧指针没有任何新字段时按源码安装处理（`ok: true`、`legacy_pointer: true`）。
 
 ## 3. 发行包安装（用户路径）
 
@@ -125,7 +125,8 @@ Remove-Item "<temp>" -Recurse -Force
 ```
 
 - 指针记录 §2.1 的发行包字段与 `技能摘要`、`安装锁`；同一摘要写入安装锁的 `skill_digest`。步骤可重复执行，已完成的组件不重做。
-- **已知缺口（ticket #100）**：发行包安装当前没有 `install skill` 期待的工作区记录 `<root>/.frontier/install.json`，因此这一步会在写入指针前被拒绝。ticket #100 提供发行包安装的技能指针接缝并做端到端验收；在此之前，真实安装必须把这一步记为 `blocked`，**不得**手工伪造指针或安装锁。其余发行包安装步骤已由离线测试覆盖。
+- 发行包安装没有 `install workspace` 生成的工作区记录 `<code>/.frontier/install.json` 时，本步骤从 `<code>/.frontier/dist.lock.json` 与发行包 `manifest.json` 推导记录：代码目录即仓库，运行时区是数据根，`repo_url`/`origin` 取安装锁的 `source_url`，`commit` 取 `built_from_commit`（缺失时为空），解释器指向 `<code>\bin\frontier.cmd` 内置运行时包装器；不会伪造源码提交或源码安装锁。该记录只在指针写入成功后落盘，已有工作区记录不会被覆盖。
+- 升级或回滚后可重跑本步骤刷新指针中的发行版本与制品摘要；安装锁与发行包清单仍是安装内容的权威证据。
 
 ### 3.6 升级、校验、回滚与报告
 

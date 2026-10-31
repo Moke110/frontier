@@ -4,7 +4,7 @@
 
 ## 2026-10-31 发行包安装验收（spec #92 / ADR 0010；真实证据未取得，保持 `untested`）
 
-本轮对应 spec #92 / ADR 0010 的 ticket #99：把 README 安装段与 `skills/frontier-run` 参考切换为发行包安装，补齐 tag/渠道开发指引与验收项。本轮**未取得真实证据**，也没有执行真实 tag 发布、GitHub Release 下载或真实安装；以下每一项都是 `untested`，在 Lead 的线上 CI 与真实安装运行取得证据前，不得把本节当作验收通过，也不得把“命令存在”当成安装方式已切换。
+本轮对应 spec #92 / ADR 0010 的 ticket #99 与 #100：ticket #99 把 README 安装段与 `skills/frontier-run` 参考切换为发行包安装，并补齐 tag/渠道开发指引与验收项；ticket #100 修复了发行包安装后的技能指针接缝，并用 fixture 发行包跑通离线端到端机制。本轮**未取得真实证据**，也没有执行真实 tag 发布、GitHub Release 下载、真实安装或 `/frontier-init`；下表中所有真实环境项仍是 `untested`，在 Lead 的线上 CI 与真实安装运行取得证据前，不得把本节当作验收通过，也不得把“命令存在”或“离线测试通过”当成安装方式已验收。
 
 | 验收项 | 结果 | 离线覆盖 / 待补证据 |
 |---|---|---|
@@ -20,8 +20,67 @@
 | `/frontier-init` 在发行包安装上走完全流程 | `untested` | 控制台与初始化流程有既有离线覆盖；发行包安装的真实初始化未执行 |
 | `install verify` / `install report` 与磁盘内容一致 | `untested` | 逐文件比对与报告字段有离线测试；真实安装上的执行未做 |
 | 现有源码安装不被新发布流程自动改动 | `untested` | 源码锁与 `source_install` 报告有离线测试；真实既有安装未观察 |
+| 离线端到端：安装发行包 → 控制台脚本 → 技能指针 → 升级 → 回滚 → 报告 | `offline-verified`（仅机制证据，不是验收） | `tests/test_dist_e2e.py::test_distribution_package_install_skill_upgrade_rollback_end_to_end` 在临时工作区用带合成 `runtime/` 的 fixture 发行包驱动 CLI：安装锁、`frontier-console.cmd` 委托、指针字段、`verify_skill`、运行状态哨兵、v1→v2 升级、回滚、`install report` 与未知版本回滚阻断均通过 |
+| 离线文档命令面与套件回归 | `offline-verified`（仅机制证据，不是验收） | 同一模块的 `test_readme_documented_install_steps_exist_and_are_in_order` 校验 README 安装步骤顺序与 CLI 子命令；本分支全量 **958 passed, 3 skipped**（2026-10-31，`python -X utf8 -m pytest -q ... tests`） |
 
-**离线套件覆盖的机制（不等于验收）**：本轮离线全量 **956 passed, 3 skipped**（2026-10-31，仓库 `.venv`，`python -X utf8 -m pytest -q`）；它只证明机制与文档一致，不构成真实安装证据。覆盖内容包括：发行包清单与 zip 可复现、摘要不符在解压前失败、安装锁字段、升级保留与回滚、`install report` 区分发行包/源码、启动包装器与内置运行时布局、tag→渠道映射、发布索引合并、文档中的命令与 CLI 子命令一致。ticket #100 的离线端到端（fixture 源码 + 合成 runtime → 安装 → 技能指针 → verify/report → 升级 → 回滚）完成后另记其结果；真实 CI tag 运行、Release 下载、独立飞书设施的测试安装仍需 Lead 批准。
+**离线套件覆盖的机制（不等于验收）**：本轮离线全量 **958 passed, 3 skipped**（2026-10-31，仓库 `.venv`，`python -X utf8 -m pytest -q`）；它只证明机制与文档一致，不构成真实安装证据。覆盖内容包括：发行包清单与 zip 可复现、摘要不符在解压前失败、安装锁字段、升级保留与回滚、`install report` 区分发行包/源码、启动包装器与内置运行时布局、tag→渠道映射、发布索引合并、文档中的命令与 CLI 子命令一致，以及 ticket #100 新增的离线端到端（fixture 源码 + 合成 runtime → 安装 → 控制台脚本 → 技能指针 → 升级 → 回滚 → 报告）。ticket #100 同时修复了 `install skill` 在发行包安装上因缺少工作区记录而被拒绝的接缝；技能指针仍由安装锁与发行包清单推导，不伪造源码锁。真实 CI tag 运行、Release 下载、独立飞书设施的测试安装与 `/frontier-init` 仍需 Lead 批准并执行，列入下节清单。
+
+### 待真实取证（Lead，CI Release 后执行）
+
+以下所有项均未执行，保持未勾选；离线测试不能代替真实证据。命令中的 `<...>` 替换为实际绝对路径或版本，发行包与摘要只从 GitHub Release / `releases/index.json` 获取。
+
+```powershell
+# 0. 目标机应没有可用的 git、uv、系统 Python（无输出才符合“无工具链”）
+Get-Command git,uv,python -ErrorAction SilentlyContinue
+
+$version = "<version>"; $channel = "prerelease"
+$zip = "frontier-$version-$channel.zip"
+$digest = "frontier-$version-$channel.digest.json"
+
+# 1. 下载发行包与摘要，解压前校验摘要
+gh release download "v$version" --repo Moke110/frontier --pattern $zip --pattern $digest
+$expected = (Get-Content $digest -Raw | ConvertFrom-Json).artifact.sha256
+$actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+if ($actual -ne $expected) { throw "发行包摘要不符：期望 $expected，实际 $actual；停止安装，不解压" }
+
+$temp = "<temp>"; $code = "<code>"; $archive = "<archive>"
+$dsh = "<dsh 绝对路径>"; $hostSkills = "<host skills dir>"
+
+# 2. 解压到临时引导目录，安装到代码目录并写安装锁
+Expand-Archive -Path $zip -DestinationPath $temp -Force
+& "$temp\bin\frontier.cmd" --code "$code" --archive "$archive" install package --from "$zip" --digest "$digest"
+
+# 3. 校验、生成控制台脚本、注册技能入口指针（均使用内置运行时包装器）
+& "$code\bin\frontier.cmd" --code "$code" --archive "$archive" install verify
+& "$code\bin\frontier.cmd" --code "$code" --archive "$archive" install report
+& "$code\bin\frontier.cmd" --code "$code" --archive "$archive" console install --dsh "$dsh"
+& "$code\bin\frontier.cmd" --code "$code" --archive "$archive" install skill --root "$code" --target "$hostSkills"
+
+# 4. 升级到预发布 v2（下载 v2 的 zip/digest 并重复摘要校验），刷新指针后校验
+& "$code\bin\frontier.cmd" --code "$code" --archive "$archive" install package --from "<v2 zip>" --digest "<v2 digest>"
+& "$code\bin\frontier.cmd" --code "$code" --archive "$archive" install skill --root "$code" --target "$hostSkills"
+& "$code\bin\frontier.cmd" --code "$code" --archive "$archive" install verify
+
+# 5. 回滚到保留的 v1，刷新指针后校验，并查看保留版本
+& "$code\bin\frontier.cmd" --code "$code" --archive "$archive" install rollback
+& "$code\bin\frontier.cmd" --code "$code" --archive "$archive" install skill --root "$code" --target "$hostSkills"
+& "$code\bin\frontier.cmd" --code "$code" --archive "$archive" install verify
+& "$code\bin\frontier.cmd" --code "$code" --archive "$archive" install report
+
+# 6. 启动控制台，由用户执行 /frontier-init
+& "$code\bin\frontier-console.cmd"
+```
+
+- [ ] 第 0 步证明目标机没有 git、uv 或系统 Python，且安装过程未调用它们。
+- [ ] 第 1 步下载真实 Release 资产，摘要在解压前校验通过；篡改/截断场景另做一次并确认零写入。
+- [ ] 第 2 步 `install package` 成功，`<code>\.frontier\dist.lock.json` 的 version/channel/artifact sha256 与资产一致。
+- [ ] 第 3 步 `install verify`/`install report` 如实报告发行包版本与渠道；`frontier-console.cmd` 委托 `frontier.cmd`；技能指针含发行来源/版本/渠道/制品摘要/技能摘要/安装锁且 `verify_skill` 为 ok。
+- [ ] 第 4 步升级到预发布 v2 后知识库与 `<code>\.frontier\` 运行状态不变，保留 v1，`install verify` 通过。
+- [ ] 第 5 步回滚到 v1 后服务可继续运行、无需重新 `/frontier-init`，保留 v2，`install report` 显示回滚记录。
+- [ ] 第 6 步 `/frontier-init` 只用独立 Base 与两个命名带 `-test` 的 Drive 目录；正式 Base、正式云盘与正式执行端未被触碰。
+- [ ] 测试安装与开发安装并存，开发目录未被升级、回滚或初始化改动。
+
+**已知边界（Lead 重点核对）**：升级或回滚会改写安装锁的 `version`；已注册指针中的发行版本会变旧。上面的清单在两类切换后都重跑 `install skill` 刷新指针。若不重跑，`verify_skill` 会以 `lock_version_mismatch` 阻塞，这是如实报告，不得当作通过。真实 bundled runtime 能否在无系统 Python 的机器上启动 `frontier.cmd`、控制台窗口、真实飞书设施与 `/frontier-init` 仍只能由这次真实运行证明。
 
 ## 2026-10-30 控制台化验收（spec #74 / ADR 0009；仅执行本机可安全运行项）
 

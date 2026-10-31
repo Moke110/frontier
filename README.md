@@ -28,12 +28,12 @@ frontier 依赖一款能在本机执行命令、使用技能并启动前台控�
    <temp>\bin\frontier.cmd --code "<code>" --archive "<archive>" install package --from "<zip>" --digest "<digest.json>"
    代码目录必须为空或不存在，或者是此前的发行包安装；成功后安装锁写在 <code>\.frontier\dist.lock.json，然后删除临时引导目录。
 5. 生成控制台启动脚本：<code>\bin\frontier.cmd --code "<code>" --archive "<archive>" console install --dsh "<dsh 绝对路径>"。
-6. 注册技能入口指针：<code>\bin\frontier.cmd --code "<code>" --archive "<archive>" install skill --root "<code>" --target "<host skills dir>"；指针记录发行来源、发行版本、发行渠道、制品摘要、发行包来源、技能摘要与安装锁，实测宿主能读取入口与参考文件。
+6. 注册技能入口指针：<code>\bin\frontier.cmd --code "<code>" --archive "<archive>" install skill --root "<code>" --target "<host skills dir>"；指针记录发行来源、发行版本、发行渠道、制品摘要、发行包来源、技能摘要与安装锁，实测宿主能读取入口与参考文件。升级或回滚后可重跑此步刷新指针版本。
 7. 启动控制台并把窗口交给我，我将在其中执行 /frontier-init；控制台启动前先自检权限；需要写入飞书凭据或工作区外资料目录而权限不足时，明确提示我双击 <code>\bin\frontier-console.cmd 以完整权限重启，并保留已完成的初始化进度。
 8. 我完成 /frontier-init 后，如实报告已运行、阻塞与未实测项；把命令成功、任务计划与真实交付分开。
 ```
 
-整条用户路径不需要 git、uv、pip 或系统 Python：代码目录、内置运行时与安装锁都由发行包和安装命令提供。发行包与源码的一致性由发行包清单里的 `built_from_commit` 记录，它只是证据，不参与安装判断。发行包安装的技能指针接缝由 ticket #100 完成端到端验收；在那之前若 `install skill` 因缺少工作区记录被拒绝，如实记为 `blocked`，不手工伪造指针或安装锁。
+整条用户路径不需要 git、uv、pip 或系统 Python：代码目录、内置运行时与安装锁都由发行包和安装命令提供。发行包与源码的一致性由发行包清单里的 `built_from_commit` 记录，它只是证据，不参与安装判断。发行包安装没有 `install workspace` 生成的记录时，`install skill` 会从 `<code>\.frontier\dist.lock.json` 与 `manifest.json` 推导工作区记录（不伪造源码锁或 git commit），并让入口指针指向 `<code>\bin\frontier.cmd` 内置运行时包装器；该步骤可重复执行。
 
 安装后的维护命令：
 

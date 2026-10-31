@@ -1006,6 +1006,42 @@ description: "Install, run, pause or recover frontier on this host. Read the rep
 """
 
 
+def _package_workspace_record(root: str | Path) -> dict:
+    """Derive a truthful workspace record from an installed package, or ``{}``.
+
+    A distribution package is installed by ``install package`` and never runs
+    ``install workspace``: its evidence is the install lock plus the package
+    manifest, not a source checkout.  The record points at the code directory
+    itself (which carries ``skills/``), keeps the runtime area as the data root,
+    and advertises the package's bundled wrapper as the interpreter.  Nothing
+    here invents a git commit or a source lock.
+    """
+    root_path = Path(root).expanduser().resolve()
+    lock = dist_mod.read_lock(root_path)
+    if not isinstance(lock, dict) or lock.get("distribution") != "package":
+        return {}
+    try:
+        manifest = read_json(root_path / dist_mod.MANIFEST_FILENAME)
+    except (OSError, ValueError):
+        manifest = None
+    manifest = manifest if isinstance(manifest, dict) else {}
+    source_url = str(lock.get("source_url") or "")
+    return {
+        "root": str(root_path),
+        "repo": str(root_path),
+        "home": str(root_path / ".frontier"),
+        "repo_url": source_url,
+        "origin": source_url,
+        "commit": str(manifest.get("built_from_commit") or ""),
+        "dirty": False,
+        "python": str(root_path / "bin" / "frontier.cmd"),
+        "distribution": "package",
+        "version": str(lock.get("version") or ""),
+        "channel": str(lock.get("channel") or ""),
+        "derived_from": str(dist_mod.lock_path(root_path)),
+    }
+
+
 def register_skill(
     root: str | Path,
     target: str | Path,
@@ -1021,7 +1057,13 @@ def register_skill(
     """
     record = load_record(root)
     if not record.get("repo") or not record.get("home"):
-        raise HostRunError("先执行 install workspace，工作区尚未记录代码与数据目录")
+        if record:
+            # A partial workspace record is authoritative evidence that a
+            # source install happened; never paper over it with package fields.
+            raise HostRunError("工作区记录不完整；先运行 install workspace 或修复安装记录")
+        record = _package_workspace_record(root)
+        if not record:
+            raise HostRunError("先执行 install workspace，工作区尚未记录代码与数据目录")
     target_dir = Path(target).expanduser().resolve()
     launcher = target_dir / "SKILL.md"
     repo = Path(record["repo"])
@@ -1190,6 +1232,8 @@ def verify_skill(record: dict) -> dict:
         elif distribution == "package":
             if str(lock.get("version") or "") != pointer.get("version"):
                 reasons.append("lock_version_mismatch")
+            if str(lock.get("artifact_sha256") or "") != pointer.get("artifact_sha256"):
+                reasons.append("lock_artifact_mismatch")
         else:
             lock_commit = str(lock.get("commit") or "")
             pointer_commit = pointer.get("commit") or ""
