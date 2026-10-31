@@ -11,6 +11,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -172,6 +173,7 @@ def test_digest_file_summarises_the_manifest_without_volatile_fields(source, tmp
     manifest_path = Path(result["manifest"])
     digest = _digest(result)
     manifest = _manifest(result)
+    artifact = Path(result["artifact"]["path"])
 
     assert digest["schema_version"] == 1
     assert digest["package"] == Path(result["package"]).name
@@ -182,8 +184,45 @@ def test_digest_file_summarises_the_manifest_without_volatile_fields(source, tmp
     assert digest["manifest_sha256"] == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     assert digest["files"] == len(manifest["files"])
     assert digest["bytes"] == sum(row["bytes"] for row in manifest["files"])
+    assert digest["artifact"] == {
+        "name": artifact.name,
+        "bytes": artifact.stat().st_size,
+        "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+    }
     assert "created_at" not in digest
     assert "built_at" not in digest
+
+
+def test_build_emits_a_reproducible_zip_artifact_next_to_the_package(source, tmp_path):
+    result = _build(source, tmp_path / "out")
+    package = Path(result["package"])
+    artifact = Path(result["artifact"]["path"])
+    manifest = _manifest(result)
+
+    assert artifact == package.parent / f"{package.name}.zip"
+    assert artifact.is_file()
+    assert artifact.parent == package.parent
+    assert not (package / artifact.name).exists()
+    assert result["artifact"]["name"] == artifact.name
+    assert result["artifact"]["bytes"] == artifact.stat().st_size
+    assert result["artifact"]["sha256"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    expected_names = sorted(
+        ["manifest.json", *(row["path"] for row in manifest["files"])]
+    )
+    with zipfile.ZipFile(artifact, "r") as archive:
+        infos = archive.infolist()
+        assert [info.filename for info in infos] == expected_names
+        executable = {row["path"]: row["executable"] for row in manifest["files"]}
+        for info in infos:
+            assert info.date_time == (1980, 1, 1, 0, 0, 0)
+            assert info.compress_type == zipfile.ZIP_DEFLATED
+            assert info.external_attr != 0
+            mode = (info.external_attr >> 16) & 0o777
+            assert mode == (0o755 if executable.get(info.filename) else 0o644)
+        assert archive.read("manifest.json") == Path(result["manifest"]).read_bytes()
+        for row in manifest["files"]:
+            assert hashlib.sha256(archive.read(row["path"])).hexdigest() == row["sha256"]
 
 
 def test_manifest_has_no_timestamp_fields(source, tmp_path):
@@ -240,6 +279,9 @@ def test_building_the_same_source_twice_is_byte_identical(source, tmp_path):
 
     assert Path(first["manifest"]).read_bytes() == Path(second["manifest"]).read_bytes()
     assert Path(first["digest"]).read_bytes() == Path(second["digest"]).read_bytes()
+    assert Path(first["artifact"]["path"]).read_bytes() == Path(
+        second["artifact"]["path"]
+    ).read_bytes()
 
     first_files = {
         path.relative_to(first["package"]).as_posix(): path.read_bytes()
