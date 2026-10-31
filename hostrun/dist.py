@@ -3,20 +3,20 @@
 ADR 0010 makes the distribution package the user-facing installation unit.  This
 module is the runtime side of that decision:
 
-- :func:`install_package` takes a local artifact (path or ``file://`` URL) and
-  its digest, verifies the artifact *before* unpacking it, reads and validates
-  ``manifest.json`` from inside the zip, extracts into
-  ``<code>/.frontier/staging/<id>``, verifies every staged byte, and only then
-  copies the package into the code directory and writes
+- :func:`install_package` takes a local artifact (path or ``file://`` URL), or
+  downloads an ``https://`` artifact URL, and its digest, verifies the artifact
+  *before* unpacking it, reads and validates ``manifest.json`` from inside the
+  zip, extracts into ``<code>/.frontier/staging/<id>``, verifies every staged
+  byte, and only then copies the package into the code directory and writes
   ``<code>/.frontier/dist.lock.json``.
 - :func:`verify_install` checks that the lock, manifest and on-disk files still
   agree without needing the original zip.
 - :func:`apply_staged` is deliberately small so ticket #96 (retention and
   rollback) can wrap it; this ticket does not delete or replace the runtime area.
 
-No function here reaches the network: a release URL is resolved by the caller to
-a local file, and a remote source is refused.  The build side lives in
-:mod:`hostrun.distribution`.
+The only network access is an explicit ``https://`` artifact source, delegated
+to :func:`hostrun.release.resolve_release_source`; plain ``http://`` and every
+other scheme are refused.  The build side lives in :mod:`hostrun.distribution`.
 """
 
 from __future__ import annotations
@@ -475,19 +475,38 @@ def _stop(reason: str, note: str, **extra):
 
 # ------------------------------------------------------------------- artifact
 def _source_path(source: str) -> Path:
+    """Resolve a local path, ``file://`` URL or ``https://`` artifact URL.
+
+    URL downloads are delegated to :func:`hostrun.release.resolve_release_source`
+    (imported lazily so importing this installer never pulls in the release
+    pipeline).  Plain ``http://`` and every other scheme stay refused, and a
+    download failure becomes a :class:`DistError` so the installer reports a
+    blocked payload instead of a traceback.
+    """
     raw = str(source or "").strip()
     if not raw:
         raise DistError("缺少发行包来源")
     if _DRIVE_RE.match(raw) or raw.startswith("\\\\"):
         return Path(raw).expanduser().resolve()
     parsed = urlparse(raw)
-    if parsed.scheme == "file":
+    scheme = (parsed.scheme or "").lower()
+    if scheme == "file":
         path_text = unquote(parsed.path)
         if parsed.netloc and parsed.netloc.lower() != "localhost":
             path_text = f"//{parsed.netloc}{path_text}"
         return Path(url2pathname(path_text)).expanduser().resolve()
-    if parsed.scheme:
-        raise DistError(f"不支持的发行包来源（只接受本地路径或 file:// URL）：{raw}")
+    if scheme == "https":
+        from hostrun import release
+
+        try:
+            return release.resolve_release_source(raw)
+        except release.ReleaseError as exc:
+            raise DistError(str(exc)) from exc
+    if scheme:
+        raise DistError(
+            "不支持的发行包来源（只接受本地路径、file:// 或 https:// URL）："
+            f"{raw}"
+        )
     return Path(raw).expanduser().resolve()
 
 

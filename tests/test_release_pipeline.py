@@ -491,6 +491,31 @@ def test_prepare_runtime_assembles_embeddable_zip_and_wheels(tmp_path):
     assert summary["wheels"] == ["samplepkg-1.0.0-py3-none-any.whl"]
 
 
+def test_prepare_runtime_pth_exposes_the_code_root_and_site_packages_once(tmp_path):
+    """The isolated ``._pth`` must put the code root (``..``) on ``sys.path``.
+
+    The wrapper runs ``runtime\\python.exe -m hostrun.cli`` from the code root,
+    but an isolated embeddable interpreter ignores ``sys.path[0]``; without
+    ``..`` in ``python3XX._pth``, ``import hostrun``/``common`` fails in a real
+    install even though the site-packages wheels are present.
+    """
+    script = _load_script("prepare_runtime")
+    embed = _write_embeddable_zip(tmp_path / "python-embed.zip")
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _write_wheel(wheels / "samplepkg-1.0.0-py3-none-any.whl")
+    out = tmp_path / "runtime"
+
+    summary = script.prepare_runtime(embed, wheels, out)
+
+    assert summary["ok"] is True
+    lines = (out / "python313._pth").read_text(encoding="utf-8").splitlines()
+    # The embeddable zip's original entries stay first and unchanged.
+    assert lines[:2] == ["python313.zip", "."]
+    assert lines.count("..") == 1
+    assert lines.count("Lib\\site-packages") == 1
+
+
 def test_prepare_runtime_maps_wheel_purelib_and_keeps_the_pth_append_idempotent(tmp_path):
     script = _load_script("prepare_runtime")
     embed = _write_embeddable_zip(tmp_path / "python-embed.zip")
@@ -979,12 +1004,51 @@ def test_workflow_runs_the_package_install_smoke_after_building_it():
         "--archive",
         "--dsh",
         "--skills-target",
+        "--check-wrapper",
         "install-smoke",
         "RUNNER_TEMP",
     ):
         assert fragment in text
-    # The smoke step must fail the job, not merely print a reason.
+    # The wrapper check must fail the job, not merely print a reason.
     assert "throw" in text
+
+
+def test_workflow_dry_run_still_builds_and_smokes_but_publishes_nothing():
+    """workflow_dispatch dry_run must build + smoke, and gate every publish step."""
+    steps = _steps(_workflow())
+    build_at = next(
+        index
+        for index, step in enumerate(steps)
+        if "hostrun.distribution" in _run_text([step])
+    )
+    smoke_at = next(
+        index
+        for index, step in enumerate(steps)
+        if "scripts/ci_install_smoke.py" in _run_text([step])
+    )
+    publish_steps = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if any(
+            marker in _run_text([step])
+            for marker in (
+                "gh release create",
+                "scripts/update_release_index.py",
+                "release upload",
+            )
+        )
+    ]
+    assert publish_steps, "the workflow has no publish steps to gate"
+    # Build and smoke have no condition: a dry run exercises them.
+    assert not steps[build_at].get("if"), "the build must run on a dry run"
+    assert not steps[smoke_at].get("if"), "the smoke test must run on a dry run"
+    # Every publish step is gated on dry_run (and on non-dispatch tag runs).
+    for _, step in publish_steps:
+        condition = str(step.get("if") or "")
+        assert "inputs.dry_run" in condition
+        assert "github.event_name" in condition
+    # Publishing happens only after the build + smoke proved the artifact.
+    assert max(index for index, _ in publish_steps) > smoke_at > build_at
 
 
 def test_workflow_pins_actions_by_major_tag_with_a_documented_follow_up():

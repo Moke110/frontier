@@ -21,9 +21,9 @@
 | `install verify` / `install report` 与磁盘内容一致 | `untested` | 逐文件比对与报告字段有离线测试；真实安装上的执行未做 |
 | 现有源码安装不被新发布流程自动改动 | `untested` | 源码锁与 `source_install` 报告有离线测试；真实既有安装未观察 |
 | 离线端到端：安装发行包 → 控制台脚本 → 技能指针 → 升级 → 回滚 → 报告 | `offline-verified`（仅机制证据，不是验收） | `tests/test_dist_e2e.py::test_distribution_package_install_skill_upgrade_rollback_end_to_end` 在临时工作区用带合成 `runtime/` 的 fixture 发行包驱动 CLI：安装锁、`frontier-console.cmd` 委托、指针字段、`verify_skill`、运行状态哨兵、v1→v2 升级、回滚、`install report` 与未知版本回滚阻断均通过；`tests/test_dist_pending.py` 另覆盖安装/升级/回滚中断后的标记清除与恢复 |
-| 离线文档命令面与套件回归 | `offline-verified`（仅机制证据，不是验收） | 同一模块的 `test_readme_documented_install_steps_exist_and_are_in_order` 校验 README 安装步骤顺序与 CLI 子命令；本分支全量 **984 passed, 3 skipped**（2026-10-31，`python -X utf8 -m pytest -q ... tests`） |
+| 离线文档命令面与套件回归 | `offline-verified`（仅机制证据，不是验收） | 同一模块的 `test_readme_documented_install_steps_exist_and_are_in_order` 校验 README 安装步骤顺序与 CLI 子命令；本分支全量 **1009 passed, 3 skipped**（2026-10-31，`python -X utf8 -m pytest -q ... tests`） |
 
-**离线套件覆盖的机制（不等于验收）**：本轮离线全量 **984 passed, 3 skipped**（2026-10-31，仓库 `.venv`，`python -X utf8 -m pytest -q`）；它只证明机制与文档一致，不构成真实安装证据。覆盖内容包括：发行包清单与 zip 可复现、摘要不符在解压前失败、安装锁字段、升级保留与回滚、`install report` 区分发行包/源码、启动包装器与内置运行时布局、tag→渠道映射、发布索引合并、文档中的命令与 CLI 子命令一致，以及 ticket #100 新增的离线端到端（fixture 源码 + 合成 runtime → 安装 → 控制台脚本 → 技能指针 → 升级 → 回滚 → 报告）。ticket #100 同时修复了 `install skill` 在发行包安装上因缺少工作区记录而被拒绝的接缝；技能指针仍由安装锁与发行包清单推导，不伪造源码锁。真实 CI tag 运行、Release 下载、独立飞书设施的测试安装与 `/frontier-init` 仍需 Lead 批准并执行，列入下节清单。
+**离线套件覆盖的机制（不等于验收）**：本轮离线全量 **1009 passed, 3 skipped**（2026-10-31，仓库 `.venv`，`python -X utf8 -m pytest -q`）；它只证明机制与文档一致，不构成真实安装证据。覆盖内容包括：发行包清单与 zip 可复现、摘要不符在解压前失败、安装锁字段、升级保留与回滚、`install report` 区分发行包/源码、启动包装器与内置运行时布局、tag→渠道映射、发布索引合并、文档中的命令与 CLI 子命令一致，以及 ticket #100 新增的离线端到端（fixture 源码 + 合成 runtime → 安装 → 控制台脚本 → 技能指针 → 升级 → 回滚 → 报告）。ticket #100 同时修复了 `install skill` 在发行包安装上因缺少工作区记录而被拒绝的接缝；技能指针仍由安装锁与发行包清单推导，不伪造源码锁。真实 CI tag 运行、Release 下载、独立飞书设施的测试安装与 `/frontier-init` 仍需 Lead 批准并执行，列入下节清单。
 
 ### 待真实取证（Lead，CI Release 后执行）
 

@@ -122,6 +122,8 @@ jobs:
       # Spec #92 testing seam 5: the released zip must install and report as a
       # package installation on a clean runner.  The runner's Python only runs
       # the CLI; the point is the installed tree under the temporary code dir.
+      # --check-wrapper executes the installed bin\frontier.cmd with a sanitized
+      # PATH (no PYTHONHOME/PYTHONPATH/venv) and asserts it prints usage.
       - name: Smoke-test installing the built package into a clean code directory
         shell: pwsh
         run: |
@@ -132,7 +134,7 @@ jobs:
           $dsh = Join-Path $smoke "dsh.cmd"
           New-Item -ItemType Directory -Force -Path $smoke | Out-Null
           Set-Content -Path $dsh -Value "@echo off`r`nexit /b 0" -Encoding ascii
-          python scripts/ci_install_smoke.py --zip $zip --code (Join-Path $smoke "code") --archive (Join-Path $smoke "archive") --dsh $dsh --skills-target (Join-Path $smoke "host-skills/frontier-run") --bootstrap (Join-Path $smoke "bootstrap")
+          python scripts/ci_install_smoke.py --zip $zip --code (Join-Path $smoke "code") --archive (Join-Path $smoke "archive") --dsh $dsh --skills-target (Join-Path $smoke "host-skills/frontier-run") --bootstrap (Join-Path $smoke "bootstrap") --check-wrapper
           if ($LASTEXITCODE -ne 0) { throw "the built artifact failed the install smoke test; the JSON above names the failing step" }
 
       - name: Render release notes
