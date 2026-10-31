@@ -40,11 +40,19 @@ SCHEMA_VERSION = 1
 DISTRIBUTION = "package"
 LOCK_REL = Path(".frontier") / "dist.lock.json"
 STAGING_REL = Path(".frontier") / "staging"
+RELEASES_REL = Path(".frontier") / "releases"
+CURRENT_REL = Path(".frontier") / "current"
+RELEASE_FILENAME = "release.json"
+RELEASE_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = distribution.MANIFEST_FILENAME
 CHANNELS = distribution.CHANNELS
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~-]*$")
 _MANIFEST_LIMIT = 16 * 1024 * 1024
+# Two release versions exist at any time: the active tree and one retained
+# previous tree.  Installing a third version prunes the oldest retained tree.
+RETAINED_LIMIT = 1
 
 
 class DistError(Exception):
@@ -79,6 +87,228 @@ def write_lock(code: str | Path, lock: dict) -> Path:
     path = lock_path(code)
     write_json(path, lock)
     return path
+
+
+def releases_path(code: str | Path) -> Path:
+    return Path(code).expanduser().resolve() / RELEASES_REL
+
+
+def current_path(code: str | Path) -> Path:
+    return Path(code).expanduser().resolve() / CURRENT_REL
+
+
+def read_current(code: str | Path) -> str | None:
+    """Read the ``.frontier/current`` pointer, or ``None`` when absent."""
+    try:
+        text = current_path(code).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text or None
+
+
+def _write_current(code: str | Path, version: str) -> Path:
+    path = current_path(code)
+    ensure_dir(path.parent)
+    path.write_text(f"{version}\n", encoding="utf-8")
+    return path
+
+
+def _usable_version(version: object) -> bool:
+    """Versions name a directory under ``.frontier/releases``; keep them inert."""
+    return isinstance(version, str) and bool(_VERSION_RE.fullmatch(version))
+
+
+def _manifest_at(tree: Path) -> tuple[bytes, dict] | None:
+    """Read and validate ``manifest.json`` from a tree, or ``None``."""
+    path = tree / MANIFEST_FILENAME
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        manifest = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if _validate_manifest(manifest):
+        return None
+    return data, manifest
+
+
+def _tree_disagreements(tree: Path, manifest: dict) -> tuple[list[str], list[str]]:
+    """Return ``(missing, mismatched)`` paths for a manifest against a tree."""
+    missing: list[str] = []
+    mismatch: list[str] = []
+    for row in manifest["files"]:
+        rel = row["path"]
+        target = tree / Path(rel)
+        if not target.is_file():
+            missing.append(rel)
+            continue
+        try:
+            data = target.read_bytes()
+        except OSError:
+            missing.append(rel)
+            continue
+        if len(data) != row["bytes"] or _sha256_bytes(data) != row["sha256"]:
+            mismatch.append(rel)
+    return missing, mismatch
+
+
+def _release_records(code: str | Path) -> list[dict]:
+    """Retained release records (``release.json``), oldest first."""
+    root = releases_path(code)
+    if not root.is_dir():
+        return []
+    records: list[dict] = []
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            record = read_json(entry / RELEASE_FILENAME)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("version") or "") != entry.name:
+            continue
+        record["_path"] = str(entry)
+        records.append(record)
+    records.sort(
+        key=lambda row: (str(row.get("installed_at") or ""), str(row.get("version") or ""))
+    )
+    return records
+
+
+def retained_releases(code: str | Path) -> list[dict]:
+    """Public summary of retained releases, newest first."""
+    records = _release_records(code)
+    records.reverse()
+    return [
+        {
+            "version": str(record.get("version") or ""),
+            "channel": str(record.get("channel") or ""),
+            "artifact_sha256": str(record.get("artifact_sha256") or ""),
+        }
+        for record in records
+    ]
+
+
+def _retain_tree(
+    code: Path,
+    manifest: dict,
+    manifest_bytes: bytes,
+    *,
+    artifact_sha256: str,
+    channel: str,
+    source_url: str,
+    installed_at: str,
+) -> Path:
+    """Copy one verified tree into ``.frontier/releases/<version>``.
+
+    The retained tree is a plain copy (no re-extraction): every manifest file
+    plus the original ``manifest.json`` and a ``release.json`` metadata record.
+    """
+    version = manifest["version"]
+    if not _usable_version(version):
+        _stop(
+            "invalid_version",
+            f"版本号不能用作保留目录名：{version!r}",
+            version=version,
+        )
+    target = releases_path(code) / version
+    if target.exists():
+        shutil.rmtree(target)
+    ensure_dir(target)
+    for row in manifest["files"]:
+        rel = row["path"]
+        source = code / Path(rel)
+        if not source.is_file():
+            _stop(
+                "retention_failed",
+                f"待保留版本缺少文件：{rel}",
+                version=version,
+                files=[rel],
+            )
+        destination = target / Path(rel)
+        ensure_dir(destination.parent)
+        shutil.copyfile(source, destination)
+        try:
+            shutil.copymode(source, destination)
+        except OSError:
+            pass
+    (target / MANIFEST_FILENAME).write_bytes(manifest_bytes)
+    record = {
+        "schema_version": RELEASE_SCHEMA_VERSION,
+        "version": version,
+        "channel": channel,
+        "artifact_sha256": artifact_sha256,
+        "manifest_sha256": _sha256_bytes(manifest_bytes),
+        "package_file_count": len(manifest["files"]),
+        "source_url": source_url,
+        "installed_at": installed_at,
+    }
+    write_json(target / RELEASE_FILENAME, record)
+    return target
+
+
+def _prune_releases(code: Path, keep: str | None) -> list[str]:
+    """Remove every retained release except ``keep``; return removed versions."""
+    root = releases_path(code)
+    if not root.is_dir():
+        return []
+    keep = keep or ""
+    removed: list[str] = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir() or entry.name == keep:
+            continue
+        shutil.rmtree(entry)
+        removed.append(entry.name)
+    return removed
+
+
+def _remove_empty_parents(path: Path, stop: Path) -> None:
+    current = path
+    stop = stop.resolve()
+    while current != stop and current.is_dir():
+        try:
+            next(current.iterdir())
+        except StopIteration:
+            try:
+                current.rmdir()
+            except OSError:
+                return
+            current = current.parent
+            continue
+        except OSError:
+            return
+        return
+
+
+def _remove_stale_files(code: Path, old_manifest: dict, new_manifest: dict) -> list[str]:
+    """Delete files the previous manifest listed but the new one does not.
+
+    Never touches the runtime area: ``.frontier`` is both rejected as a
+    relative path and excluded by the resolved-path containment check.
+    """
+    new_paths = {row["path"] for row in new_manifest["files"]}
+    code_root = code.resolve()
+    removed: list[str] = []
+    for row in old_manifest["files"]:
+        rel = row["path"]
+        if rel in new_paths or rel == MANIFEST_FILENAME:
+            continue
+        if not _safe_relpath(rel) or _reserved_relpath(rel):
+            continue
+        target = (code / Path(rel)).resolve()
+        try:
+            target.relative_to(code_root)
+        except ValueError:
+            continue
+        if target.is_file():
+            target.unlink()
+            removed.append(rel)
+            _remove_empty_parents(target.parent, code_root)
+    return removed
 
 
 def _sha256(path: Path) -> str:
@@ -575,6 +805,7 @@ def _success(
     channel: str,
     extracted: bool,
     installed_at: str,
+    previous_version: str = "",
 ) -> dict:
     manifest_files = manifest["files"]
     total_bytes = sum(row["bytes"] for row in manifest_files)
@@ -597,6 +828,9 @@ def _success(
         "code": str(code),
         "lock": str(lock_path(code)),
         "manifest": str(code / MANIFEST_FILENAME),
+        "current": str(current_path(code)),
+        "previous_version": previous_version,
+        "retained": retained_releases(code),
         "files": len(manifest_files),
         "file_count": len(manifest_files),
         "package_file_count": len(manifest_files),
@@ -705,8 +939,68 @@ def install_package(
         finally:
             archive.close()
 
+        previous_manifest: dict | None = None
+        previous_version = ""
         try:
+            if lock is not None:
+                lock_version = str(lock.get("version") or "")
+                if manifest["version"] != lock_version:
+                    if lock.get("distribution") != DISTRIBUTION:
+                        _stop(
+                            "unsupported_distribution",
+                            "当前安装不是发行包安装，拒绝按发行包升级",
+                            distribution=lock.get("distribution"),
+                        )
+                    previous = _manifest_at(code_path)
+                    if previous is None:
+                        _stop(
+                            "previous_manifest_unreadable",
+                            "代码目录现有 manifest.json 缺失或无效；无法保留可回滚的旧版本",
+                            version=lock_version,
+                        )
+                    previous_bytes, previous_manifest = previous
+                    if previous_manifest["version"] != lock_version:
+                        _stop(
+                            "previous_manifest_unreadable",
+                            "代码目录的 manifest.json 版本与安装锁不一致，无法保留旧版本",
+                            expected=lock_version,
+                            actual=previous_manifest["version"],
+                        )
+                    if _sha256_bytes(previous_bytes) != str(
+                        lock.get("manifest_sha256") or ""
+                    ):
+                        _stop(
+                            "previous_install_unverified",
+                            "现有安装的 manifest.json 摘要与安装锁不一致；拒绝在没有可回滚副本时升级",
+                            version=lock_version,
+                        )
+                    missing, mismatch = _tree_disagreements(code_path, previous_manifest)
+                    if missing or mismatch:
+                        _stop(
+                            "previous_install_unverified",
+                            "现有安装的文件与清单不一致；请先重新安装当前版本修复，再升级",
+                            version=lock_version,
+                            missing=missing[:20],
+                            mismatch=mismatch[:20],
+                        )
+                    _retain_tree(
+                        code_path,
+                        previous_manifest,
+                        previous_bytes,
+                        artifact_sha256=str(lock.get("artifact_sha256") or ""),
+                        channel=str(lock.get("channel") or ""),
+                        source_url=str(lock.get("source_url") or ""),
+                        installed_at=str(lock.get("installed_at") or ""),
+                    )
+                    previous_version = lock_version
+                    _prune_releases(code_path, keep=previous_version)
+
             apply_staged(stage, code_path)
+            if previous_manifest is not None:
+                _remove_stale_files(code_path, previous_manifest, manifest)
+        except _InstallBlocked:
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
         except (OSError, DistError) as exc:
             shutil.rmtree(stage, ignore_errors=True)
             _stop("apply_failed", f"写入代码目录失败：{exc}")
@@ -730,7 +1024,10 @@ def install_package(
             "package_file_count": len(manifest["files"]),
             "manifest_sha256": manifest_sha,
         }
+        if previous_version:
+            lock["previous_version"] = previous_version
         write_lock(code_path, lock)
+        _write_current(code_path, manifest["version"])
         return _success(
             code_path,
             manifest,
@@ -740,6 +1037,7 @@ def install_package(
             effective_channel,
             True,
             installed_at,
+            previous_version,
         )
     except _InstallBlocked as exc:
         return exc.payload
