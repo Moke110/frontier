@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "frontier install lock",
+  "description": "The installation's pinned record of which distribution package it runs (spec #92, ticket #94). The file lives at <code>/.frontier/dist.lock.json. Package installs record the artifact digest, source URL, compatibility requirements and manifest digest; source installs use distribution 'source' and never pretend to have package digests (ticket #97). Extra fields are allowed so later tickets can extend the record without rewriting this schema.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "distribution",
+    "version",
+    "channel",
+    "artifact_sha256",
+    "source_url",
+    "installed_at",
+    "requires",
+    "skill_digest",
+    "package_file_count",
+    "manifest_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "distribution": {
+      "enum": ["package", "source"],
+      "description": "How frontier was installed. Ticket #94 writes 'package'; #97 adds the source path."
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Version recorded by the package manifest."
+    },
+    "channel": {
+      "enum": ["stable", "prerelease"],
+      "description": "Release channel recorded by the digest and package manifest."
+    },
+    "artifact_sha256": {
+      "type": "string",
+      "pattern": "^(|[0-9a-f]{64})$",
+      "description": "SHA-256 of the downloaded zip artifact before extraction; empty only for a source installation."
+    },
+    "source_url": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Canonical file:// URL (or future release URL) the artifact was installed from."
+    },
+    "installed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 local time when this lock was written; preserved on an idempotent reinstall."
+    },
+    "requires": {
+      "type": "object",
+      "description": "Compatibility facts copied verbatim from the package manifest's compat object.",
+      "additionalProperties": false,
+      "required": ["os", "arch", "dsh", "python"],
+      "properties": {
+        "os": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dsh": {
+          "type": "string",
+          "minLength": 1
+        },
+        "python": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "skill_digest": {
+      "type": "string",
+      "description": "Reserved for #97's skill pointer digest; empty for a #94 package install."
+    },
+    "package_file_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of files listed by the package manifest (manifest.json itself is not counted)."
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^(|[0-9a-f]{64})$",
+      "description": "SHA-256 of the extracted manifest.json bytes; empty only for a source installation."
+    }
+  }
+}
