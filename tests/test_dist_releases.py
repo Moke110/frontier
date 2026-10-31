@@ -231,6 +231,297 @@ def test_idempotent_reinstall_does_not_rewrite_lock_current_or_retention(tmp_pat
     assert release_path.read_bytes() == release_bytes
 
 
+# ---------------------------------------------------------------- rollback
+def _snapshot(code: Path) -> dict:
+    root = code / ".frontier"
+    return {
+        "lock": (root / "dist.lock.json").read_bytes(),
+        "current": (root / "current").read_bytes(),
+        "manifest": (code / "manifest.json").read_bytes(),
+        "files": {
+            path.relative_to(code).as_posix(): path.read_bytes()
+            for path in sorted(code.rglob("*"))
+            if path.is_file() and ".frontier" not in path.relative_to(code).parts
+        },
+        "retained": sorted(path.name for path in (root / "releases").iterdir()),
+    }
+
+
+def test_rollback_restores_the_retained_version_and_its_lock(tmp_path):
+    v1 = _build(tmp_path, name="v1", version="1.0.0")
+    v2 = _build(tmp_path, name="v2", version="2.0.0")
+    code = tmp_path / "code"
+    for result in (v1, v2):
+        assert _install(code, result)["ok"] is True
+
+    runtime = code / ".frontier"
+    (runtime / "install").mkdir(parents=True, exist_ok=True)
+    (runtime / "knowledge").mkdir(parents=True, exist_ok=True)
+    state_bytes = b'{"schema_version": 1, "steps": {"host": "ok"}}\n'
+    knowledge_bytes = b'{"schema_version": 1, "base_token": "t"}\n'
+    (runtime / "install" / "state.json").write_bytes(state_bytes)
+    (runtime / "knowledge" / "base.json").write_bytes(knowledge_bytes)
+
+    payload = dist.rollback(code)
+
+    assert payload["ok"] is True
+    assert payload["status"] == "ok"
+    assert payload["version"] == "1.0.0"
+    assert payload["previous_version"] == "2.0.0"
+    assert payload["rolled_back_at"]
+    assert _current(code) == "1.0.0"
+
+    lock = _lock(code)
+    assert lock["version"] == "1.0.0"
+    assert lock["channel"] == "stable"
+    assert lock["artifact_sha256"] == v1["artifact"]["sha256"]
+    assert lock["manifest_sha256"] == hashlib.sha256(
+        (code / "manifest.json").read_bytes()
+    ).hexdigest()
+    assert lock["package_file_count"] == len(_manifest(v1)["files"])
+    assert lock["previous_version"] == "2.0.0"
+    assert lock["rolled_back_at"] == payload["rolled_back_at"]
+
+    assert (code / "manifest.json").read_bytes() == Path(v1["manifest"]).read_bytes()
+    v1_manifest = _manifest(v1)
+    assert _tree_files(code, v1_manifest) == _tree_files(
+        Path(v1["package"]), v1_manifest
+    )
+    assert dist.verify_install(code)["status"] == "verified"
+    assert (runtime / "install" / "state.json").read_bytes() == state_bytes
+    assert (runtime / "knowledge" / "base.json").read_bytes() == knowledge_bytes
+
+    releases = runtime / "releases"
+    assert sorted(path.name for path in releases.iterdir()) == ["2.0.0"]
+    record = _release_record(code, "2.0.0")
+    assert record["artifact_sha256"] == v2["artifact"]["sha256"]
+
+
+def test_second_rollback_returns_to_the_later_version(tmp_path):
+    v1 = _build(tmp_path, name="v1", version="1.0.0")
+    v2 = _build(tmp_path, name="v2", version="2.0.0")
+    code = tmp_path / "code"
+    for result in (v1, v2):
+        assert _install(code, result)["ok"] is True
+
+    assert dist.rollback(code)["version"] == "1.0.0"
+    payload = dist.rollback(code)
+
+    assert payload["ok"] is True
+    assert payload["version"] == "2.0.0"
+    assert payload["previous_version"] == "1.0.0"
+    assert _current(code) == "2.0.0"
+    assert _lock(code)["version"] == "2.0.0"
+    assert (
+        (code / "manifest.json").read_bytes() == Path(v2["manifest"]).read_bytes()
+    )
+    v2_manifest = _manifest(v2)
+    assert _tree_files(code, v2_manifest) == _tree_files(
+        Path(v2["package"]), v2_manifest
+    )
+    assert dist.verify_install(code)["status"] == "verified"
+    assert sorted(
+        path.name for path in (code / ".frontier" / "releases").iterdir()
+    ) == ["1.0.0"]
+
+
+def test_rollback_to_an_unknown_version_blocks_without_changes(tmp_path):
+    v1 = _build(tmp_path, name="v1", version="1.0.0")
+    v2 = _build(tmp_path, name="v2", version="2.0.0")
+    code = tmp_path / "code"
+    for result in (v1, v2):
+        assert _install(code, result)["ok"] is True
+    before = _snapshot(code)
+
+    payload = dist.rollback(code, to_version="9.9.9")
+
+    assert payload["ok"] is False
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "release_not_found"
+    assert _snapshot(code) == before
+
+
+def test_rollback_with_a_corrupt_retained_manifest_blocks_without_changes(tmp_path):
+    v1 = _build(tmp_path, name="v1", version="1.0.0")
+    v2 = _build(tmp_path, name="v2", version="2.0.0")
+    code = tmp_path / "code"
+    for result in (v1, v2):
+        assert _install(code, result)["ok"] is True
+    before = _snapshot(code)
+    retained_manifest = code / ".frontier" / "releases" / "1.0.0" / "manifest.json"
+    retained_manifest.write_bytes(retained_manifest.read_bytes() + b"\n")
+
+    payload = dist.rollback(code)
+
+    assert payload["ok"] is False
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "release_manifest_mismatch"
+    assert _snapshot(code) == before
+
+
+def test_rollback_with_a_tampered_retained_file_blocks_without_changes(tmp_path):
+    v1 = _build(tmp_path, name="v1", version="1.0.0")
+    v2 = _build(tmp_path, name="v2", version="2.0.0")
+    code = tmp_path / "code"
+    for result in (v1, v2):
+        assert _install(code, result)["ok"] is True
+    before = _snapshot(code)
+    (code / ".frontier" / "releases" / "1.0.0" / "common.py").write_text(
+        "TAMPERED\n", encoding="utf-8"
+    )
+
+    payload = dist.rollback(code)
+
+    assert payload["ok"] is False
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "release_corrupt"
+    assert payload["mismatch"] == ["common.py"]
+    assert _snapshot(code) == before
+
+
+def test_rollback_without_an_install_lock_is_blocked(tmp_path):
+    code = tmp_path / "code"
+    code.mkdir()
+
+    payload = dist.rollback(code)
+
+    assert payload["ok"] is False
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "no_install_lock"
+
+
+def test_cli_rollback_defaults_to_the_previous_version(tmp_path, capsys):
+    v1 = _build(tmp_path, name="v1", version="1.0.0")
+    v2 = _build(tmp_path, name="v2", version="2.0.0")
+    home = tmp_path / "cli-code" / ".frontier"
+    code = cli.main([*cli_locations(home), "install", "package", "--from", str(v1["artifact"]["path"])])
+    assert code == 0
+    capsys.readouterr()
+    code = cli.main([*cli_locations(home), "install", "package", "--from", str(v2["artifact"]["path"])])
+    assert code == 0
+    capsys.readouterr()
+
+    exit_code, payload, captured = _cli(capsys, home, "install", "rollback")
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert payload["ok"] is True
+    assert payload["version"] == "1.0.0"
+    assert _current(tmp_path / "cli-code") == "1.0.0"
+
+
+def test_cli_rollback_to_unknown_version_exits_one(tmp_path, capsys):
+    v1 = _build(tmp_path, name="v1", version="1.0.0")
+    v2 = _build(tmp_path, name="v2", version="2.0.0")
+    home = tmp_path / "cli-code" / ".frontier"
+    for result in (v1, v2):
+        code = cli.main(
+            [
+                *cli_locations(home),
+                "install",
+                "package",
+                "--from",
+                str(result["artifact"]["path"]),
+            ]
+        )
+        assert code == 0
+        capsys.readouterr()
+
+    exit_code, payload, captured = _cli(
+        capsys, home, "install", "rollback", "--to", "9.9.9"
+    )
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "release_not_found"
+    assert "Traceback" not in captured.err
+    assert _current(tmp_path / "cli-code") == "2.0.0"
+
+
+# ----------------------------------------------------------------- report
+def test_report_without_a_lock_reports_an_unrecorded_source_install(tmp_path):
+    home = tmp_path / "code" / ".frontier"
+    home.mkdir(parents=True)
+
+    report = install.report(home)
+
+    assert report["release"]["distribution"] == "source"
+    assert report["release"]["recorded"] is False
+    assert report["release"]["detail"]
+    assert "version" not in report["release"]
+    # The existing report structure stays intact for #97 and older consumers.
+    assert report["schema_version"] == 1
+    assert {"steps", "working", "blocked", "untested", "pending"} <= set(report)
+
+
+def test_report_for_a_package_install_shows_versions_source_and_retained(tmp_path):
+    v1 = _build(tmp_path, name="v1", version="1.0.0")
+    v2 = _build(tmp_path, name="v2", version="2.0.0", channel="prerelease")
+    code = tmp_path / "code"
+    assert _install(code, v1, channel="stable")["ok"] is True
+    assert _install(code, v2, channel="prerelease")["ok"] is True
+    lock = _lock(code)
+
+    report = install.report(code / ".frontier")
+
+    release = report["release"]
+    assert release["distribution"] == "package"
+    assert release["recorded"] is True
+    assert release["version"] == "2.0.0"
+    assert release["channel"] == "prerelease"
+    assert release["source"] == lock["source_url"]
+    assert release["installed_at"] == lock["installed_at"]
+    assert release["previous_version"] == "1.0.0"
+    assert release["rolled_back_at"] is None
+    assert release["retained"] == [
+        {
+            "version": "1.0.0",
+            "channel": "stable",
+            "artifact_sha256": v1["artifact"]["sha256"],
+        }
+    ]
+    assert release["lock_path"] == str(code / ".frontier" / "dist.lock.json")
+
+
+def test_report_after_rollback_shows_the_restored_version_and_rolled_back_at(tmp_path):
+    v1 = _build(tmp_path, name="v1", version="1.0.0")
+    v2 = _build(tmp_path, name="v2", version="2.0.0")
+    code = tmp_path / "code"
+    for result in (v1, v2):
+        assert _install(code, result)["ok"] is True
+    rolled = dist.rollback(code)
+
+    release = install.report(code / ".frontier")["release"]
+
+    assert release["version"] == "1.0.0"
+    assert release["previous_version"] == "2.0.0"
+    assert release["rolled_back_at"] == rolled["rolled_back_at"]
+    assert release["retained"] == [
+        {
+            "version": "2.0.0",
+            "channel": "stable",
+            "artifact_sha256": v2["artifact"]["sha256"],
+        }
+    ]
+
+
+def test_cli_report_includes_the_release_block(tmp_path, capsys):
+    v1 = _build(tmp_path, name="v1", version="1.0.0")
+    home = tmp_path / "cli-code" / ".frontier"
+    exit_code, payload, _ = _cli(
+        capsys, home, "install", "package", "--from", str(v1["artifact"]["path"])
+    )
+    assert exit_code == 0
+
+    _, report, captured = _cli(capsys, home, "install", "report")
+
+    assert "Traceback" not in captured.err
+    assert report["release"]["distribution"] == "package"
+    assert report["release"]["version"] == "1.0.0"
+    assert report["release"]["retained"] == []
+
+
 def test_release_record_schema_declares_the_contract():
     schema = json.loads(
         (

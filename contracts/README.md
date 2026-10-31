@@ -498,6 +498,10 @@ python -m hostrun.cli install workspace --root <workspace>
 python -m hostrun.cli --code <code> --archive <archive> install toolchain --root <workspace>
 python -m hostrun.cli --code <code> --archive <archive> install skill --root <workspace> --target <host-skill-dir>/frontier-run
 python -m hostrun.cli install check|report|status|record|locate|migrate
+python -m hostrun.cli install package --from <zip 或 file:// URL> [--digest <json>] [--sha256 <hex>] \
+  [--channel stable|prerelease]
+python -m hostrun.cli install verify
+python -m hostrun.cli install rollback [--to <version>]
 
 # 飞书 CLI：可执行 / 身份 / 授权范围 / 资源读取分项
 python -m hostrun.cli lark discover|install|login|status --root <workspace>
@@ -535,6 +539,12 @@ python -m hostrun.cli status
 
 ```
 <code>/.frontier/
+    ├── dist.lock.json            # 安装锁：distribution/version/channel/artifact_sha256/source_url/
+    │                             #   installed_at/requires/skill_digest/package_file_count/manifest_sha256；
+    │                             #   升级写 previous_version，回滚写 rolled_back_at
+    ├── current                   # 纯文本：当前生效的发行版本（与安装锁 version 一致）
+    ├── releases/<version>/       # 保留的上一版本：该版本完整包文件 + manifest.json + release.json
+    ├── staging/                  # 解压暂存（逐文件校验通过后才复制进代码目录，随后删除）
     ├── bin/                      # 缺失时的私有 uv（优先从工作区外解析；不改 PATH）；
     │                             #   私有 lark-cli 的 launcher（<code>/bin/frontier-console.cmd 是控制台启动脚本）
     ├── .venv/                    # uv 管理的私有环境与解释器（绝对路径同时写入指针记录与安装配置）
@@ -563,6 +573,7 @@ python -m hostrun.cli status
 约定：
 
 - `install report` 的 `working` / `blocked` / `untested` / `pending` 分项是验收依据；缺能力标 `blocked`，没测过标 `untested`，不得写成通过。`install.STEPS` 只覆盖宿主与资源前提，不包含控制台初始化步骤。
+- **发行包保留与回滚**：活动代码树就是 `<code>` 根目录；安装锁记录当前版本，`<code>/.frontier/current` 用纯文本记同一个版本。升级前把旧版本完整复制到 `<code>/.frontier/releases/<旧版本>/`（该版本全部包文件 + `manifest.json` + `release.json`：version/channel/artifact_sha256/manifest_sha256/package_file_count/source_url/installed_at），只保留最近一个旧版本；安装第三个版本时删除最旧的保留目录。升级同时删除「旧清单有、新清单无」的陈旧文件（不触碰 `.frontier`），因此升级后 `install verify` 仍应通过。同一版本同一制品的重复安装是幂等 no-op：不改安装锁、`current` 与保留记录，保留 `installed_at`。`install rollback [--to <version>]` 默认切回保留的上一版本：先校验保留树的 `release.json` 与 `manifest.json` 摘要、再逐文件核对，未知/缺失/损坏目标一律 `blocked` 且不改动任何文件；成功时先把当前活动树也保留为上一版本（因此第二次回滚可以返回），只替换包文件与 `manifest.json`，`<code>/.frontier/` 下的运行状态与知识库数据保持不变；安装锁更新 version/channel/artifact_sha256/manifest_sha256/package_file_count/requires 并写 `previous_version`/`rolled_back_at`（不改 `installed_at`）。`install report` 的 `release` 块在无安装锁时报告 `distribution: "source"`、`recorded: false`，不虚构发行包字段。
 - 工作区与私有环境：已有副本有未提交改动、origin 不符或不是 git 仓库时阻塞，不拉取、不覆盖；重跑复用已验证组件。依赖步骤只认**记录的解释器**：未记录、不是绝对路径、文件不存在或位于代码目录内时标 `blocked`，并给出可照做的 `install toolchain ... --clear` 修复命令（含先切换到代码目录）；不回退到当前运行进程的解释器。`--clear` 才重建运行时区环境，重复运行复用现有环境。
 - 飞书 CLI 与权限：可执行、登录、授权范围、真实资源读取分别验证；记到文件系统的绝对路径失效时 `blocked`，不静默回退到 PATH。`permissions=ok` 要求授权范围与**真实 Base + Drive 读取**均成功；`messages` 作为独立的 `untested` 子证据保留，不因登录成功或消息未测而伪造；配置中 `permissions.scope` 保存飞书 scope，宿主能力另记 `host_scope`，两者不互相覆盖。
 - 设施：按用户确认的展示名创建；使用稳定 ID，改名不影响读写。`facilities create` 总是新建独立 Base，不按名称复用同名库；`facilities plan` / `create` 把同名 Base 作为 `existing_same_name`（`count`/`names`/`note`）提示报告，查找失败时只留该字段并保持 `count: null`，不冒充已执行的动作；接入已有库必须显式 `facilities attach`（只检查/补缺，不清空）。部分失败如实报告并可从已创建项续接。

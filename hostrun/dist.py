@@ -1049,6 +1049,258 @@ def install_package(
         )
 
 
+# ------------------------------------------------------------------ rollback
+def _default_rollback_target(code: Path, lock: dict) -> str:
+    """The retained release a bare ``install rollback`` should switch to."""
+    previous = str(lock.get("previous_version") or "")
+    if previous and (releases_path(code) / previous).is_dir():
+        return previous
+    active = str(lock.get("version") or "")
+    candidates = [
+        record
+        for record in _release_records(code)
+        if str(record.get("version") or "") != active
+    ]
+    if not candidates:
+        return ""
+    return str(candidates[-1].get("version") or "")
+
+
+def _valid_release_record(record: dict, version: str) -> str:
+    """Return an empty string when the record is usable, else a reason."""
+    if not _usable_version(version):
+        return "invalid_version"
+    if str(record.get("version") or "") != version:
+        return "release_metadata_invalid"
+    if str(record.get("channel") or "") not in CHANNELS:
+        return "release_metadata_invalid"
+    if not _SHA256_RE.fullmatch(str(record.get("artifact_sha256") or "")):
+        return "release_metadata_invalid"
+    if not _SHA256_RE.fullmatch(str(record.get("manifest_sha256") or "")):
+        return "release_metadata_invalid"
+    if not isinstance(record.get("package_file_count"), int) or isinstance(
+        record.get("package_file_count"), bool
+    ):
+        return "release_metadata_invalid"
+    if not str(record.get("source_url") or "").strip():
+        return "release_metadata_invalid"
+    if not str(record.get("installed_at") or "").strip():
+        return "release_metadata_invalid"
+    return ""
+
+
+def rollback(code: str | Path, *, to_version: str | None = None) -> dict:
+    """Switch the active tree to a retained release without re-extracting it.
+
+    Every failure that happens before the swap returns ``status=blocked`` and
+    leaves the active tree, lock, ``current`` pointer and retained releases
+    untouched.  The outgoing active tree is retained first, so a second
+    rollback can return to the version that was active.
+    """
+    code_path = Path(code).expanduser().resolve()
+    try:
+        lock = read_lock(code_path)
+        if lock is None:
+            return _blocked(
+                "no_install_lock",
+                "代码目录中没有 .frontier/dist.lock.json，无法回滚",
+                code=str(code_path),
+                lock=str(lock_path(code_path)),
+            )
+        if str(lock.get("distribution") or "") != DISTRIBUTION:
+            return _blocked(
+                "unsupported_distribution",
+                "当前安装不是发行包安装，无法按发行包回滚",
+                distribution=lock.get("distribution"),
+                code=str(code_path),
+            )
+        active_version = str(lock.get("version") or "")
+
+        target_version = str(to_version or "").strip()
+        if target_version:
+            if not _usable_version(target_version):
+                return _blocked(
+                    "invalid_version",
+                    f"目标版本号不合法：{target_version!r}",
+                    code=str(code_path),
+                )
+        else:
+            target_version = _default_rollback_target(code_path, lock)
+            if not target_version:
+                return _blocked(
+                    "no_retained_release",
+                    "没有可回滚的保留版本；先安装一个新版本，再回滚",
+                    code=str(code_path),
+                    version=active_version,
+                )
+        if target_version == active_version:
+            return _blocked(
+                "already_active",
+                f"目标版本 {target_version} 已是当前版本",
+                code=str(code_path),
+                version=active_version,
+            )
+
+        target_dir = releases_path(code_path) / target_version
+        if not target_dir.is_dir():
+            return _blocked(
+                "release_not_found",
+                f"找不到保留版本目录：.frontier/releases/{target_version}",
+                code=str(code_path),
+                version=target_version,
+            )
+        try:
+            release = read_json(target_dir / RELEASE_FILENAME)
+        except (OSError, ValueError):
+            release = None
+        if not isinstance(release, dict):
+            return _blocked(
+                "release_metadata_invalid",
+                f"保留版本 {target_version} 缺少可读的 release.json",
+                code=str(code_path),
+                version=target_version,
+            )
+        record_reason = _valid_release_record(release, target_version)
+        if record_reason:
+            return _blocked(
+                record_reason,
+                f"保留版本 {target_version} 的 release.json 字段不完整或不合法",
+                code=str(code_path),
+                version=target_version,
+            )
+
+        target_manifest = _manifest_at(target_dir)
+        if target_manifest is None:
+            return _blocked(
+                "release_manifest_invalid",
+                f"保留版本 {target_version} 的 manifest.json 缺失或无效",
+                code=str(code_path),
+                version=target_version,
+            )
+        target_bytes, target = target_manifest
+        target_manifest_sha = _sha256_bytes(target_bytes)
+        if target_manifest_sha != release["manifest_sha256"]:
+            return _blocked(
+                "release_manifest_mismatch",
+                f"保留版本 {target_version} 的 manifest.json 摘要与 release.json 不一致（保留副本已损坏）",
+                code=str(code_path),
+                version=target_version,
+                expected=release["manifest_sha256"],
+                actual=target_manifest_sha,
+            )
+        if str(target.get("channel") or "") != release["channel"]:
+            return _blocked(
+                "release_metadata_invalid",
+                f"保留版本 {target_version} 的渠道与 manifest.json 不一致",
+                code=str(code_path),
+                version=target_version,
+            )
+        missing, mismatch = _tree_disagreements(target_dir, target)
+        if missing or mismatch:
+            return _blocked(
+                "release_corrupt",
+                f"保留版本 {target_version} 的文件与清单不一致，拒绝回滚",
+                code=str(code_path),
+                version=target_version,
+                missing=missing[:20],
+                mismatch=mismatch[:20],
+            )
+
+        outgoing_version = active_version
+        outgoing_manifest: dict | None = None
+        outgoing_info = _manifest_at(code_path)
+        if outgoing_info is not None:
+            outgoing_bytes, outgoing_manifest = outgoing_info
+            if outgoing_manifest.get("version") == outgoing_version:
+                outgoing_missing, outgoing_mismatch = _tree_disagreements(
+                    code_path, outgoing_manifest
+                )
+                if not outgoing_missing and not outgoing_mismatch and _usable_version(
+                    outgoing_version
+                ):
+                    _retain_tree(
+                        code_path,
+                        outgoing_manifest,
+                        outgoing_bytes,
+                        artifact_sha256=str(lock.get("artifact_sha256") or ""),
+                        channel=str(lock.get("channel") or ""),
+                        source_url=str(lock.get("source_url") or ""),
+                        installed_at=str(lock.get("installed_at") or ""),
+                    )
+        retained_outgoing = bool(
+            outgoing_manifest is not None
+            and outgoing_manifest.get("version") == outgoing_version
+            and (releases_path(code_path) / outgoing_version).is_dir()
+        )
+
+        for row in target["files"]:
+            rel = row["path"]
+            source = target_dir / Path(rel)
+            destination = code_path / Path(rel)
+            ensure_dir(destination.parent)
+            shutil.copyfile(source, destination)
+            try:
+                shutil.copymode(source, destination)
+            except OSError:
+                pass
+        (code_path / MANIFEST_FILENAME).write_bytes(target_bytes)
+        if outgoing_manifest is not None:
+            _remove_stale_files(code_path, outgoing_manifest, target)
+
+        _prune_releases(
+            code_path, keep=outgoing_version if retained_outgoing else None
+        )
+
+        rolled_back_at = now()
+        new_lock = dict(lock)
+        new_lock.update(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "distribution": DISTRIBUTION,
+                "version": target_version,
+                "channel": release["channel"],
+                "artifact_sha256": release["artifact_sha256"],
+                "manifest_sha256": release["manifest_sha256"],
+                "package_file_count": release["package_file_count"],
+                "requires": dict(target["compat"]),
+                "previous_version": outgoing_version if retained_outgoing else "",
+                "rolled_back_at": rolled_back_at,
+            }
+        )
+        write_lock(code_path, new_lock)
+        _write_current(code_path, target_version)
+        return {
+            "ok": True,
+            "status": "ok",
+            "distribution": DISTRIBUTION,
+            "version": target_version,
+            "channel": release["channel"],
+            "artifact_sha256": release["artifact_sha256"],
+            "source_url": new_lock.get("source_url"),
+            "code": str(code_path),
+            "lock": str(lock_path(code_path)),
+            "manifest": str(code_path / MANIFEST_FILENAME),
+            "current": str(current_path(code_path)),
+            "files": len(target["files"]),
+            "package_file_count": release["package_file_count"],
+            "previous_version": new_lock["previous_version"],
+            "rolled_back_at": rolled_back_at,
+            "retained": retained_releases(code_path),
+            "note": (
+                f"已回滚到保留版本 frontier {target_version}"
+                f"（{release['channel']}）；运行状态与知识库未改动"
+            ),
+        }
+    except _InstallBlocked as exc:
+        return exc.payload
+    except OSError as exc:
+        return _blocked(
+            "rollback_failed",
+            f"回滚过程遇到文件系统错误：{exc}",
+            code=str(code_path),
+        )
+
+
 # -------------------------------------------------------------------- verify
 def _mismatch_payload(
     code: Path,
