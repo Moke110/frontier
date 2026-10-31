@@ -79,7 +79,18 @@ class SmokeError(Exception):
 
 # --------------------------------------------------------------------- helpers
 def _emit(payload: dict) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    """Print the JSON summary as UTF-8 regardless of the console code page.
+
+    Windows CI consoles use a legacy code page (cp1252 on the runner), and the
+    summary legitimately contains Chinese notes from the CLI, so a plain
+    ``print`` raises ``UnicodeEncodeError`` and hides the real result.
+    """
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    try:
+        sys.stdout.buffer.write(text.encode("utf-8"))
+        sys.stdout.buffer.flush()
+    except (AttributeError, OSError, ValueError):
+        print(json.dumps(payload, ensure_ascii=True, indent=2))
 
 
 def _empty_dir(path: Path, what: str) -> Path:
