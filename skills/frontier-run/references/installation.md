@@ -67,7 +67,7 @@ frontier 的安装与日常操作由**用户可见的前台控制台**承担，�
 
 渠道只有 `stable` 与 `prerelease`。发布索引 [`releases/index.json`](../../../releases/index.json) 的每条记录含 `version`、`channel`、`artifact_sha256`、`artifact_name`、`manifest_sha256`、`compat{os,arch,dsh,python}`、`published_at`、`release_url`；GitHub Release 由 `v*` tag 触发，`vX.Y.Z` 是稳定版，`vX.Y.Z-<后缀>`（如 `v0.1.0-rc.1`）是预发布。测试安装默认选最新预发布，也可显式指定版本。
 
-- 版本号进入制品名时**不带** `v`：`v0.1.0-rc.1` 的制品是 `frontier-0.1.0-rc.1-prerelease.zip`。
+- 版本号进入制品名时**不带** `v`：`v0.1.0-rc.1` 的制品是 `frontier-0.1.0-rc.1-prerelease.zip`。构建入口的 `--version` 也接受带 `v` 的写法并在生成包前剥离，摘要如实记录 `requested_version` 与 `version_normalized`。
 - 同一版本的包名固定为 `frontier-<version>-<channel>.zip`，摘要文件为同名 `.digest.json`；不要从其他命名或包市场获取。
 
 ### 3.2 下载并校验摘要
@@ -97,7 +97,8 @@ Remove-Item "<temp>" -Recurse -Force
 ```
 
 - 代码目录必须为空、不存在，或此前的发行包安装；没有安装锁的非空代码目录 => `foreign_code_dir`，拒绝覆盖。
-- `install package` 先校验摘要与 `compat.os/arch`（以及非 `*` 的 `python`/`dsh`），再解压到 `<code>/.frontier/staging/<id>` 逐文件核对，通过后才复制进代码目录；防 zip-slip。
+- `--from` 接受本地路径、`file://` URL 与 `https://` URL；`https://` 会先下载到临时目录再走同一校验，`http://` 及其他 scheme 一律 `blocked`/`unsupported_source`，下载失败也在写入前 `blocked`。
+- `install package` 先校验摘要与 `compat.os/arch`（以及非 `*` 的 `python`/`dsh`），再解压到 `<code>/.frontier/staging/<id>` 逐文件核对，通过后才复制进代码目录；防 zip-slip。`compat.dsh` 非 `*` 时用记录在 `<code>/.frontier/install/config.json` 的 `paths.dsh` 执行 `dsh --version` 并比较版本范围：不满足 => `blocked`/`compat_dsh_mismatch`（解压前停止）；未记录、路径失效、命令失败或版本无法解析 => `compat_dsh` 为 `unverified` 并附 `note`，安装继续但不得把宿主兼容性写成已验证。
 - 安装锁写在 `<code>/.frontier/dist.lock.json`：`distribution: "package"`、`version`、`channel`、`artifact_sha256`、`source_url`、`installed_at`、`requires`、`skill_digest`、`package_file_count`、`manifest_sha256`（升级/回滚时另有 `previous_version`/`rolled_back_at`）。
 - 同一版本同一制品重复安装且 `install verify` 通过时是幂等 no-op：不改安装锁、`current` 与保留记录，保留 `installed_at`。
 - 在替换代码树之前写 `<code>/.frontier/dist.pending.json`（operation、target_version、started_at、操作前版本与保留树/恢复快照）。成功即删除；失败时尽量恢复操作前的文件、安装锁与 `current` 再删除标记；恢复失败则保留标记并报告 `recovery_incomplete`。之后任何安装/回滚若发现残留标记，都会以 `pending_operation_incomplete` 停止并提示先按标记恢复，绝不在两个版本的混合树上继续。

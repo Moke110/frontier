@@ -20,11 +20,13 @@
 <package>/runtime/
   python.exe                       # 包装器执行的内置解释器
   python313.dll                    # 核心 DLL
-  python313._pth                   # 模块搜索路径：python313.zip、.、Lib\site-packages
+  python313._pth                   # 模块搜索路径：python313.zip、.、..、Lib\site-packages
   python313.zip                    # 标准库
   DLLs/*.pyd                       # 扩展模块（含 PyMuPDF 的二进制依赖）
   Lib/site-packages/               # PyYAML、PyMuPDF 及其依赖
 ```
+
+`python313._pth` 是隔离模式（isolated embeddable）的唯一 `sys.path` 来源，必须含 `python313.zip`、`.`、`..` 与 `Lib\site-packages`，每项恰好一次。`..` 相对 `runtime/` 指向代码根：包装器 `cd` 到 `<code>` 后执行 `runtime\python.exe -m hostrun.cli`，隔离模式不会把当前目录（`sys.path[0]`）放进搜索路径，缺 `..` 时 `import hostrun`/`common` 会在真实安装中失败。`scripts/prepare_runtime.py` 保留 embeddable zip 原有的 `python313.zip`/`.` 条目并补齐、去重这两项；同一运行时目录重复组装不会累积重复条目。
 
 复制规则（保证同一运行时目录两次构建字节一致）：
 
@@ -85,4 +87,4 @@ call "%~dp0frontier.cmd" --code "<code>" --archive "<archive>" console %*
 - 源码安装：解释器必须位于代码目录之外，否则 `blocked`。
 - 发行包安装：安装锁记录 `distribution: "package"` 且解释器解析到 `<code>/runtime/` 内时，探测照常运行 PyYAML/PyMuPDF 导入，并给出 `evidence.bundled_runtime = true`。
 
-真实“无系统 Python 运行包装器”的验收由 #100/CI 记录，离线 pytest 只覆盖文本、字节、布局与清单。
+真实“无系统 Python 运行包装器”的证据由发布工作流的 `--check-wrapper` 步骤在真实嵌入式运行时上产生：它以净化环境（`PATH` 仅 `%SystemRoot%\System32;%SystemRoot%`，无 `PYTHONHOME`/`PYTHONPATH`/venv）执行安装后的 `<code>\bin\frontier.cmd --code ... --archive ... --help` 并要求退出码 0 且 stdout 含 `usage`。离线 pytest 只用合成运行时验证该检查会按预期失败并带 stdout/stderr，不能代替真实 tag/CI 证据；真实模板安装仍保持 `untested`。
