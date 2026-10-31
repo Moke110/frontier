@@ -223,15 +223,19 @@ def test_latest_suite_count_agrees_between_agents_and_acceptance() -> None:
     assert agents_count.group(1) in acceptance_counts
 
 
-def test_acceptance_records_the_distribution_items_as_untested() -> None:
+def test_acceptance_records_the_distribution_items_honestly() -> None:
+    """Real evidence is recorded where it exists; gaps stay visibly untested."""
     text = _read(ACCEPTANCE)
     assert "## 2026-10-31" in text
     section = _section(text, "2026-10-31")
     assert "spec #92" in section
     assert "ADR 0010" in section
+    assert "verified" in section.lower()
     assert "untested" in section.lower()
-    assert section.lower().count("untested") >= 5
-    assert "未取得真实证据" in section or "没有真实证据" in section
+    assert section.lower().count("untested") >= 2
+    # /frontier-init was deliberately not executed and must stay untested.
+    assert "`/frontier-init` 在发行包安装上走完全流程 | `untested`" in section
+    assert "真实执行证据" in section
 
 
 def test_adr_status_records_the_implementation_on_this_branch() -> None:
