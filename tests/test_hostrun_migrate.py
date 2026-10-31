@@ -183,6 +183,13 @@ def test_migration_moves_runtime_state_and_keeps_materials_in_the_archive(tmp_pa
     assert config["agent_run"]["dsh_args"] == ["--patch", "account.yml"]
     assert console.is_file()
     text = console.read_text(encoding="utf-8")
+    # The shared generator must produce exactly the pre-#95 bytes.
+    assert text == (
+        "title frontier-console\n"
+        f'cd /d "{code}"\n'
+        f'"{result["environment"]["python"]}" -m hostrun.cli --code "{code}" '
+        f'--archive "{legacy}" console %*\n'
+    )
     assert text.splitlines()[0] == "title frontier-console"
     assert "--code" in text and "--archive" in text and "console" in text
     assert text.rstrip().endswith("%*")

@@ -42,6 +42,11 @@ LOCK_REL = Path(".frontier") / "dist.lock.json"
 STAGING_REL = Path(".frontier") / "staging"
 MANIFEST_FILENAME = distribution.MANIFEST_FILENAME
 CHANNELS = distribution.CHANNELS
+#: Files an installation generates after extraction, so they are not in the
+#: shipped manifest.  Only fixed paths are tolerated: ``console install`` writes
+#: ``<code>/bin/frontier-console.cmd`` next to the package's ``bin/frontier.cmd``
+#: (#95).  Any other unlisted file is still reported as an extra file.
+VERIFY_IGNORED_PATHS = frozenset({"bin/frontier-console.cmd"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _MANIFEST_LIMIT = 16 * 1024 * 1024
@@ -917,6 +922,8 @@ def verify_install(code: str | Path) -> dict:
             path = current / name
             rel = path.relative_to(code_path).as_posix()
             if rel == MANIFEST_FILENAME or _reserved_relpath(rel):
+                continue
+            if rel in VERIFY_IGNORED_PATHS:
                 continue
             if rel not in listed:
                 extra.append(rel)
