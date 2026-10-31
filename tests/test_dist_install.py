@@ -820,6 +820,29 @@ def test_a_different_artifact_reinstalls_over_the_existing_package(tmp_path):
 
 
 # -------------------------------------------------------------------- verify
+def test_verify_tolerates_bytecode_caches_written_by_the_installed_cli(tmp_path):
+    """Running the installed CLI writes ``__pycache__`` into the code directory.
+
+    A live installation therefore always contains bytecode caches the manifest
+    never listed.  ``install verify`` must treat them as runtime state, exactly
+    like ``.frontier``, or every real user's first verify would report a false
+    mismatch against files the installation itself created.
+    """
+    result = _build(tmp_path)
+    code = tmp_path / "code"
+    _install(code, Path(result["artifact"]["path"]))
+    cache = code / "hostrun" / "__pycache__"
+    cache.mkdir(parents=True)
+    (cache / "cli.cpython-313.pyc").write_bytes(b"bytecode")
+    (code / "stray.pyc").write_bytes(b"bytecode")
+
+    payload = dist.verify_install(code)
+
+    assert payload["ok"] is True
+    assert payload["status"] == "verified"
+    assert payload["extra_manifest_files"] == []
+
+
 def test_verify_reports_a_consistent_install(tmp_path):
     result = _build(tmp_path)
     code = tmp_path / "code"

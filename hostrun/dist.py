@@ -2113,9 +2113,16 @@ def verify_install(code: str | Path) -> dict:
     for dirpath, dirnames, filenames in os.walk(code_path):
         # The runtime area contains the lock, staging and the private/bundled
         # environment; it is never package content and may be very large.
-        dirnames[:] = sorted(name for name in dirnames if name != ".frontier")
+        # ``__pycache__`` is written by the installed interpreter on every run,
+        # so it is runtime state too: verifying a live installation must not
+        # report its own bytecode caches as tampering.
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in (".frontier", "__pycache__")
+        )
         current = Path(dirpath)
         for name in sorted(filenames):
+            if name.endswith((".pyc", ".pyo")):
+                continue
             path = current / name
             rel = path.relative_to(code_path).as_posix()
             if rel == MANIFEST_FILENAME or _reserved_relpath(rel):
