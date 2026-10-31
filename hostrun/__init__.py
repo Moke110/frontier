@@ -29,4 +29,5 @@ Modules:
   ``kb``          knowledge-base create or attach, structure verification
   ``intents``     bounded runs: daily / feedback / maintenance
   ``audit``       existing-data reconciliation against the migration baseline
+  ``release``     release tags/channels, the release index and artifact checks (CI)
 """

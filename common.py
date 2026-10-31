@@ -6,6 +6,7 @@ import another module; everything else is exchanged through files.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -159,6 +160,50 @@ def read_json(path: Path, default: Any = None) -> Any:
             return json.load(fh)
     except FileNotFoundError:
         return default
+
+
+def sha256_file(path: Path) -> str:
+    """SHA-256 of a file, read in bounded chunks (one helper for every module)."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_bytes(data: bytes) -> str:
+    """SHA-256 of an in-memory byte string."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def json_bytes(obj: Any) -> bytes:
+    """The deterministic JSON encoding used for manifests and digests.
+
+    Keeping this in one place is what makes a rebuilt package byte-identical:
+    UTF-8, literal (not escaped) non-ASCII, two-space indent and one trailing
+    newline.
+    """
+    return (json.dumps(obj, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def write_json_bytes(path: Path, obj: Any) -> bytes:
+    """Write :func:`json_bytes` verbatim and return the bytes written.
+
+    The bytes are written directly (not through ``json.dump``) so callers that
+    publish a digest of the serialized object cannot drift from the file.
+    """
+    ensure_dir(path.parent)
+    data = json_bytes(obj)
+    path.write_bytes(data)
+    return data
+
+
+def write_text_bytes(path: Path, text: str) -> bytes:
+    """Write UTF-8 text with a deterministic trailing newline and return bytes."""
+    ensure_dir(path.parent)
+    data = (text if text.endswith("\n") else f"{text}\n").encode("utf-8")
+    path.write_bytes(data)
+    return data
 
 
 def write_json(path: Path, obj: Any) -> None:

@@ -22,6 +22,18 @@ All repository work, including planning documents, implementation and fixes, is 
 
 Do not force-push, reset away commits, or delete historical branches as routine cleanup. Explicit user instructions such as “documents only” or “do not push” constrain this workflow.
 
+## Release, tags and channels
+
+Distribution releases are built from tags; branches are not release units. Users install the distribution package; the source checkout stays the developer path (see `skills/frontier-run/references/installation.md`).
+
+- **Tag convention:** `vMAJOR.MINOR.PATCH` (for example `v1.2.3`) is the **stable** channel. `vMAJOR.MINOR.PATCH-<suffix>` (for example `-rc.N`, `v0.1.0-rc.1`, or `v0.2.0-preview.2`) is the **prerelease** channel. The `v` prefix is not part of the version or the artifact name: `v0.1.0-rc.1` publishes `frontier-0.1.0-rc.1-prerelease.zip`.
+- **Tag-triggered release:** pushing a `v*` tag runs `.github/workflows/release.yml` (windows-latest, `contents: write`). It derives version/channel from the tag, downloads the pinned embeddable CPython and wheels, assembles `runtime/`, builds the package twice to prove the artifact digest is reproducible, creates the GitHub Release with the zip, `.digest.json` and `manifest.json` (`--prerelease` only for prerelease tags), and updates `releases/index.json` with version, channel, artifact digest and compatibility. The workflow commits that index to `main` as `github-actions[bot]` and uploads it as a release asset; if branch protection rejects the push it retries once and then fails, leaving the index to be updated manually.
+- **Dry runs:** `workflow_dispatch` builds and verifies but creates no Release and commits nothing unless `dry_run` is explicitly false.
+- **Main first, then tag:** `main` must already contain the commit that will be tagged; the index job verifies the tagged commit is an ancestor of `origin/main` and refuses to commit the index otherwise. Merge the change into `main`, verify the suite there, then tag that commit.
+- **Do not push tags for test runs:** a tag creates a public GitHub Release and writes the release index. Rehearse with a manual `workflow_dispatch` dry run instead. Never push a tag without the maintainer's explicit intent to publish.
+
+The observable release contract is [`contracts/release.md`](contracts/release.md); the package wrapper/runtime layout is [`contracts/distribution-runtime.md`](contracts/distribution-runtime.md).
+
 ## Agent skills
 
 ### Issue tracker
@@ -42,7 +54,7 @@ Single-context layout (`GLOSSARY.md` + `docs/adr/` at the repo root). See `docs/
 
 Keep `docs/adr/` for Matt-maintained decisions, `docs/agents/` for Matt skill configuration, and `docs/acceptance/README.md` for concise evidence and outstanding acceptance gaps. Put schemas/state machines in `contracts/`, sample/generated documentation beside its fixtures, and historical process logs in Git history rather than duplicate local trackers or reports.
 
-For development checks, use an independent Python environment with PyYAML, pytest and PyMuPDF. The repository `.venv` is a uv-managed CPython 3.13 environment and passes the suite (270 passed, 3 skipped on 2026-10-27); rebuild it with `uv` only if its interpreter disappears. On Windows, use `python -X utf8 -m pytest -q` to avoid locale-dependent reads without persistent environment changes.
+For development checks, use an independent Python environment with PyYAML, pytest and PyMuPDF. The repository `.venv` is a uv-managed CPython 3.13 environment and passes the suite (1009 passed, 3 skipped on 2026-10-31); rebuild it with `uv` only if its interpreter disappears. On Windows, use `python -X utf8 -m pytest -q` to avoid locale-dependent reads without persistent environment changes. The release pipeline and the distribution package are documented in the "Release, tags and channels" section above; real acceptance evidence belongs in `docs/acceptance/README.md`.
 
 ### Skill pack
 

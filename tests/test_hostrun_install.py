@@ -143,6 +143,47 @@ def test_probe_dependencies_blocks_an_interpreter_inside_the_repo(tmp_path):
     assert "--clear" in result["note"]
 
 
+def test_probe_dependencies_accepts_the_bundled_runtime_of_a_package_install(tmp_path):
+    repo = tmp_path / "repo"
+    _seed_repo_files(repo)
+    bundled = repo / "runtime" / "python.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("", encoding="utf-8")
+    lock = repo / ".frontier" / "dist.lock.json"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(
+        json.dumps({"schema_version": 1, "distribution": "package"}),
+        encoding="utf-8",
+    )
+
+    result = install.probe_dependencies(
+        repo,
+        python=str(bundled),
+        runner=_import_probe_runner(["3.13.1", "6.0.1", "1.24.0"]),
+    )
+
+    assert result["status"] == "ok"
+    assert result["evidence"]["bundled_runtime"] is True
+    # The interpreter is still inside the code directory; the package lock is
+    # what makes that legitimate.
+    assert result["evidence"]["outside_repo"] is False
+    assert "内置运行时" in result["note"]
+
+
+def test_probe_dependencies_blocks_an_in_repo_runtime_for_a_source_install(tmp_path):
+    repo = tmp_path / "repo"
+    _seed_repo_files(repo)
+    bundled = repo / "runtime" / "python.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("", encoding="utf-8")
+
+    result = install.probe_dependencies(repo, python=str(bundled))
+
+    assert result["status"] == "blocked"
+    assert result["evidence"]["bundled_runtime"] is False
+    assert "代码目录" in result["note"]
+
+
 def test_probe_dependencies_accepts_an_existing_outside_interpreter(tmp_path):
     import sys
 
@@ -171,6 +212,76 @@ def _import_probe_runner(lines):
         stdout = "\n".join(lines) + "\n"
 
     return lambda argv, **kwargs: Proc()
+
+
+def _package_install_tree(tmp_path: Path) -> Path:
+    repo = tmp_path / "code"
+    _seed_repo_files(repo)
+    (repo / "bin").mkdir(parents=True)
+    (repo / "bin" / "frontier.cmd").write_text("@echo off\r\n", encoding="utf-8")
+    (repo / "runtime").mkdir()
+    (repo / "runtime" / "python.exe").write_bytes(b"MZ fake")
+    (repo / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "version": "1.2.3",
+                "channel": "stable",
+                "built_from_commit": "abc123",
+                "compat": {"os": "windows", "arch": "x86_64", "dsh": "*", "python": "3.13"},
+                "files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (repo / ".frontier").mkdir()
+    (repo / ".frontier" / "dist.lock.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "distribution": "package",
+                "version": "1.2.3",
+                "channel": "stable",
+                "artifact_sha256": "a" * 64,
+                "source_url": (tmp_path / "frontier-1.2.3-stable.zip").as_uri(),
+                "installed_at": "2026-10-31T10:00:00+08:00",
+                "requires": {"os": "windows", "arch": "x86_64", "dsh": "*", "python": "3.13"},
+                "skill_digest": "",
+                "package_file_count": 0,
+                "manifest_sha256": "b" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert workspace_mod.register_skill(
+        repo, tmp_path / "host-skills" / "frontier-run"
+    )["ok"] is True
+    return repo
+
+
+def test_install_check_for_a_package_reports_workspace_and_bundled_dependencies(tmp_path):
+    repo = _package_install_tree(tmp_path)
+    runtime_python = repo / "runtime" / "python.exe"
+    wrapper = repo / "bin" / "frontier.cmd"
+
+    result = install.check(
+        repo / ".frontier",
+        workspace_root=repo,
+        host=_host(),
+        runner=_import_probe_runner(["3.13.1", "6.0.1", "1.24.0"]),
+    )
+
+    assert result["steps"]["workspace"] == "ok"
+    assert result["steps"]["dependencies"] == "ok"
+    evidence = install.load_state(repo / ".frontier")["steps"]["dependencies"]["evidence"]
+    assert evidence["bundled_runtime"] is True
+    assert evidence["python"] == str(runtime_python)
+    config = json.loads(
+        (repo / ".frontier" / "install" / "config.json").read_text(encoding="utf-8")
+    )
+    assert config["paths"]["python"] == str(runtime_python)
+    assert config["paths"]["python"] != str(wrapper)
+    assert (wrapper).is_file()
 
 
 def test_probe_dependencies_blocks_an_interpreter_without_pymupdf(tmp_path):

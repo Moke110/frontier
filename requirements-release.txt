@@ -1,0 +1,16 @@
+# Exact pins for the dependencies bundled into a release package (spec #92,
+# ticket #98).  The release workflow runs:
+#
+#     python -m pip download --only-binary=:all: --dest wheels \
+#         -r requirements-release.txt
+#
+# and then extracts those wheel files into `<runtime>/Lib/site-packages` with
+# `scripts/prepare_runtime.py`; it never installs into the runner's Python and
+# never reads the runner's site-packages.  Exact pins (not the ranges in
+# requirements.txt) are what make the bundled runtime and therefore the zip
+# artifact reproducible for one tag.  Transitive dependencies are resolved by
+# pip download into the same directory; add a pin here when a dependency
+# appears.  Bump these only together with a release and re-run the CI
+# reproducibility check.
+PyYAML==6.0.2
+PyMuPDF==1.26.4

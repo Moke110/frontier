@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "frontier retained release record",
+  "description": "Metadata for one retained previous distribution tree at <code>/.frontier/releases/<version>/release.json (spec #92, ticket #96). The directory also contains that version's full package files and its manifest.json; the active version is named by <code>/.frontier/current and by the install lock. A released record must agree byte-for-byte with the retained manifest digest, otherwise the retained tree is treated as corrupt and rollback is blocked.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "version",
+    "channel",
+    "artifact_sha256",
+    "manifest_sha256",
+    "package_file_count",
+    "source_url",
+    "installed_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+~-]*$",
+      "description": "Version of the retained package; also the directory name, so it must not contain path separators."
+    },
+    "channel": {
+      "enum": ["stable", "prerelease"]
+    },
+    "artifact_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the zip artifact the retained tree was installed from."
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the retained manifest.json bytes; mismatch means the retained copy is corrupt."
+    },
+    "package_file_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of files listed by the retained manifest (manifest.json itself is not counted)."
+    },
+    "source_url": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Canonical file:// URL (or future release URL) the retained version was installed from."
+    },
+    "installed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 local time recorded by the install lock when this version was installed."
+    }
+  }
+}
