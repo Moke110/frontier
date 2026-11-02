@@ -11,14 +11,14 @@ Research knowledge base and paper-report delivery system. This file is the devel
 
 ## Git workflow
 
-All repository work, including planning documents, implementation and fixes, is done on **`dev`**. **`main`** is the integration branch; keep the remote default branch as `main`.
+All repository work, including planning documents, implementation and fixes, is done on **`dev`**. **`main`** is the integration branch and the only branch that is pushed; keep the remote default branch as `main`.
 
 1. Before editing, inspect the working tree and fetch `origin`. Switch to `dev`; create it from the current agreed baseline if absent. Preserve existing commits and user changes. If switching would overwrite work, resolve that state without discarding it.
 2. Synchronize `dev` with `origin/dev` and `main` before starting. Prefer fast-forward updates; resolve any divergence on `dev` without rewriting published history. Use explicit branch names when pulling or merging.
 3. Commit completed changes on `dev` using explicit file paths. Run checks appropriate to the change and review the diff. An implementation's required live acceptance must remain visibly pending if unavailable.
 4. Once the intended change is complete and verified, fetch again, fast-forward local `main` to `origin/main`, and incorporate any new `main` changes into `dev`. Resolve and verify integration on `dev`; keep `main` free of direct development commits.
-5. Merge `dev` into `main` with `git merge --no-ff dev`. Push **after** the local merge: `git push --atomic origin dev main`. If atomic push is unsupported, push `dev`, then `main`, checking each result. On rejection, fetch and reconcile without force-pushing.
-6. Return to `dev` and fast-forward it to the merged `main`; push `dev` so the next task starts from the same integrated baseline. Verify a clean working tree and matching local/remote tips before reporting completion.
+5. Merge `dev` into `main` with `git merge --no-ff dev`, then push `main` only: `git push origin main`. Never push `dev`; `origin/dev` may lag behind and is not a delivery branch. On rejection, fetch and reconcile without force-pushing.
+6. Fast-forward local `dev` to the merged `main` (`git checkout dev && git merge --ff-only main`, or `git branch -f dev main` while `dev` is not checked out) so the next task starts from the same integrated baseline; do not push that fast-forward. Verify a clean working tree and matching local/remote `main` tips before reporting completion.
 
 Do not force-push, reset away commits, or delete historical branches as routine cleanup. Explicit user instructions such as “documents only” or “do not push” constrain this workflow.
 
@@ -50,7 +50,7 @@ Single-context layout (`GLOSSARY.md` + `docs/adr/` at the repo root). See `docs/
 
 ### Runtime and user documentation
 
-`README.md` is the user-facing installation and usage guide. The product's host agent loads `skills/frontier-run/SKILL.md`; its installation and workflow references are runtime instructions, not development skills. Module contracts live in `contracts/`; current acceptance evidence and blockers live in `docs/acceptance/` and GitHub Issues. Keep root documentation limited to `AGENTS.md`, `GLOSSARY.md` and `README.md`, with `LICENSE` retained at the root.
+`README.md` (English, primary) and `README.zh-CN.md` (Simplified Chinese) are the user-facing installation and usage guides; keep the two copies in step with each other, and keep development/acceptance status out of both — that belongs in `docs/acceptance/` and GitHub Issues. The product's host agent loads `skills/frontier-run/SKILL.md`; its installation and workflow references are runtime instructions, not development skills. Module contracts live in `contracts/`. Keep root documentation limited to `AGENTS.md`, `GLOSSARY.md`, `README.md` and `README.zh-CN.md`, with `LICENSE` retained at the root.
 
 Keep `docs/adr/` for Matt-maintained decisions, `docs/agents/` for Matt skill configuration, and `docs/acceptance/README.md` for concise evidence and outstanding acceptance gaps. Put schemas/state machines in `contracts/`, sample/generated documentation beside its fixtures, and historical process logs in Git history rather than duplicate local trackers or reports.
 

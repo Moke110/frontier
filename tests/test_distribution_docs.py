@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
+README_ZH = ROOT / "README.zh-CN.md"
 AGENTS = ROOT / "AGENTS.md"
 ACCEPTANCE = ROOT / "docs" / "acceptance" / "README.md"
 ADR = ROOT / "docs" / "adr" / "0010-distribution-packages-for-installation.md"
@@ -121,43 +122,63 @@ def _assert_commands_exist(text: str, label: str) -> None:
                     )
 
 
+_USER_PATH_CASES = (
+    # (path, install section heading, package marker, "no toolchain" claim)
+    (README, "Installation", "distribution package", "no git"),
+    (README_ZH, "安装", "发行包", "不需要 git"),
+)
+
+
 def test_readme_install_section_is_the_package_user_path() -> None:
-    section = _section(_read(README), "安装")
-    lowered = section.lower()
+    for path, heading, package_marker, no_toolchain in _USER_PATH_CASES:
+        section = _section(_read(path), heading)
+        lowered = section.lower()
 
-    for forbidden in ("git clone", "uv venv", "uv pip", "pip install"):
-        assert forbidden not in lowered, f"user install must not require {forbidden!r}"
+        for forbidden in ("git clone", "uv venv", "uv pip", "pip install"):
+            assert forbidden not in lowered, (
+                f"{path.name}: user install must not require {forbidden!r}"
+            )
 
-    for expected in (
-        "install package",
-        "install verify",
-        "install report",
-        "install rollback",
-        "frontier.cmd",
-        "/frontier-init",
-        "Get-FileHash",
-        "Expand-Archive",
-        "--digest",
-        "sha256",
-        "releases/index.json",
-    ):
-        assert expected.lower() in lowered, f"user install is missing {expected!r}"
+        for expected in (
+            "install package",
+            "install verify",
+            "install report",
+            "install rollback",
+            "frontier.cmd",
+            "/frontier-init",
+            "Get-FileHash",
+            "Expand-Archive",
+            "--digest",
+            "sha256",
+            "releases/index.json",
+        ):
+            assert expected.lower() in lowered, (
+                f"{path.name}: user install is missing {expected!r}"
+            )
 
-    assert "发行包" in section
-    assert "不需要 git" in section or "没有 git" in section
+        assert package_marker in section, (
+            f"{path.name}: user install does not name the {package_marker!r} path"
+        )
+        assert no_toolchain in section, (
+            f"{path.name}: user install does not state {no_toolchain!r}"
+        )
 
 
 def test_readme_documents_the_source_install_developer_path() -> None:
-    text = _read(README)
-    assert "源码安装" in text
-    assert "install workspace" in text
-    assert "install toolchain" in text
-    assert "install skill" in text
-    assert "git clone" in text  # only the developer section may use it
+    for path, source_marker, install_heading, developer_heading in (
+        (README, "source install", "## Installation", "## Development"),
+        (README_ZH, "源码安装", "## 安装", "## 开发者"),
+    ):
+        text = _read(path)
+        assert source_marker in text
+        assert "install workspace" in text
+        assert "install toolchain" in text
+        assert "install skill" in text
+        assert "git clone" in text  # only the developer section may use it
 
-    package_section = text.index("## 安装")
-    developer_section = text.index("## 开发者")
-    assert package_section < developer_section
+        package_section = text.index(install_heading)
+        developer_section = text.index(developer_heading)
+        assert package_section < developer_section
 
 
 def test_installation_reference_names_both_paths_with_prerequisites() -> None:
@@ -269,6 +290,7 @@ def test_workflow_reference_no_longer_requires_a_source_checkout() -> None:
 
 def test_documented_commands_match_the_cli() -> None:
     _assert_commands_exist(_read(README), "README.md")
+    _assert_commands_exist(_read(README_ZH), "README.zh-CN.md")
     _assert_commands_exist(_read(INSTALLATION), "installation.md")
     _assert_commands_exist(_read(SKILL), "SKILL.md")
 
