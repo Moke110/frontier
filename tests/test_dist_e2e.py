@@ -48,8 +48,9 @@ RUNTIME_FILES = {
     "Lib/site-packages/keep.txt": b"site-packages placeholder\n",
 }
 
-#: The user-facing order the README install section documents.  The test below
-#: reads the section and proves these commands appear in exactly this order.
+#: The user-facing order both README copies document in their install section.
+#: The test below reads each section and proves these commands appear in exactly
+#: this order.
 DOCUMENTED_INSTALL_STEPS = (
     "install package",
     "console install",
@@ -144,20 +145,29 @@ def _walk_subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.Argu
     return {}
 
 
-def _readme_install_section() -> str:
-    text = (Path(__file__).resolve().parents[1] / "README.md").read_text(
+#: The user-facing README copies and the headings their install section spans,
+#: from the install heading to the developer heading.
+README_INSTALL_HEADINGS = (
+    ("README.md", "## Installation", "## Development"),
+    ("README.zh-CN.md", "## 安装", "## 开发者"),
+)
+
+
+def _readme_install_section(rel_path: str, start_marker: str, end_marker: str) -> str:
+    text = (Path(__file__).resolve().parents[1] / rel_path).read_text(
         encoding="utf-8"
     )
-    start = text.index("## 安装")
-    end = text.index("## 开发者")
+    start = text.index(start_marker)
+    end = text.index(end_marker)
     return text[start:end]
 
 
 def test_readme_documented_install_steps_exist_and_are_in_order() -> None:
-    section = _readme_install_section()
-    positions = [section.index(step) for step in DOCUMENTED_INSTALL_STEPS]
+    for rel_path, start_marker, end_marker in README_INSTALL_HEADINGS:
+        section = _readme_install_section(rel_path, start_marker, end_marker)
+        positions = [section.index(step) for step in DOCUMENTED_INSTALL_STEPS]
 
-    assert positions == sorted(positions), "README install steps are out of order"
+        assert positions == sorted(positions), f"{rel_path} install steps are out of order"
 
     parser = cli.build_parser()
     install = _walk_subparsers(parser)["install"]
