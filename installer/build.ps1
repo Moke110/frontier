@@ -22,7 +22,3 @@ try {
 ") -notmatch 'Compiler engine version: Inno Setup 6\.4\.3(?:\r?\n|$)') { throw 'Inno Setup 6.4.3 required' }
     Get-ChildItem output/*.exe | Get-FileHash -Algorithm SHA256
 } finally { Pop-Location }
-
-
-
-
