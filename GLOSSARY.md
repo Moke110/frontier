@@ -83,8 +83,12 @@ Retired. Its Feishu event consumption, feedback polling and agent-run spawning n
 _Avoid_: service, daemon, bot, background job
 
 **Console launcher（控制台启动脚本）**:
-The fixed `<code>/bin/frontier-console.cmd` the user double-clicks to start the Console; it forwards arguments so `console control` reaches the same program, and `console install` regenerates it without starting anything.
+The legacy script entry used to start the Console in the existing distribution and source workflows.
 _Avoid_: listener script, service, shortcut
+
+**Frontier application（Frontier 应用）**:
+The installed Windows application the user opens to reach Frontier Console.
+_Avoid_: installer, host, installation workspace
 
 **Heartbeat（心跳）**:
 The Console's periodic liveness record, rewritten while the Console runs; the evidence used by other frontier commands to tell "running" from "process exists".
@@ -99,6 +103,10 @@ Retired name for an Agent run.
 _Avoid_: headless agent, child session, bot run
 
 ### Distribution and release
+
+**Frontier installer（Frontier 安装器）**:
+The downloadable Windows setup application that lets the user select where to install the Frontier application.
+_Avoid_: distribution package, Console launcher
 
 **Distribution package（发行包）**:
 The self-contained artifact a user installs frontier from: program code, agent-facing assets and the runtime it needs, identified by one version.
