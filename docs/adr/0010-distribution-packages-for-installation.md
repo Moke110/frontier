@@ -1,5 +1,7 @@
 # ADR 0010：安装改为发行包，源码仓库只负责开发
 
+2026-11-05：用户安装入口由 [ADR 0011](0011-windows-installer-hello-world.md) 修订为 Windows 安装器；下文保留历史 ZIP 方案，自包含运行时原则继续适用。新入口当前待实现。
+
 - 日期：2026-10-31
 - 状态：已接受；实现已在 `spec92-integration` 完成（2026-10-31），真实安装验收待补
 - 相关：[ADR 0009](0009-console-as-service.md)（控制台与目录模型）、[ADR 0004](0004-native-windows-python.md)（原生 Windows Python）、[ADR 0007](0007-reuse-configured-lark-cli.md)（复用已配置的 lark-cli）
