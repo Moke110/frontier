@@ -30,4 +30,3 @@ Source: "build\Frontier.exe"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{userprograms}\Frontier"; Filename: "{app}\Frontier.exe"
 Name: "{userdesktop}\Frontier"; Filename: "{app}\Frontier.exe"; Tasks: desktopicon
-
