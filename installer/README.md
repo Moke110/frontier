@@ -22,4 +22,3 @@ No business configuration or network calls occur during application startup.
 
 Windows 10 and 11 clean-machine, offline installation acceptance remains required;
 a developer-machine build or smoke check does not establish that acceptance.
-
