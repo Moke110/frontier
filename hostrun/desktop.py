@@ -152,7 +152,7 @@ class Desktop:
 
     def send(self):
         text = self.prompt.get('1.0', 'end').strip()
-        if self.busy or not text:
+        if self.closed or self.busy or not text:
             return
         self.busy = True
         self.cancelled.clear()
@@ -271,6 +271,8 @@ class Desktop:
         self.root.after(60, self.poll)
 
     def close(self):
+        if self.closed:
+            return
         self.closed = True
         self.stop()
         if self.console_finished:
@@ -291,6 +293,8 @@ def main():
     layout.remember(resolved)
     layout.export(resolved)
     from common import file_lock
+    from hostrun import desktop_processes
+    desktop_processes.install()
     root = tk.Tk()
     with file_lock(Path(resolved['runtime']) / 'desktop.lock', blocking=False) as acquired:
         if not acquired:
@@ -298,11 +302,29 @@ def main():
             (Path(resolved['runtime']) / 'desktop.activate').touch()
             root.destroy()
             return
+        console.install(Path(resolved['runtime']), resolved=resolved, python_path=str(Path(sys.executable).with_name('python.exe')))
         Desktop(root, resolved)
         root.deiconify()
         root.lift()
-        root.mainloop()
+        try:
+            root.mainloop()
+        finally:
+            # Exit even if a third-party worker has a non-daemon thread. The
+            # Windows job handle then closes and terminates all descendants.
+            try:
+                console.write_state(Path(resolved['runtime']), service='stopped')
+            finally:
+                if os.name == 'nt':
+                    os._exit(0)
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        error_log = Path(__file__).resolve().parents[1] / '.frontier' / 'desktop-error.log'
+        error_log.parent.mkdir(parents=True, exist_ok=True)
+        error_log.write_text(traceback.format_exc(), encoding='utf-8')
+        messagebox.showerror('Frontier 启动失败', '错误详情已保存到：\n' + str(error_log))
+        raise

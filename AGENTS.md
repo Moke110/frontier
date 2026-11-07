@@ -63,3 +63,5 @@ Read the relevant `SKILL.md` before applying a skill. Shared Matt Pocock skills 
 The planning/implementation skills above are user-invoked workflows. Follow each skill's approval gates and delegated skills (including testing and code review); do not automatically start implementation merely because its skill is installed.
 
 The per-repo configuration those skills read is `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md` and `docs/agents/domain.md`. Edit those files directly; `setup-matt-pocock-skills` only needs re-running to switch issue trackers or restart the setup.
+
+Desktop process changes must follow [desktop process ownership](contracts/desktop-processes.md), including descendant cleanup and console-free startup checks.
