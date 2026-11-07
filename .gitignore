@@ -10,3 +10,7 @@ pytest-of-*/
 /bin/
 # Retired development agent: keep regenerated local metadata out of Git.
 .workbuddy/
+node_modules/
+/agent/dist/
+.pytest-pi-*/
+/.build-pi/

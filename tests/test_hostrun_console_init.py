@@ -56,11 +56,12 @@ def make_home(tmp_path: Path, *, service: str = "stopped", permissions: dict | N
     code = tmp_path / "code"
     home = code / ".frontier"
     (home / "install").mkdir(parents=True)
-    dsh = tmp_path / "bin" / "dsh.cmd"
-    dsh.parent.mkdir(parents=True)
-    dsh.write_text("@echo off\n", encoding="utf-8")
-    patch = home / "install" / "dsh-headless-account.patch.yml"
-    patch.write_text("authorization: true\n", encoding="utf-8")
+    (code / "runtime").mkdir(parents=True)
+    (code / "runtime/node.exe").write_text("")
+    (code / "agent/dist").mkdir(parents=True)
+    (code / "agent/dist/main.js").write_text("")
+    from hostrun.embedded_agent import configure
+    configure(home, provider="test", model="test-model", api_key="test-only")
     cli = home / "bin" / ("lark-cli.cmd" if os.name == "nt" else "lark-cli")
     cli.parent.mkdir(parents=True)
     cli.write_text("@echo off\n", encoding="utf-8")
@@ -68,9 +69,8 @@ def make_home(tmp_path: Path, *, service: str = "stopped", permissions: dict | N
         home / "install" / "config.json",
         {
             "schema_version": 1,
-            "host": {"product": "dsh", "version": "0.2.1-rc.5"},
-            "paths": {"repo": str(code), "dsh": str(dsh), "lark_cli": str(cli)},
-            "agent_run": {"dsh_args": ["--patch", str(patch)]},
+            "host": {"product": "frontier"},
+            "paths": {"repo": str(code), "lark_cli": str(cli)},
             "permissions": permissions
             if permissions is not None
             else {"scope": ["base:read"], "host_scope": ["filesystem"]},
@@ -270,8 +270,8 @@ def test_first_run_confirms_the_default_archive_then_the_agent(tmp_path):
     assert state["steps"]["archive"]["value"]["path"] == str(default_archive)
     assert state["steps"]["archive"]["value"]["default"] is True
     assert state["steps"]["agent"]["status"] == "ok"
-    assert state["steps"]["agent"]["value"]["dsh"].endswith("dsh.cmd")
-    assert "dsh-headless-account.patch.yml" in state["steps"]["agent"]["value"]["patch"]
+    assert state["steps"]["agent"]["value"]["runtime"] == "frontier-pi"
+    assert state["steps"]["agent"]["value"]["model"] == "test-model"
     # ADR §7 now has no unimplemented step: #87 finished the remaining three.
     assert result["next_step"] is None
     assert result["not_yet"] == []
@@ -282,9 +282,9 @@ def test_first_run_confirms_the_default_archive_then_the_agent(tmp_path):
     assert console.read_state(home)["service"] == "running"
     # The agent confirmation shows the absolute dsh path, the --patch overlay
     # and the authorization scope before asking.
-    assert str(tmp_path / "bin" / "dsh.cmd") in rendered
-    assert "dsh-headless-account.patch.yml" in rendered
-    assert "filesystem" in rendered
+    assert "内置 Pi Agent" in rendered
+    assert "test-model" in rendered
+    assert "test" in rendered
 
 
 def test_init_state_lives_in_the_code_runtime_area_not_install_steps(tmp_path):
@@ -456,14 +456,14 @@ def test_a_missing_dsh_blocks_the_agent_step_without_recording_it(tmp_path):
     home = make_home(tmp_path)
     config_path = home / "install" / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    config["paths"]["dsh"] = ""
+    (home.parent / "agent/dist/main.js").unlink()
     write_json(config_path, config)
 
     result, rendered = init_run(home, [""])
 
     assert result["ok"] is False
-    assert result["reason"] == "dsh_missing"
-    assert "paths.dsh" in result["text"]
+    assert result["reason"] == "agent_unavailable"
+    assert "Agent" in result["text"]
     assert "不可用" in rendered
     state = json.loads(console_init.state_path(home).read_text(encoding="utf-8"))
     assert state["steps"]["archive"]["status"] == "ok"
@@ -584,7 +584,7 @@ def test_serve_wires_the_init_step_machine_to_the_prompt_reader(tmp_path):
     assert result["ok"] is True
     rendered = out.getvalue()
     assert "[完成] 资料目录" in rendered
-    assert "[完成] 执行 Agent 已确认" in rendered
+    assert "[完成] 内置 Agent 模型已确认" in rendered
     state = json.loads(console_init.state_path(home).read_text(encoding="utf-8"))
     assert state["steps"]["archive"]["status"] == "ok"
     assert state["steps"]["agent"]["status"] == "ok"

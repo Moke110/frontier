@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from common import file_lock
-from hostrun import agent_run, executor
+from hostrun import agent_run, executor, embedded_agent
 
 HOST = "workbuddy"
 
@@ -41,7 +41,11 @@ def _config(
         "agent_run": {"derived_timeout_seconds": timeout_seconds},
     }
     if dsh:
-        config["paths"]["dsh"] = dsh
+        (home / "runtime").mkdir(exist_ok=True)
+        (home / "runtime" / "node.exe").write_text("")
+        (home / "agent" / "dist").mkdir(parents=True, exist_ok=True)
+        (home / "agent" / "dist" / "main.js").write_text("")
+        embedded_agent.configure(home, provider="test", model="test", api_key="test")
     if dsh_args is not None:
         config["agent_run"]["dsh_args"] = dsh_args
     (home / "install" / "config.json").write_text(
@@ -116,21 +120,12 @@ def _runs(home: Path) -> list[dict]:
 
 
 # ------------------------------------------------------------------- argv
-def test_agent_argv_keeps_the_recorded_patch_and_the_task_last():
-    argv = agent_run.agent_argv(
-        "C:/dsh/dsh.cmd", "the task", ["--patch", "C:/overlay.yml"]
-    )
-
-    assert argv == [
-        "C:/dsh/dsh.cmd",
-        "--profile",
-        "headless",
-        "--patch",
-        "C:/overlay.yml",
-        "--json",
-        "the task",
-    ]
-    assert argv[-1] == "the task"
+def test_agent_argv_uses_only_bundled_runtime_and_no_external_agent(tmp_path):
+    home = _home(tmp_path)
+    _config(home, dsh="unused-legacy-path")
+    argv = embedded_agent.argv(home, "the task", kind="intent_judgement")
+    assert argv[:2] == [str(home / "runtime/node.exe"), str(home / "agent/dist/main.js")]
+    assert argv[-4:] == ["--kind", "intent_judgement", "--task", "the task"]
 
 
 # ----------------------------------------------------------------- happy path
@@ -176,15 +171,7 @@ def test_run_parses_the_stream_records_the_session_and_writes_the_full_log(tmp_p
     assert result["final_text"] == "done"
 
     argv, kwargs = spawns[0]
-    assert argv == [
-        str(dsh),
-        "--profile",
-        "headless",
-        "--patch",
-        "C:/overlay.yml",
-        "--json",
-        "write one push",
-    ]
+    assert argv == embedded_agent.argv(home, "write one push", kind="agent")
     assert kwargs["stdin"] is not None
     assert kwargs["stdout"] is not None
     assert kwargs["stderr"] is not None
@@ -222,8 +209,8 @@ def test_missing_recorded_dsh_refuses_without_spawning_or_recording(tmp_path):
     )
 
     assert result["ok"] is False
-    assert result["reason"] == "dsh_missing"
-    assert "dsh" in result["error"]
+    assert result["reason"] == "agent_unavailable"
+    assert "Agent" in result["error"]
     assert _runs(home) == []
 
 

@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ci_install_smoke.py"
 
 PACKAGE_FILES = {
+    "agent/dist/main.js": "// bundled agent fixture\n",
     "common.py": "RUNTIME = True\n",
     "requirements.txt": "PyYAML>=6.0\n",
     "README.md": "# fixture frontier\n",
@@ -61,6 +62,7 @@ def _write_runtime(root: Path) -> Path:
     """The CPython embeddable layout the builder copies verbatim."""
     (root / "DLLs").mkdir(parents=True)
     (root / "Lib" / "site-packages").mkdir(parents=True)
+    (root / "node.exe").write_bytes(b"MZ fixture")
     (root / "python.exe").write_bytes(b"MZ fake interpreter")
     (root / "python313.dll").write_bytes(b"dll")
     (root / "python313._pth").write_text("python313.zip\r\n.\r\n", encoding="utf-8")
@@ -92,7 +94,6 @@ def _smoke_args(built: dict, smoke: Path, **overrides: str) -> list[str]:
         "--zip": str(built["artifact"]["path"]),
         "--code": str(smoke / "code"),
         "--archive": str(smoke / "archive"),
-        "--dsh": str(smoke / "host" / "dsh.cmd"),
         "--skills-target": str(smoke / "host-skills" / "frontier-run"),
         "--bootstrap": str(smoke / "bootstrap"),
     }

@@ -27,6 +27,12 @@ def make_home(tmp_path: Path, *, service: str = "paused") -> Path:
     code = tmp_path / "code"
     home = code / ".frontier"
     (home / "install").mkdir(parents=True)
+    (code / "agent/dist").mkdir(parents=True)
+    (code / "agent/dist/main.js").write_text("")
+    (code / "runtime").mkdir()
+    (code / "runtime/node.exe").write_text("")
+    from hostrun.embedded_agent import configure
+    configure(home, provider="test", model="test", api_key="test")
     dsh = tmp_path / "bin" / "dsh.cmd"
     dsh.parent.mkdir(parents=True)
     dsh.write_text("@echo off\n", encoding="utf-8")
@@ -50,7 +56,7 @@ def record_early_steps(home: Path) -> Path:
     console_init.record_step(
         home, "archive", {"path": str(archive), "default": True, "outside_code": True}
     )
-    console_init.record_step(home, "agent", {"dsh": "dsh.cmd", "profile": "headless"})
+    console_init.record_step(home, "agent", {"runtime": "frontier-pi", "provider": "test", "model": "test"})
     console_init.record_step(home, "lark", {"cli": {"path": "lark-cli", "source": "recorded"}})
     console_init.record_step(
         home,

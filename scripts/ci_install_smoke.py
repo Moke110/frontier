@@ -8,7 +8,7 @@ against separate temporary directories:
 
     install package  --from <zip> --sha256 <artifact sha256>
     install verify
-    console install  --dsh <absolute dummy dsh>
+    console install (bundled Pi Agent)
     install skill    --root <code> --target <temp skills dir>
     <code>\\bin\\frontier.cmd --code <code> --archive <archive> --help
     install report
@@ -358,7 +358,6 @@ def run_smoke(
     *,
     code: str | Path,
     archive: str | Path,
-    dsh: str | Path,
     skills_target: str | Path,
     bootstrap: str | Path | None = None,
     python: str | None = None,
@@ -371,7 +370,6 @@ def run_smoke(
     code_dir = Path(code).expanduser().resolve()
     archive_dir = Path(archive).expanduser().resolve()
     skills_dir = Path(skills_target).expanduser().resolve()
-    dsh_path = Path(dsh).expanduser()
 
     if not artifact.is_file():
         raise SmokeError("artifact", f"artifact is missing: {artifact}")
@@ -385,17 +383,6 @@ def run_smoke(
             "artifact",
             f"artifact sha256 mismatch: expected {expected}, got {actual_sha}",
         )
-    if not dsh_path.is_absolute():
-        raise SmokeError("dsh", f"--dsh must be an absolute path: {dsh_path}")
-    if not dsh_path.is_file():
-        # A dummy dsh only needs to exist for console install's absolute-file
-        # check; no process is ever started.
-        try:
-            dsh_path.parent.mkdir(parents=True, exist_ok=True)
-            dsh_path.write_text("@echo off\r\nexit /b 0\r\n", encoding="ascii")
-        except OSError as exc:
-            raise SmokeError("dsh", f"could not create the dummy dsh {dsh_path}: {exc}") from exc
-
     _empty_dir(code_dir, "code")
     _empty_dir(skills_dir, "skills-target")
     if bootstrap is None:
@@ -440,7 +427,7 @@ def run_smoke(
         interpreter,
         code_dir,
         archive_dir,
-        ["console", "install", "--dsh", str(dsh_path)],
+        ["console", "install"],
         name="console",
     )
     _require(console, name="console", ok=True, status="ok", processes_started=False)
@@ -541,7 +528,6 @@ def run_smoke(
         "code": str(code_dir),
         "archive": str(archive_dir),
         "skills_target": str(skills_dir),
-        "dsh": str(dsh_path.resolve()),
         "artifact_entries": extracted["entries"],
         "commands": commands,
         "lock": str(_lock_path(code_dir)),
@@ -592,11 +578,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--code", required=True, help="empty code directory to install into")
     parser.add_argument("--archive", required=True, help="archive directory for the install")
     parser.add_argument(
-        "--dsh",
-        required=True,
-        help="absolute path to a dummy dsh file (created when absent)",
-    )
-    parser.add_argument(
         "--skills-target",
         required=True,
         help="empty host skills directory for the frontier-run pointer",
@@ -633,7 +614,6 @@ def main(argv: list[str] | None = None) -> int:
             args.zip,
             code=args.code,
             archive=args.archive,
-            dsh=args.dsh,
             skills_target=args.skills_target,
             bootstrap=args.bootstrap,
             python=args.python,

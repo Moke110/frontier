@@ -117,6 +117,25 @@ jobs:
           python scripts/prepare_runtime.py --embed-zip python-embed.zip --wheels wheels --out $env:RUNTIME_DIR --python-version $env:PYTHON_VERSION --require-module yaml --require-module fitz
           if ($LASTEXITCODE -ne 0) { throw "runtime assembly failed; the embeddable zip or a wheel is missing or malformed" }
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+
+      - name: Build the bundled Frontier Pi agent
+        shell: pwsh
+        run: |
+          npm --prefix agent ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw "Pi dependency installation failed" }
+          npm --prefix agent run build
+          if ($LASTEXITCODE -ne 0) { throw "Pi build failed" }
+          node agent/dist/main.js --check
+          if ($LASTEXITCODE -ne 0) { throw "Pi runtime import failed" }
+          node agent/node_modules/@larksuite/cli/scripts/install.js
+          if ($LASTEXITCODE -ne 0) { throw "Bundled Feishu CLI preparation failed" }
+          npm --prefix agent prune --omit=dev --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw "Pi production dependency preparation failed" }
+          Copy-Item -LiteralPath (Get-Command node).Source -Destination (Join-Path $env:RUNTIME_DIR "node.exe")
+
       - name: Build twice and prove the artifact digest is reproducible
         shell: pwsh
         run: |
@@ -143,10 +162,8 @@ jobs:
           $channel = "${{ steps.release.outputs.channel }}"
           $zip = "$env:DIST_DIR/frontier-$version-$channel.zip"
           $smoke = Join-Path $env:RUNNER_TEMP "install-smoke"
-          $dsh = Join-Path $smoke "dsh.cmd"
           New-Item -ItemType Directory -Force -Path $smoke | Out-Null
-          Set-Content -Path $dsh -Value "@echo off`r`nexit /b 0" -Encoding ascii
-          python scripts/ci_install_smoke.py --zip $zip --code (Join-Path $smoke "code") --archive (Join-Path $smoke "archive") --dsh $dsh --skills-target (Join-Path $smoke "host-skills/frontier-run") --bootstrap (Join-Path $smoke "bootstrap") --check-wrapper
+          python scripts/ci_install_smoke.py --zip $zip --code (Join-Path $smoke "code") --archive (Join-Path $smoke "archive") --skills-target (Join-Path $smoke "runtime-skills/frontier-run") --bootstrap (Join-Path $smoke "bootstrap") --check-wrapper
           if ($LASTEXITCODE -ne 0) { throw "the built artifact failed the install smoke test; the JSON above names the failing step" }
 
       - name: Render release notes

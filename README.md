@@ -58,102 +58,40 @@ queues, logs, leases and install records live under the code directory, in
 
 ## Installation
 
-### What you need
+Frontier includes its own Pi-based Agent. You need Windows 10/11 x64, a model API key,
+and a Feishu account authorized to create and use the required app, Base and Drive resources.
+The distribution includes Node.js, Pi, the Feishu CLI and the Python business runtime.
+No separate DSH or Pi installation is needed.
 
-- Windows 10/11 on x64.
-- A host agent that can run local commands, load skills and start a foreground console
-  window. DeepSeek Harness on Windows is the reference host, which is why the install path
-  below is agent-driven.
-- A Feishu account with admin rights, so frontier can create a Base, two Drive folders and
-  a bot app, and can send you direct messages.
-- A workspace folder. That is all: the user path needs no git, uv, pip or system Python,
-  because the distribution package carries its own runtime.
+Extract a Frontier distribution into a writable directory and open PowerShell there:
 
-The install creates this layout in your workspace:
-
-```text
-<workspace>\
-  frontier\          code directory: package files, bundled runtime, runtime state
-  frontier-archive\  archive directory: originals\ and pushes\ only
+```powershell
+.\bin\frontier.cmd console install
+.\bin\frontier-console.cmd
 ```
 
-### Step 1 — copy this prompt to your host agent
+Run `/frontier-init`: choose an archive folder, enter your model provider, model name and API key,
+then complete Feishu authorization, resource setup and daily push time. For an OpenAI-compatible
+service, also enter its API base URL. Model/provider names must match your service.
+The key is stored locally in `.frontier/agent/model.json`; protect this file. Installation reports
+and process arguments do not include it.
 
-```text
-Install frontier on this machine. Follow these rules exactly:
+Configuration, queues and logs live in `.frontier/`. The separate archive contains `originals/`
+and `pushes/`. Interrupted setup resumes. Existing DSH installations must complete the new
+model configuration step. No external host skill registration is required.
 
-1. Resolve the release. Read releases/index.json from https://github.com/Moke110/frontier
-   (or the v* GitHub Release) and take the newest entry: version (without the leading v),
-   channel, artifact name frontier-<version>-<channel>.zip and artifact sha256. The index
-   currently lists only the prerelease channel. Take packages from GitHub Releases and the
-   release index only, never from a package marketplace.
-2. Download the artifact and its digest JSON into a temporary folder inside the workspace.
-   Do not extract anything into the code directory yet.
-3. Verify before extracting. Compare Get-FileHash -Algorithm SHA256 "<zip>" with the
-   artifact.sha256 in the matching .digest.json. On a mismatch, stop before writing to the
-   code directory or the install lock.
-4. Install the package. Expand-Archive the zip into a temporary bootstrap folder; the zip
-   entries are at the archive root, so you get <temp>\bin\frontier.cmd. Then run:
-     <temp>\bin\frontier.cmd --code "<code>" --archive "<archive>" install package --from "<zip>" --digest "<digest.json>"
-   The code directory must be empty, absent, or a previous package install. The install lock
-   is written to <code>\.frontier\dist.lock.json; delete the bootstrap folder afterwards.
-5. Write the console launcher:
-     <code>\bin\frontier.cmd --code "<code>" --archive "<archive>" console install --dsh "<absolute path to dsh>"
-6. Register the skill pointer so this host can find frontier again:
-     <code>\bin\frontier.cmd --code "<code>" --archive "<archive>" install skill --root "<code>" --target "<host skills dir>"
-7. Start the console and hand me the window; I will run /frontier-init inside it. Check
-   write permissions first. If writing Feishu credentials or an archive directory outside
-   the workspace is denied, ask me to relaunch <code>\bin\frontier-console.cmd with full
-   permissions and keep the initialization progress already made.
-8. After I finish /frontier-init, report honestly: what really ran, what is blocked and what
-   was not measured. A successful command or a created schedule is not proof that a report
-   was delivered.
-```
-
-The whole user path runs on the bundled runtime: the package supplies the code directory,
-the runtime and the install lock, so git, uv, pip and the system Python are never involved.
-
-### Step 2 — the parts only you can do
-
-Inside the console window, `/frontier-init` walks you through the decisions frontier cannot
-make for you:
-
-1. confirm the archive directory;
-2. confirm the agent that executes frontier's runs;
-3. log in to the Feishu CLI and authorize the admin scopes;
-4. click the button in the test message frontier sends you;
-5. reply with the display names of the Feishu facilities it creates;
-6. choose the daily push time (default 08:00);
-7. decide whether to initialize the knowledge base from a folder of PDFs now.
-
-Nothing is pushed to Feishu until these steps are done. If you interrupt, ask your host
-agent to continue the installation — progress is kept, and you do not have to recreate the
-knowledge base from scratch.
-
-### Maintenance
-
-| Goal | Command |
-|---|---|
-| Check the install lock against the files on disk | `<code>\bin\frontier.cmd --code "<code>" --archive "<archive>" install verify` |
-| Show the install report | `<code>\bin\frontier.cmd --code "<code>" --archive "<archive>" install report` |
-| Upgrade | download the newer zip and its `.digest.json`, verify the sha256, then repeat `install package --from "<zip>" --digest "<digest.json>"` |
-| Roll back to the retained previous version | `<code>\bin\frontier.cmd --code "<code>" --archive "<archive>" install rollback`, or `install rollback --to "<version>"` |
-
-Upgrading replaces package files only: the archive directory and the `<code>\.frontier\`
-runtime state stay untouched, and the previous version is retained for a rollback. Rolling
-back does not re-download or rebuild anything — it switches back to the retained tree and
-restores the install lock. After any upgrade or rollback, re-run the skill-pointer step so
-the recorded version follows the package.
+Use `install package --from <zip> --digest <digest.json>` for verified package upgrades,
+`install verify` to check files, and `install rollback` to restore a retained version.
+Upgrades preserve `.frontier/` and the archive.
 
 ## Using frontier
 
-Three ways to drive it, all equivalent:
+Use the console or Feishu:
 
 - **Console** (always the primary surface): the foreground window shows scheduled runs,
   Feishu messages and card clicks, agent-run summaries and errors; the input line at the
   bottom takes the commands below.
 - **Feishu direct message** while the console is open: send one of the six phrases below.
-- **Host agent**: write a control-file request, which the console picks up within a second.
 
 | Console command | What it does |
 |---|---|
@@ -220,7 +158,7 @@ a verified offline backup.
 ## Troubleshooting
 
 - **The console exits right after starting** — usually missing write permissions or a damaged
-  runtime. Relaunch the launcher with full permissions, or ask your host agent for the
+  runtime. Relaunch the launcher with full permissions, or inspect the
   conclusions of `install report` and `install verify`.
 - **Feishu commands do nothing** — the console must be open. Closing the window stops all
   Feishu responses; queued feedback is processed after the next start.
@@ -233,27 +171,27 @@ a verified offline backup.
 
 ## Development (source install)
 
-The source install is only for developing frontier itself. Users take the package path
-above; the two paths never overwrite each other. It needs git, uv and Python 3.13:
+Use Python 3.13 and Node.js >=22.19.0. From the repository root:
 
 ```powershell
-git clone https://github.com/Moke110/frontier.git "<workspace>\frontier"
-cd "<workspace>\frontier"
-python -m hostrun.cli install workspace --root "<workspace>" --repo-url https://github.com/Moke110/frontier.git
-python -m hostrun.cli --code "<code>" install toolchain --root "<workspace>"
-python -m hostrun.cli --code "<code>" --archive "<archive>" console install --dsh "<absolute path to dsh>"
-python -m hostrun.cli install skill --root "<workspace>" --target "<host skills dir>"
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt pytest
+npm --prefix agent ci --ignore-scripts
+npm --prefix agent run build
+node agent/node_modules/@larksuite/cli/scripts/install.js
+.\.venv\Scripts\python.exe -m hostrun.cli console install
+.\bin\frontier-console.cmd
 ```
 
-The source install lock records `distribution: "source"` and the git commit instead of a
-package version and artifact digest; `install verify` reports `source_install` for it. The
-private environment lives in `<code>/.frontier/.venv`. Development checks, the branch model
-and the tag/release conventions are in [AGENTS.md](AGENTS.md); module contracts are in
-[contracts/](contracts/README.md).
+The TypeScript agent uses the Pi SDK and explicit tools to call existing Python business modules.
+Python retains validation, storage and PDF processing. Check the agent with
+`node agent/dist/main.js --check`; run regression tests with `python -X utf8 -m pytest -q`.
+Release builds require the compiled agent and both bundled runtimes.
+
 
 ## Docs and license
 
-- Runtime skill for the host agent: [skills/frontier-run/SKILL.md](skills/frontier-run/SKILL.md)
+- Built-in agent workflow: [skills/frontier-run/SKILL.md](skills/frontier-run/SKILL.md)
 - Development guide: [AGENTS.md](AGENTS.md) · Glossary: [GLOSSARY.md](GLOSSARY.md)
 - Module contracts: [contracts/](contracts/README.md)
 - License: [MIT](LICENSE)

@@ -1,6 +1,6 @@
 # frontier 原型 · Agent 任务契约
 
-本项目的 editor 与 writer **不内置模型调用**。它们把「需要判断」的部分打包成任务文件，由宿主 agent 读取、推理、写回；脚本只负责取数、校验与落盘。这样换 agent 或换模型不需要改代码。
+本项目的 editor 与 writer **不内置模型调用**。它们把「需要判断」的部分打包成任务文件，由 Frontier 内置 Pi Agent 读取、推理、写回；脚本只负责取数、校验与落盘。这样换 agent 或换模型不需要改代码。
 
 ```
 editor task  →  agent 排序  →  editor check  →  writer task  →  agent 写作  →  writer check

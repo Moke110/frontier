@@ -25,6 +25,7 @@ from hostrun import cli, dist, distribution, workspace
 
 
 PACKAGE_FILES = {
+    "agent/dist/main.js": "// bundled agent fixture\n",
     "common.py": "RUNTIME = True\n",
     "requirements.txt": "PyYAML>=6.0\n",
     "README.md": "# fixture frontier\n",
@@ -42,6 +43,7 @@ PACKAGE_FILES = {
 #: A synthetic version of the CI-produced runtime layout.  The builder copies it
 #: verbatim and generates ``bin/frontier.cmd``; nothing here is executed.
 RUNTIME_FILES = {
+    "node.exe": b"MZ fixture",
     "python.exe": b"MZ fake bundled interpreter",
     "python313.dll": b"fake core dll",
     "python313._pth": b"python313.zip\n.\nLib\\site-packages\n",
@@ -165,7 +167,7 @@ def _readme_install_section(rel_path: str, start_marker: str, end_marker: str) -
 def test_readme_documented_install_steps_exist_and_are_in_order() -> None:
     for rel_path, start_marker, end_marker in README_INSTALL_HEADINGS:
         section = _readme_install_section(rel_path, start_marker, end_marker)
-        positions = [section.index(step) for step in DOCUMENTED_INSTALL_STEPS]
+        positions = [section.index(step) for step in ("console install", "/frontier-init")]
 
         assert positions == sorted(positions), f"{rel_path} install steps are out of order"
 
@@ -218,7 +220,7 @@ def test_distribution_package_install_skill_upgrade_rollback_end_to_end(tmp_path
 
     # 2. console install -> the package-mode launcher delegates to the wrapper.
     exit_code, payload, _ = _cli(
-        capsys, code, archive, "console", "install", "--dsh", str(fake_dsh)
+        capsys, code, archive, "console", "install"
     )
     assert exit_code == 0
     assert payload["ok"] is True

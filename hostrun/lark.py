@@ -173,7 +173,8 @@ def discover_cli(root: str | Path, *, spec: str | None = None, home: str | Path 
     root = Path(root).expanduser().resolve()
     # ``.frontier/bin`` is where a private install writes its launcher;
     # ``.frontier/lark-cli/bin`` is where a migrated private CLI lives (#76).
-    private_dirs = [root / ".frontier" / "bin", root / ".frontier" / "lark-cli" / "bin"]
+    private_dirs = [root / "agent" / "node_modules" / "@larksuite" / "cli" / "bin",
+                    root / ".frontier" / "bin", root / ".frontier" / "lark-cli" / "bin"]
     if home:
         private_dirs.extend([Path(home) / "bin", Path(home) / "lark-cli" / "bin"])
     found = resolve_cli(spec, private_dirs=private_dirs, names=CLI_NAMES)
