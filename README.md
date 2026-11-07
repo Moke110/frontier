@@ -195,3 +195,9 @@ Release builds require the compiled agent and both bundled runtimes.
 - Development guide: [AGENTS.md](AGENTS.md) · Glossary: [GLOSSARY.md](GLOSSARY.md)
 - Module contracts: [contracts/](contracts/README.md)
 - License: [MIT](LICENSE)
+
+## Desktop interface
+
+In this source checkout, double-click `Frontier.cmd` to open the native desktop window. It requires Python with Tkinter and `pythonw.exe` (the development `.venv` supports this). The embedded distribution Python does not currently bundle Tkinter; packaged GUI delivery is not yet supported.
+
+Use the center pane to chat with the built-in Agent, the left pane to switch locally saved conversations, and the collapsible right pane for Console commands and interactive answers. Model settings mask the API key. Ctrl+Enter sends a message; Stop cancels the current Agent process. Conversation history is stored locally under `.frontier/desktop/`. CLI arguments to `Frontier.cmd` retain their original behavior.

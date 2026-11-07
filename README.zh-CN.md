@@ -146,3 +146,9 @@ Python 保留现有校验、存储和 PDF 处理。用 `node agent/dist/main.js 
 - 开发指引：[AGENTS.md](AGENTS.md) · 项目术语：[GLOSSARY.md](GLOSSARY.md)
 - 模块契约：[contracts/](contracts/README.md)
 - 许可证：[MIT](LICENSE)
+
+## 桌面界面
+
+在源码工作区双击 `Frontier.cmd` 可打开独立桌面窗口。需要带 Tkinter 和 `pythonw.exe` 的 Python（开发环境 `.venv` 已支持）。发行包的嵌入式 Python 目前未包含 Tkinter，暂不支持发行包 GUI 交付。
+
+中央区域与内置 Agent 对话，左栏切换本地保存的会话，右侧可折叠 Console 输入命令及交互回答。模型设置隐藏 API Key 输入。Ctrl+Enter 发送，停止按钮取消当前 Agent 进程。会话记录保存在本地 `.frontier/desktop/`。向 `Frontier.cmd` 传入命令参数仍使用原有 CLI。
