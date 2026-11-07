@@ -1,35 +1,11 @@
-"""Agent-run adapter: one bounded headless ``dsh`` run (ADR 0009 §10).
-
-The Console is the only component allowed to start an Agent run, and every run
-uses the same recorded executable and credential overlay:
-
-    <recorded dsh> --profile headless <recorded --patch ...> --json <task>
-
-The task stays the **last positional argument** (the headless app joins the
-remaining words into the task), while ``--json`` makes the app emit one JSON
-event per line on stdout:
-
-    session  status  text  thinking  tool_call  tool_result  final  error
-
-This module owns that protocol: build the argv, spawn with piped stdio (stderr
-is drained concurrently — ADR 0008 §4 warns about pipe deadlock), parse the
-event stream, write the complete output to ``logs/agent-<run_id>.log``, record
-``session_id``/exit code/timeout/summary in ``hostrun/runs.jsonl``, and keep the
-existing single-flight lock, executor lease and no-retry rules.
-
-The spawner, clock, sleep, install report and process streams are injectable, so
-tests never touch a real ``dsh``.  What is verified offline: the argv shape, the
-event projection and every guard.  A real model run still needs the host's
-credentials and stays ``untested`` until one is recorded (the installed
-DeepSeek Harness 0.2.1-rc.5 was verified for --help, --json error output and the
-argv order on 2026-10-30; see the #78 report).
-"""
+"""Run the bundled Frontier Pi agent with bounded execution, events and leases."""
 
 from __future__ import annotations
 
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -37,8 +13,8 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from common import append_jsonl, ensure_dir, file_lock, now
-from hostrun import executor, layout
-from hostrun.base import HostRunError, load_config, require_dsh
+from hostrun import executor, layout, embedded_agent
+from hostrun.base import HostRunError, load_config
 
 DEFAULT_TIMEOUT_SECONDS = 1200
 DEFAULT_LEASE_MINUTES = 20
@@ -70,30 +46,6 @@ def lock_path(home: Path) -> Path:
 def log_path(home: Path, run_id: str) -> Path:
     """``logs/agent-<run_id>.log``: the complete output of one run."""
     return Path(home) / LOGS_REL / f"agent-{run_id}.log"
-
-
-# ---------------------------------------------------------------------- argv
-def agent_argv(dsh: str, task: str, extra_args=(), *, json_stream: bool = True) -> list[str]:
-    """The recorded-``dsh`` argv for one Agent run.
-
-    ``extra_args`` are the recorded ``agent_run.dsh_args`` (typically
-    ``["--patch", <overlay>]``): they are launcher flags, so they must stay
-    before the app's own ``--json`` and the task.  The task remains the last
-    positional argument, as the headless profile's command line requires.
-
-    Verified live on 2026-10-30 against DeepSeek Harness 0.2.1-rc.5: the
-    launcher accepts ``--profile headless --patch <overlay> --json <blank>``
-    and the app answers with an ``error`` event on stdout.  A real credentialed
-    task run is still ``untested``.
-    """
-    extras = [str(arg) for arg in (extra_args or ())]
-    flags = [*extras, "--json"] if json_stream else extras
-    return [str(dsh), "--profile", "headless", *flags, str(task)]
-
-
-def recorded_dsh_args(config: dict) -> list[str]:
-    """The overlay recorded by the Console installer (``agent_run.dsh_args``)."""
-    return [str(arg) for arg in ((config.get("agent_run") or {}).get("dsh_args") or ())]
 
 
 # ------------------------------------------------------------------- parsing
@@ -178,6 +130,10 @@ def _spawn(argv: list[str], **kwargs):
 def _kill(proc) -> None:
     try:
         if proc.poll() is None:
+            if os.name == "nt" and getattr(proc, "pid", None):
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                               capture_output=True, timeout=10,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
             proc.kill()
     except Exception:  # noqa: BLE001 - killing an already-dead child is fine
         pass
@@ -220,8 +176,6 @@ def run(
     lease: bool = True,
     single_flight: bool = True,
     lease_minutes: int = DEFAULT_LEASE_MINUTES,
-    dsh: str | None = None,
-    dsh_args=None,
     env: dict | None = None,
     cwd: str | Path | None = None,
     spawn=None,
@@ -235,7 +189,7 @@ def run(
     """Start one bounded Agent run and return its record.
 
     Guards, in order: single-flight (``agent_busy``), install report blocked
-    (``install_blocked``), recorded absolute ``dsh`` (``dsh_missing``), executor
+    (``install_blocked``), bundled Pi runtime and model configuration (``agent_unavailable``), executor
     lease (``executor_busy`` with the holder and its expiry).  A refusal never
     queues, never preempts, never spawns and writes no run row.
 
@@ -307,15 +261,10 @@ def run(
             return refuse("install_blocked", blocked=list(blocked))
 
         try:
-            dsh_path = str(dsh or require_dsh(home))
+            argv = embedded_agent.argv(home, task, kind=kind, code=Path(cwd))
         except HostRunError as exc:
-            return refuse("dsh_missing", error=str(exc))
-
-        argv = agent_argv(
-            dsh_path,
-            task,
-            recorded_dsh_args(config) if dsh_args is None else dsh_args,
-        )
+            return refuse("agent_unavailable", error=str(exc))
+        child_env["FRONTIER_PYTHON"] = str(paths.get("python") or sys.executable)
         path = log_path(home, run_id)
 
         lease_taken = False

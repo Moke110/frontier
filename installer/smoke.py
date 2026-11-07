@@ -1,50 +1,30 @@
-"""Observe the installed console using native console APIs, with no PATH."""
-import ctypes
-from ctypes import wintypes
+"""Check a built/installed distribution without credentials or network requests."""
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 
-exe = Path(sys.argv[1]).resolve()
-env = {key: value for key, value in os.environ.items() if key.upper() in {"SYSTEMROOT", "WINDIR", "TEMP", "TMP"}}
-env["PATH"] = ""
-kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-kernel.CreateFileW.restype = wintypes.HANDLE
-kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-kernel.ReadConsoleOutputCharacterW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
-p = subprocess.Popen([str(exe)], env=env, creationflags=subprocess.CREATE_NEW_CONSOLE)
-console = None
-try:
-    kernel.FreeConsole()
-    deadline = time.monotonic() + 10
-    while not kernel.AttachConsole(p.pid):
-        if time.monotonic() >= deadline or p.poll() is not None:
-            raise RuntimeError("Could not attach installed console")
-        time.sleep(.1)
-    title = ctypes.create_unicode_buffer(256)
-    output = ctypes.create_unicode_buffer(256)
-    count = wintypes.DWORD()
-    console = kernel.CreateFileW("CONOUT$", 0x80000000, 3, None, 3, 0, None)
-    if console == wintypes.HANDLE(-1).value:
-        raise ctypes.WinError(ctypes.get_last_error())
-    while time.monotonic() < deadline:
-        kernel.GetConsoleTitleW(title, len(title))
-        if not kernel.ReadConsoleOutputCharacterW(console, output, 255, 0, ctypes.byref(count)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        if title.value == "Frontier Console" and "Hello World" in output.value:
-            break
-        time.sleep(.1)
-    else:
-        raise AssertionError(f"Unexpected console: {title.value!r}, {output.value!r}")
-    time.sleep(2)
-    assert p.poll() is None, "Console must remain open"
-finally:
-    if console is not None:
-        kernel.CloseHandle(console)
-    kernel.FreeConsole()
-    if p.poll() is None:
-        p.terminate()
-    p.wait(timeout=10)
+
+def check(package: Path) -> dict:
+    package = package.resolve()
+    env = {key: value for key, value in os.environ.items()
+           if key.upper() in {"SYSTEMROOT", "WINDIR", "TEMP", "TMP"}}
+    env["PATH"] = ""
+    commands = [
+        [str(package / "runtime/python.exe"), "-X", "utf8", "-c", "import yaml, fitz, hostrun.cli; print('business runtime ready')"],
+        [str(package / "runtime/node.exe"), str(package / "agent/dist/main.js"), "--check"],
+        [str(package / "agent/node_modules/@larksuite/cli/bin/lark-cli.exe"), "--version"],
+    ]
+    results = []
+    for command in commands:
+        proc = subprocess.run(command, cwd=package, env=env, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=30)
+        if proc.returncode:
+            raise RuntimeError(f"Runtime check failed: {command[0]}: {proc.stdout}\n{proc.stderr}")
+        results.append(proc.stdout.strip())
+    return {"ok": True, "checks": results, "live_model_tested": False, "live_feishu_tested": False}
+
+
+if __name__ == "__main__":
+    print(json.dumps(check(Path(sys.argv[1])), ensure_ascii=False))

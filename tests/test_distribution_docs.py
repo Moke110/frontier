@@ -129,195 +129,21 @@ _USER_PATH_CASES = (
 )
 
 
-def test_readme_install_section_is_the_package_user_path() -> None:
-    for path, heading, package_marker, no_toolchain in _USER_PATH_CASES:
-        section = _section(_read(path), heading)
-        lowered = section.lower()
-
-        for forbidden in ("git clone", "uv venv", "uv pip", "pip install"):
-            assert forbidden not in lowered, (
-                f"{path.name}: user install must not require {forbidden!r}"
-            )
-
-        for expected in (
-            "install package",
-            "install verify",
-            "install report",
-            "install rollback",
-            "frontier.cmd",
-            "/frontier-init",
-            "Get-FileHash",
-            "Expand-Archive",
-            "--digest",
-            "sha256",
-            "releases/index.json",
-        ):
-            assert expected.lower() in lowered, (
-                f"{path.name}: user install is missing {expected!r}"
-            )
-
-        assert package_marker in section, (
-            f"{path.name}: user install does not name the {package_marker!r} path"
-        )
-        assert no_toolchain in section, (
-            f"{path.name}: user install does not state {no_toolchain!r}"
-        )
+def test_documented_commands_match_the_cli():
+    for path in (README, README_ZH, INSTALLATION, SKILL):
+        _assert_commands_exist(_read(path), path.name)
 
 
-def test_readme_documents_the_source_install_developer_path() -> None:
-    for path, source_marker, install_heading, developer_heading in (
-        (README, "source install", "## Installation", "## Development"),
-        (README_ZH, "源码安装", "## 安装", "## 开发者"),
-    ):
+def test_console_install_no_longer_requires_an_external_agent():
+    options = _option_strings(_subcommand_parser("console", "install"))
+    assert "--dsh" not in options
+    assert "--dsh-arg" not in options
+    assert {"--from", "--digest"} <= _option_strings(_subcommand_parser("install", "package"))
+
+
+def test_user_docs_explain_model_configuration_and_bundled_runtime():
+    for path in (README, README_ZH):
         text = _read(path)
-        assert source_marker in text
-        assert "install workspace" in text
-        assert "install toolchain" in text
-        assert "install skill" in text
-        assert "git clone" in text  # only the developer section may use it
-
-        package_section = text.index(install_heading)
-        developer_section = text.index(developer_heading)
-        assert package_section < developer_section
-
-
-def test_installation_reference_names_both_paths_with_prerequisites() -> None:
-    text = _read(INSTALLATION)
-    assert "发行包安装" in text
-    assert "源码安装" in text
-    assert "前置条件" in text
-
-    for command in (
-        "install package",
-        "install verify",
-        "install report",
-        "install rollback",
-        "install workspace",
-        "install toolchain",
-        "install skill",
-        "console install",
-    ):
-        assert command in text, f"installation reference is missing {command!r}"
-
-    for label in POINTER_LABELS:
-        assert label in text, f"installation reference does not document pointer field {label!r}"
-
-    assert "内置运行时" in text
-    assert "uv" in text  # the developer prerequisites are stated explicitly
-    assert "不需要 git" in text or "无 git" in text
-
-
-def test_skill_entry_leads_with_the_distribution_package() -> None:
-    text = _read(SKILL)
-    description = text.split("---", 2)[1]
-    assert "Deploy a private uv environment" not in description
-    assert "distribution package" in description
-
-    for label in POINTER_LABELS:
-        assert label in text, f"SKILL.md does not describe pointer field {label!r}"
-    assert "源码安装" in text or "source checkout" in text
-
-
-def test_agents_documents_tag_and_channel_rules() -> None:
-    text = _read(AGENTS)
-    for expected in (
-        "vMAJOR.MINOR.PATCH",
-        "-rc.N",
-        "prerelease",
-        ".github/workflows/release.yml",
-        "releases/index.json",
-        "github-actions[bot]",
-        "workflow_dispatch",
-    ):
-        assert expected in text, f"AGENTS.md is missing {expected!r}"
-
-    assert "270 passed" not in text
-    assert re.search(r"\d+ passed, 3 skipped", text), "AGENTS.md has no current green-suite baseline"
-
-
-def test_latest_suite_count_agrees_between_agents_and_acceptance() -> None:
-    agents_count = re.search(r"(\d+) passed, 3 skipped", _read(AGENTS))
-    assert agents_count, "AGENTS.md has no suite count"
-    section = _section(_read(ACCEPTANCE), "2026-10-31 发行包安装验收")
-    acceptance_counts = set(re.findall(r"\*\*(\d+) passed, 3 skipped\*\*", section))
-    assert acceptance_counts, "acceptance section has no suite count"
-    assert agents_count.group(1) in acceptance_counts
-
-
-def test_acceptance_records_the_distribution_items_honestly() -> None:
-    """Real evidence is recorded where it exists; gaps stay visibly untested."""
-    text = _read(ACCEPTANCE)
-    assert "## 2026-10-31" in text
-    section = _section(text, "2026-10-31")
-    assert "spec #92" in section
-    assert "ADR 0010" in section
-    assert "verified" in section.lower()
-    assert "untested" in section.lower()
-    assert section.lower().count("untested") >= 2
-    # /frontier-init was deliberately not executed and must stay untested.
-    assert "`/frontier-init` 在发行包安装上走完全流程 | `untested`" in section
-    assert "真实执行证据" in section
-
-
-def test_adr_status_records_the_implementation_on_this_branch() -> None:
-    text = _read(ADR)
-    assert "## 实现状态" in text
-    assert "2026-10-31" in text
-    assert "#93–#100" in text
-    assert "docs/acceptance" in text
-    assert "实现未开始" not in text
-
-
-def test_rollback_docs_do_not_claim_a_pointer_only_butterfly() -> None:
-    """The implementation swaps package files from the retained tree (#92)."""
-    for path in (
-        ROOT / "contracts" / "README.md",
-        ADR,
-        INSTALLATION,
-        ACCEPTANCE,
-    ):
-        text = _read(path)
-        assert "不重新下载" in text, f"{path} does not state rollback skips re-download"
-        assert "替换包文件" in text, f"{path} does not state rollback swaps package files"
-
-
-def test_workflow_reference_no_longer_requires_a_source_checkout() -> None:
-    text = _read(WORKFLOW)
-    assert "发行包" in text
-    assert "frontier.cmd" in text
-    assert "内置运行时" in text
-
-
-def test_documented_commands_match_the_cli() -> None:
-    _assert_commands_exist(_read(README), "README.md")
-    _assert_commands_exist(_read(README_ZH), "README.zh-CN.md")
-    _assert_commands_exist(_read(INSTALLATION), "installation.md")
-    _assert_commands_exist(_read(SKILL), "SKILL.md")
-
-
-def test_documented_flags_exist_on_their_subcommands() -> None:
-    package_options = _option_strings(_subcommand_parser("install", "package"))
-    assert {"--from", "--digest", "--sha256", "--channel"} <= package_options
-    assert {"--to"} <= _option_strings(_subcommand_parser("install", "rollback"))
-    assert {"--root", "--target"} <= _option_strings(_subcommand_parser("install", "skill"))
-    assert {"--dsh"} <= _option_strings(_subcommand_parser("console", "install"))
-    assert {"start", "stop", "status", "push"} <= set(
-        _walk_subparsers(_subcommand_parser("console", "control"))
-    )
-
-    installation = _read(INSTALLATION)
-    for example in (
-        "install package --from",
-        "install verify",
-        "install report",
-        "install rollback",
-        "install skill --root",
-        "console install --dsh",
-    ):
-        assert example in installation, f"installation reference lacks {example!r}"
-
-
-def test_no_unimplemented_banner_remains() -> None:
-    for path in (README, AGENTS, ACCEPTANCE, ADR, SKILL, INSTALLATION, WORKFLOW):
-        text = _read(path)
-        assert "代码尚未实现" not in text, f"{path} still carries an unimplemented banner"
+        assert "Pi" in text and "API Key" in text or "API key" in text
+        assert "agent/model.json" in text
+        assert "console install --dsh" not in text

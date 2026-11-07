@@ -97,6 +97,7 @@ UNKNOWN_COMMIT = "unknown"
 # these can ship: an unknown directory is treated as development-only rather
 # than silently copied, so local scratch cannot leak into a release.
 PACKAGED_DIRS = (
+    "agent",
     "archive",
     "contracts",
     "docs",
@@ -256,9 +257,14 @@ def _source_relpaths(source: Path, out: Path | None) -> tuple[list[Path], dict[s
                     kept.append(name)
                 dirnames[:] = kept
                 for name in sorted(filenames):
-                    if _nested_exclusion(name):
-                        continue
                     candidate = current / name
+                    # Pi imports its catalog manifest at runtime. Keep this exact
+                    # dependency asset while still excluding private dotfiles.
+                    pi_catalog = candidate.relative_to(source).as_posix() == (
+                        "agent/node_modules/@earendil-works/pi-ai/dist/providers/data/.manifest.json"
+                    )
+                    if _nested_exclusion(name) and not pi_catalog:
+                        continue
                     if candidate.is_symlink() or not candidate.is_file():
                         continue
                     files.append(candidate.relative_to(source))
@@ -497,6 +503,12 @@ def build(
     if not source_path.is_dir():
         raise BuildError(f"source tree is not a directory: {source_path}")
     runtime_path = _validate_runtime_dir(runtime_dir) if runtime_dir is not None else None
+    if (source_path / "agent" / "package.json").is_file():
+        for required in ("agent/dist/main.js", "agent/node_modules/@earendil-works/pi-coding-agent/package.json"):
+            if not (source_path / required).is_file():
+                raise BuildError(f"bundled Pi agent is not built: {required}; run npm ci and npm run build in agent/")
+        if runtime_path is not None and not (runtime_path / "node.exe").is_file():
+            raise BuildError("runtime/node.exe is required for the bundled Pi agent")
 
     package_name = f"frontier-{version}-{channel}"
     package_dir = out_path / package_name

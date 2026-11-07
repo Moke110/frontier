@@ -54,29 +54,10 @@ def test_console_control_actions_are_parsed_after_the_location_flags():
 
 
 def test_console_install_flags_are_parsed():
-    parser = cli.build_parser()
-
-    args = parser.parse_args(
-        cli._normalize(
-            [
-                "console",
-                "install",
-                "--dsh",
-                "D:/dsh.cmd",
-                "--python",
-                "P",
-                "--dsh-arg=--patch",
-                "--dsh-arg",
-                "C:/overlay.yml",
-            ]
-        )
-    )
-
-    assert args.cmd == "console"
-    assert args.action == "install"
-    assert args.dsh == "D:/dsh.cmd"
+    args = cli.build_parser().parse_args(["console", "install", "--python", "P"])
     assert args.python_path == "P"
-    assert args.dsh_args == ["--patch", "C:/overlay.yml"]
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["console", "install", "--dsh", "legacy"])
 
 
 @pytest.mark.parametrize("command", ["listener", "smoke", "cleanup", "schedules"])
@@ -93,127 +74,26 @@ def test_run_rejects_the_retired_listener_check_intent():
 
 
 # ---------------------------------------------------------- console install
-def test_console_install_records_dsh_writes_the_launcher_and_starts_nothing(
-    tmp_path, capsys
-):
+def test_console_install_uses_bundled_agent_without_starting_it(tmp_path, capsys):
     home = _home(tmp_path)
-    dsh = _dsh_file(tmp_path)
-
-    code = cli.main(
-        [*cli_locations(home), "console", "install", "--dsh", str(dsh)]
-    )
-
+    (home.parent / "agent/dist").mkdir(parents=True)
+    (home.parent / "agent/dist/main.js").write_text("")
+    (home.parent / "runtime").mkdir()
+    (home.parent / "runtime/node.exe").write_text("")
+    assert cli.main([*cli_locations(home), "console", "install"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert code == 0
-    assert payload["ok"] is True
-    assert payload["status"] == "ok"
-    assert payload["dsh"] == str(dsh)
+    assert payload["agent"]["ok"]
     assert payload["processes_started"] is False
-    script = home.parent / "bin" / "frontier-console.cmd"
-    assert script.is_file()
-    assert script.read_text(encoding="utf-8").splitlines()[0] == "title frontier-console"
-    config = load_config(home)
-    assert config["paths"]["dsh"] == str(dsh)
+    assert (home.parent / "bin/frontier-console.cmd").is_file()
+    assert load_config(home)["host"]["mode"] == "embedded-pi"
 
 
-def test_console_install_records_the_agent_run_overlay(tmp_path, capsys):
+def test_console_install_reports_missing_bundled_agent(tmp_path, capsys):
     home = _home(tmp_path)
-    dsh = _dsh_file(tmp_path)
-
-    code = cli.main(
-        [
-            *cli_locations(home),
-            "console",
-            "install",
-            "--dsh",
-            str(dsh),
-            "--dsh-arg=--patch",
-            "--dsh-arg",
-            "C:/overlay.yml",
-        ]
-    )
-
-    assert code == 0
+    assert cli.main([*cli_locations(home), "console", "install"]) == 1
     payload = json.loads(capsys.readouterr().out)
-    assert payload["dsh_args"] == ["--patch", "C:/overlay.yml"]
-    assert load_config(home)["agent_run"]["dsh_args"] == ["--patch", "C:/overlay.yml"]
-
-
-def test_console_install_blocks_without_dsh_but_still_writes_the_launcher(
-    tmp_path, capsys
-):
-    home = _home(tmp_path)
-
-    code = cli.main([*cli_locations(home), "console", "install"])
-
-    payload = json.loads(capsys.readouterr().out)
-    assert code == 1
-    assert payload["ok"] is False
-    assert payload["status"] == "blocked"
-    assert "paths.dsh" in payload["note"]
-    assert "console install --dsh" in payload["note"]
-    assert (home.parent / "bin" / "frontier-console.cmd").is_file()
-    assert load_config(home)["paths"]["dsh"] == ""
-
-
-def test_console_install_blocks_on_a_relative_or_missing_dsh(tmp_path, capsys):
-    home = _home(tmp_path)
-
-    relative = cli.main(
-        [*cli_locations(home), "console", "install", "--dsh", "tools/dsh.cmd"]
-    )
-    payload = json.loads(capsys.readouterr().out)
-    assert relative == 1
-    assert "不是绝对路径" in payload["note"]
-
-    missing = cli.main(
-        [
-            *cli_locations(home),
-            "console",
-            "install",
-            "--dsh",
-            str(tmp_path / "tools" / "gone.cmd"),
-        ]
-    )
-    payload = json.loads(capsys.readouterr().out)
-    assert missing == 1
-    assert "不存在" in payload["note"]
-
-
-def test_console_install_rejects_an_empty_overlay(tmp_path, capsys):
-    home = _home(tmp_path)
-    dsh = _dsh_file(tmp_path)
-
-    code = cli.main(
-        [
-            *cli_locations(home),
-            "console",
-            "install",
-            "--dsh",
-            str(dsh),
-            "--dsh-arg",
-            " ",
-        ]
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert code == 1
-    assert payload["dsh_args"] == []
-    assert "dsh_args 为空" in payload["note"]
-
-
-def test_console_install_reuses_the_recorded_dsh(tmp_path, capsys):
-    home = _home(tmp_path)
-    dsh = _dsh_file(tmp_path)
-    from hostrun.base import update_config
-
-    update_config(home, paths={"dsh": str(dsh)})
-
-    code = cli.main([*cli_locations(home), "console", "install"])
-
-    payload = json.loads(capsys.readouterr().out)
-    assert code == 0
-    assert payload["dsh"] == str(dsh)
+    assert "Agent" in payload["note"]
+    assert (home.parent / "bin/frontier-console.cmd").is_file()
 
 
 # ------------------------------------------------------------------- serve

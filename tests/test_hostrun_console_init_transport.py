@@ -66,7 +66,7 @@ def make_home(tmp_path: Path):
         "archive",
         {"path": str(tmp_path / "frontier-archive"), "default": True, "outside_code": True},
     )
-    console_init.record_step(home, "agent", {"dsh": str(dsh), "profile": "headless"})
+    console_init.record_step(home, "agent", {"runtime": "frontier-pi", "provider": "test", "model": "test"})
     console_init.record_step(home, "lark", {"cli": {"path": str(cli), "source": "recorded"}})
     record_completion_steps(home)
     console.write_state(home, service="paused", paused=True)

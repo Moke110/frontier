@@ -8,7 +8,7 @@
     python -m hostrun.cli feedback setup|sync|status|submit|process|rebuild|correct
     python -m hostrun.cli run --intent daily|feedback|maintenance [--finish ok|error]
     python -m hostrun.cli console control start|stop|status|push
-    python -m hostrun.cli console install --dsh <absolute dsh>
+    python -m hostrun.cli console install
     python -m hostrun.cli console            # resident foreground console
     python -m hostrun.cli audit run|streak
     python -m hostrun.cli executor status|handover
@@ -295,23 +295,8 @@ def build_parser() -> argparse.ArgumentParser:
             default=2.0,
             help="seconds to wait for the console to consume the request (default 2)",
         )
-    inst = csub.add_parser(
-        "install",
-        help="record dsh/overlay and write the fixed console launcher (no process is started)",
-    )
-    inst.add_argument("--dsh", help="absolute dsh path the Console's agent runs use")
-    inst.add_argument("--python", dest="python_path", help="recorded private interpreter")
-    inst.add_argument(
-        "--dsh-arg",
-        dest="dsh_args",
-        action="append",
-        default=None,
-        metavar="ARG",
-        help=(
-            "extra argv for an Agent run, inserted before the task text "
-            "(repeat per token, e.g. --dsh-arg --patch --dsh-arg <overlay.yml>)"
-        ),
-    )
+    inst = csub.add_parser("install", help="prepare the bundled Frontier Agent and console launcher")
+    inst.add_argument("--python", dest="python_path", help="private business interpreter")
     sub.add_parser("status", help="one snapshot of executor, queue, feedback and install")
     return parser
 
@@ -428,9 +413,7 @@ def _dispatch(args, root: Path, offline: bool, resolved: dict | None = None) -> 
             payload = console_mod.install(
                 root,
                 resolved=resolved,
-                dsh=args.dsh,
                 python_path=args.python_path,
-                dsh_args=args.dsh_args,
             )
             return (0 if payload.get("ok") else 1), payload
         result = console_mod.serve(

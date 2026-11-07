@@ -170,87 +170,22 @@ def ensure_script(code: str | Path, archive: str | Path, python: str) -> dict:
     return {"ok": True, "path": str(path), "written": True, "title": WINDOW_TITLE}
 
 
-def install(
-    home: Path,
-    *,
-    resolved: dict,
-    dsh: str | None = None,
-    python_path: str | None = None,
-    dsh_args: list[str] | None = None,
-) -> dict:
-    """Record the Agent-run executable/overlay and write the fixed launcher.
-
-    This replaces the retired ``listener install``: the Console has no start/stop
-    scripts of its own (a double-click and ``console control`` cover it), but a
-    fresh installation still has to record the absolute ``dsh`` path and the
-    credential overlay an Agent run uses (ADR 0009 §10).  No process is started.
-    """
-    home = Path(home)
-    code = Path(resolved["code"])
-    archive = Path(resolved["archive"])
-    config = load_config(home)
-    problems: list[str] = []
-
-    recorded = str(
-        dsh if dsh is not None else ((config.get("paths") or {}).get("dsh") or "")
-    ).strip()
-    recorded_dsh = ""
-    if not recorded:
-        problems.append("paths.dsh 未记录")
-    else:
-        path = Path(recorded).expanduser()
-        if not path.is_absolute():
-            problems.append(f"paths.dsh 不是绝对路径：{recorded}")
-        elif not path.is_file():
-            problems.append(f"paths.dsh 指向的文件不存在：{path}")
-        else:
-            recorded_dsh = str(path)
-            update_config(home, paths={"dsh": recorded_dsh})
-
-    agent_run = config.get("agent_run") or {}
-    recorded_args = [str(arg) for arg in (agent_run.get("dsh_args") or [])]
-    args_problem = ""
-    if dsh_args is not None:
-        if isinstance(dsh_args, str) or not all(isinstance(arg, str) for arg in dsh_args):
-            args_problem = "dsh_args 必须是字符串列表"
-        else:
-            recorded_args = [arg for arg in dsh_args if arg.strip()]
-            if not recorded_args:
-                args_problem = "dsh_args 为空"
-    if dsh_args is not None and not args_problem:
-        update_config(home, agent_run={"dsh_args": recorded_args})
-
-    python = str(python_path or (config.get("paths") or {}).get("python") or sys.executable)
+def install(home: Path, *, resolved: dict, python_path: str | None = None) -> dict:
+    """Prepare the Frontier launcher and check the bundled Agent; no process starts."""
+    from hostrun import embedded_agent
+    code, archive = Path(resolved["code"]), Path(resolved["archive"])
+    python = str(python_path or sys.executable)
+    update_config(home, paths={"repo": str(code), "python": python},
+                  host={"product": "frontier", "mode": "embedded-pi"})
+    facts = embedded_agent.runtime(home, code=code)
     try:
         script = ensure_script(code, archive, python)
     except OSError as exc:
-        script = {"ok": False, "reason": "script_unwritable", "error": str(exc)}
-
-    status = "ok" if not problems and not args_problem and script.get("ok") else "blocked"
-    note_parts = list(problems)
-    if args_problem:
-        note_parts.append(args_problem)
-    if not script.get("ok"):
-        note_parts.append(
-            f"启动脚本写入失败：{script.get('error') or script.get('reason')}"
-        )
-    note = (
-        f"启动脚本：{script.get('path')}；记录的 dsh：{recorded_dsh or '未记录'}；未启动进程"
-        if status == "ok"
-        else "；".join(note_parts)
-        + f"；修复：python -m hostrun.cli --code \"{code}\" --archive \"{archive}\" "
-        'console install --dsh "<dsh 的绝对路径>"'
-    )
-    return {
-        "schema_version": 1,
-        "ok": status == "ok",
-        "status": status,
-        "note": note,
-        "dsh": recorded_dsh,
-        "dsh_args": recorded_args,
-        "script": script,
-        "processes_started": False,
-    }
+        script = {"ok": False, "error": str(exc)}
+    ok = facts["ok"] and script.get("ok", False)
+    return {"schema_version": 1, "ok": ok, "status": "ok" if ok else "blocked",
+            "note": "Frontier 内置 Pi Agent；首次启动时配置模型并绑定飞书" if ok else "；".join(facts["problems"] + [script.get("error", "")]),
+            "agent": facts, "script": script, "processes_started": False}
 
 
 # ------------------------------------------------------------------ state file

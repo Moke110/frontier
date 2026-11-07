@@ -182,7 +182,7 @@ def make_home(tmp_path: Path, *, recorded_cli: bool = True, service: str = "paus
     console_init.record_step(
         home, "archive", {"path": str(tmp_path / "frontier-archive"), "default": True, "outside_code": True}
     )
-    console_init.record_step(home, "agent", {"dsh": str(dsh), "profile": "headless"})
+    console_init.record_step(home, "agent", {"runtime": "frontier-pi", "provider": "test", "model": "test"})
     record_completion_steps(home)
     if service != "stopped":
         console.write_state(home, service=service, paused=service == "paused")

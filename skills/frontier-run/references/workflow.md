@@ -1,3 +1,10 @@
+# 内置 Agent 工具映射
+
+此工作流中的 `python -m MODULE ...` 使用 `frontier_cli` 工具调用：`module` 为 MODULE，
+`args` 为后面的参数列表，不经过 shell。所有中间任务和 outbox 路径使用运行时目录
+`.frontier/` 内的绝对路径；不得向程序源码目录写入产物。读取和写入 JSON 使用
+`read_file`、`write_file`。不要读取开发 AGENTS.md 或模型凭据。
+
 # frontier 检索、写作与知识更新参考
 
 由 [frontier 运行时入口](../SKILL.md) 按需加载的完整流程参考；命令以**代码目录**为工作目录执行。agent 负责**排序（editor）与写作（writer）**；脚本负责取数、校验、入队、落盘。所有知识库写入都经过 archive / `KnowledgeStore`，agent 不直接改存储。
@@ -299,7 +306,7 @@ python -m hostrun.cli --code <code> --archive <archive> feedback sync
 | 队列闸住 | `question_queue.cli status`，再 `retry` / `abandon` |
 | Bitable 写入部分成功（Phase 3） | 查 group journal，`retry` 从断点继续，不重复写 |
 | 取消「待复核」后检索仍不包含该卡片 | 等下一次 10 分钟 pull，或让控制台立即执行一次 `knowledge.cli pull` |
-| agent 运行没有产出 | 看 `/frontier-logs` 与 `<code>/.frontier/logs/agent-<run_id>.log`；确认记录里的 `dsh` 与 `--patch` overlay 有效 |
+| agent 运行没有产出 | 看 `/frontier-logs` 与 `<code>/.frontier/logs/agent-<run_id>.log`；确认内置 Pi 运行时与模型配置可用 |
 
 ## 10. 参考
 

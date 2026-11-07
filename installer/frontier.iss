@@ -4,6 +4,9 @@
 #ifndef NumericVersion
   #define NumericVersion "0.1.0.0"
 #endif
+#ifndef PackageDir
+  #error PackageDir must name a built Frontier distribution
+#endif
 [Setup]
 AppId={{FB7ABBA7-2DAB-43D9-8C17-7F164304E919}
 AppName=Frontier
@@ -22,11 +25,11 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 AppMutex=Local\FrontierConsoleRunning
-UninstallDisplayIcon={app}\Frontier.exe
+UninstallDisplayIcon={app}\runtime\python.exe
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 [Files]
-Source: "build\Frontier.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 [Icons]
-Name: "{userprograms}\Frontier"; Filename: "{app}\Frontier.exe"
-Name: "{userdesktop}\Frontier"; Filename: "{app}\Frontier.exe"; Tasks: desktopicon
+Name: "{userprograms}\Frontier"; Filename: "{app}\runtime\python.exe"; Parameters: "-X utf8 -m hostrun.cli --code ""{app}"" console"; WorkingDir: "{app}"
+Name: "{userdesktop}\Frontier"; Filename: "{app}\runtime\python.exe"; Parameters: "-X utf8 -m hostrun.cli --code ""{app}"" console"; WorkingDir: "{app}"; Tasks: desktopicon

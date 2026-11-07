@@ -1023,7 +1023,6 @@ def test_workflow_runs_the_package_install_smoke_after_building_it():
         "--zip",
         "--code",
         "--archive",
-        "--dsh",
         "--skills-target",
         "--check-wrapper",
         "install-smoke",

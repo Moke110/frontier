@@ -8,9 +8,8 @@ Console.  This module delivers the seven ADR §7 steps:
    A directory outside the code directory is accepted only after a real
    create/delete write probe, and a failed probe tells the user to restart the
    Console with full permissions while keeping progress.
-2. **executing agent** — show the recorded absolute ``dsh`` path, its ``--patch``
-   credential overlay and the authorization scope, and continue only after the
-   user confirms.
+2. **model configuration** — use Frontier's bundled Pi Agent; collect the
+   provider, model and API key locally, preserving existing Feishu setup.
 3. **Lark CLI** — the three-level detection of ADR 0009 §7: an already
    configured, working CLI is reused (ADR 0007); a CLI installed elsewhere is
    adopted only after an explicit confirmation, and a missing one is privately
@@ -78,7 +77,7 @@ from pathlib import Path
 from common import RUNTIME_DIRNAME, ensure_dir, now, read_json, write_json
 from hostrun import console_gate, console_service, facilities as facilities_mod
 from hostrun import lark, layout
-from hostrun.base import HostRunError, dsh_bin, load_config, update_config
+from hostrun.base import HostRunError, load_config, update_config
 
 #: ``layout`` already declares ``install/initial`` as the code-directory
 #: initialization-state category (#76); the console's step state is one file in
@@ -189,6 +188,10 @@ def read_state(home: Path) -> dict:
         state.update(stored)
     if not isinstance(state.get("steps"), dict):
         state["steps"] = {}
+    previous = (state["steps"].get("agent") or {}).get("value") or {}
+    if "dsh" in previous and previous.get("runtime") != "frontier-pi":
+        state["steps"].pop("agent", None)
+        state["complete"] = False
     return state
 
 
@@ -378,80 +381,37 @@ def _step_archive(home, code: Path, default: Path, *, reader, out, pick_folder, 
 
 
 def agent_facts(home: Path, *, code: Path, archive: Path) -> dict:
-    """The executing agent, its credential overlay and its authorization scope."""
-    home = Path(home)
-    config = load_config(home)
-    paths = config.get("paths") or {}
-    recorded = str(paths.get("dsh") or "").strip()
-    usable = dsh_bin(home)
-    dsh_args = [str(arg) for arg in ((config.get("agent_run") or {}).get("dsh_args") or ())]
-    patch = ""
-    for index, arg in enumerate(dsh_args):
-        if arg == "--patch" and index + 1 < len(dsh_args):
-            patch = str(dsh_args[index + 1])
-            break
-    permissions = config.get("permissions") or {}
-    host_scope = [str(item) for item in (permissions.get("host_scope") or ())]
-    lark_scope = [str(item) for item in (permissions.get("scope") or ())]
-    return {
-        "profile": "headless",
-        "dsh": usable,
-        "recorded_dsh": recorded,
-        "usable": bool(usable),
-        "dsh_args": dsh_args,
-        "patch": patch,
-        "patch_exists": bool(patch) and Path(patch).expanduser().is_file(),
-        "host_scope": host_scope,
-        "lark_scope": lark_scope,
-        "cwd": str(code),
-        "archive": str(archive),
-    }
+    from hostrun import embedded_agent
+    facts = embedded_agent.runtime(home, code=code)
+    return {**facts, "usable": facts["ok"], "cwd": str(code), "archive": str(archive),
+            "runtime": "frontier-pi"}
 
 
 def _step_agent(home: Path, *, code: Path, archive: Path, reader, out) -> dict:
+    from hostrun import embedded_agent
+    import getpass
     facts = agent_facts(home, code=code, archive=archive)
-    _say(out, "步骤 2/7：确认执行 Agent（v1 只有 DeepSeek Harness 适配器）")
-    if facts["usable"]:
-        _say(out, f"执行文件：{facts['dsh']}")
-    else:
-        recorded = facts["recorded_dsh"] or "（未记录）"
-        _say(out, f"执行文件：{recorded}（不可用：未记录或文件不存在）")
-    if facts["patch"]:
-        state_text = "存在" if facts["patch_exists"] else "不存在"
-        _say(out, f"凭据补丁：{facts['patch']}（{state_text}）")
-    else:
-        _say(out, "凭据补丁：未记录 --patch 覆盖层（headless profile 可能没有账号凭据）")
-    _say(out, f"运行方式：dsh --profile {facts['profile']} --json（任务作为最后一个位置参数）")
-    _say(out, f"工作目录：{facts['cwd']}")
-    scope = "、".join(facts["host_scope"]) if facts["host_scope"] else "（安装记录未写入宿主授权范围）"
-    _say(out, f"授权范围（宿主）：{scope}")
-    lark_scope = (
-        "、".join(facts["lark_scope"]) if facts["lark_scope"] else "（安装记录未写入飞书授权范围）"
-    )
-    _say(out, f"授权范围（飞书）：{lark_scope}")
-    _say(out, "边界：只读写代码目录的运行时区与资料目录的 originals/pushes，不修改 frontier 程序本身。")
-
+    _say(out, "步骤 2/7：配置 Frontier 内置 Agent 的模型服务")
     if not facts["usable"]:
-        return {
-            "ok": False,
-            "reason": "dsh_missing",
-            "text": (
-                "执行 Agent 不可用：paths.dsh 未记录、不是绝对路径或文件不存在。"
-                "请先完成安装探针（记录 dsh 绝对路径）后再运行 /frontier-init。"
-            ),
-            "facts": facts,
-        }
-
-    answer = _ask(reader, out, "确认使用该执行 Agent？[Y] 确认（回车）/ [N] 取消：")
+        _say(out, "内置 Agent 不可用：" + "；".join(facts["problems"]))
+        return {"ok": False, "reason": "agent_unavailable", "text": "；".join(facts["problems"]), "facts": facts}
+    if not facts["configured"]:
+        provider = _ask(reader, out, "模型服务标识（例如 deepseek / anthropic / openai）：").strip()
+        model = _ask(reader, out, "模型名称：").strip()
+        base_url = _ask(reader, out, "OpenAI 兼容接口地址（使用内置服务时留空）：").strip()
+        _say(out, "API Key 仅保存在本机 .frontier/agent/model.json，请保护此文件；不会写入运行日志。")
+        key = getpass.getpass("模型 API Key（隐藏输入）：") if sys.stdin.isatty() else _ask(reader, out, "模型 API Key：")
+        try:
+            embedded_agent.configure(home, provider=provider, model=model, api_key=key, base_url=base_url)
+        except HostRunError as exc:
+            return {"ok": False, "reason": "model_config_invalid", "text": str(exc)}
+        facts = agent_facts(home, code=code, archive=archive)
+    _say(out, f"内置 Pi Agent：{facts['provider']} / {facts['model']}")
+    answer = _ask(reader, out, "确认使用此模型配置？[Y] 确认（回车）/ [N] 取消：")
     if answer.lower() not in ("", "y", "yes"):
-        return {
-            "ok": False,
-            "reason": "declined",
-            "text": "已取消执行 Agent 确认；完成的步骤已保留，可再次运行 /frontier-init。",
-            "facts": facts,
-        }
+        return {"ok": False, "reason": "declined", "text": "已取消模型配置确认；完成的步骤已保留。", "facts": facts}
     record_step(home, "agent", facts)
-    _say(out, "[完成] 执行 Agent 已确认。")
+    _say(out, "[完成] 内置 Agent 模型已确认。")
     return {"ok": True, "facts": facts}
 
 
@@ -1753,7 +1713,7 @@ def _completed_line(step_id: str, value: dict) -> str:
         suffix = "（默认）" if value.get("default") else ""
         return f"{value.get('path') or '未知'}{suffix}"
     if step_id == "agent":
-        return f"{value.get('dsh') or '未记录'}（profile {value.get('profile') or 'headless'}）"
+        return f"内置 Pi：{value.get('provider', '')} / {value.get('model', '')}"
     if step_id == "lark":
         cli = value.get("cli") or {}
         identity = value.get("identity") or {}
