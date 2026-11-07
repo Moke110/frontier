@@ -400,7 +400,7 @@ def _step_agent(home: Path, *, code: Path, archive: Path, reader, out) -> dict:
         model = _ask(reader, out, "模型名称：").strip()
         base_url = _ask(reader, out, "OpenAI 兼容接口地址（使用内置服务时留空）：").strip()
         _say(out, "API Key 仅保存在本机 .frontier/agent/model.json，请保护此文件；不会写入运行日志。")
-        key = getpass.getpass("模型 API Key（隐藏输入）：") if sys.stdin.isatty() else _ask(reader, out, "模型 API Key：")
+        key = getpass.getpass("模型 API Key（隐藏输入）：") if sys.stdin is not None and sys.stdin.isatty() else _ask(reader, out, "模型 API Key：")
         try:
             embedded_agent.configure(home, provider=provider, model=model, api_key=key, base_url=base_url)
         except HostRunError as exc:
