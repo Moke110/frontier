@@ -41,3 +41,18 @@ def test_console_answers_and_close():
     import pytest
     with pytest.raises(EOFError):
         app.read()
+
+
+def test_activation_restores_hidden_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(Desktop, 'run_console', lambda self: None)
+    root = tk.Tk()
+    root.withdraw()
+    app = Desktop(root, {'runtime': str(tmp_path), 'code': str(tmp_path), 'archive': str(tmp_path / 'archive')})
+    try:
+        app.activation.touch()
+        app.poll()
+        root.update()
+        assert not app.activation.exists()
+        assert root.state() == 'normal'
+    finally:
+        root.destroy()
