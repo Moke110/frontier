@@ -6,3 +6,5 @@ Validation: 49 focused tests passed, including native Tk widget creation, sessio
 
 Live acceptance remains pending: automated window inventory did not expose the launched Frontier window. Actual model-provider conversation and interactive Feishu workflows were not exercised. Do not interpret source deployment or focused tests as live acceptance.
 
+
+Startup recovery: removed the two confirmed desktop test processes left running on an inaccessible desktop. The Explorer-launched window was observed through Windows UI Automation as `Frontier — Research Agent`. Repeated launches now request deiconify/lift/focus via an activation file; a Tk regression test verifies restoration from a withdrawn window. Actual model-provider and Feishu acceptance remain pending.

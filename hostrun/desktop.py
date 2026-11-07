@@ -16,6 +16,7 @@ from hostrun import console, console_events, embedded_agent, layout
 class Desktop:
     def __init__(self, root, resolved):
         self.root, self.resolved = root, resolved
+        self.activation = Path(resolved['runtime']) / 'desktop.activate'
         self.home = Path(resolved['runtime'])
         self.events, self.answers = queue.Queue(), queue.Queue()
         self.closed = False
@@ -231,6 +232,13 @@ class Desktop:
             self.events.put(('console_done', None))
 
     def poll(self):
+        if self.activation.exists():
+            self.activation.unlink(missing_ok=True)
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes('-topmost', True)
+            self.root.after(200, lambda: self.root.attributes('-topmost', False))
+            self.root.focus_force()
         for _ in range(250):
             try:
                 kind, data = self.events.get_nowait()
@@ -287,10 +295,12 @@ def main():
     with file_lock(Path(resolved['runtime']) / 'desktop.lock', blocking=False) as acquired:
         if not acquired:
             root.withdraw()
-            messagebox.showinfo('Frontier', 'Frontier 桌面已在运行。', parent=root)
+            (Path(resolved['runtime']) / 'desktop.activate').touch()
             root.destroy()
             return
         Desktop(root, resolved)
+        root.deiconify()
+        root.lift()
         root.mainloop()
 
 
