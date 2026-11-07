@@ -14,3 +14,5 @@ node_modules/
 /agent/dist/
 .pytest-pi-*/
 /.build-pi/
+
+/Frontier.lnk

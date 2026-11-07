@@ -14,10 +14,6 @@ goto failed
 :ready
 cd /d "%FRONTIER_CODE%"
 if not "%~1"=="" goto command
-"%FRONTIER_PYTHON%" -X utf8 -m hostrun.cli --code "%FRONTIER_CODE%" --archive "%FRONTIER_ARCHIVE%" console install
-if errorlevel 1 goto failed
-"%FRONTIER_PYTHON%" -c "import tkinter"
-if errorlevel 1 goto failed
 start "Frontier" "%FRONTIER_PYTHON:python.exe=pythonw.exe%" -X utf8 -m hostrun.desktop --code "%FRONTIER_CODE%" --archive "%FRONTIER_ARCHIVE%"
 exit /b 0
 :command

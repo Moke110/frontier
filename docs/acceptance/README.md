@@ -8,3 +8,11 @@ Live acceptance remains pending: automated window inventory did not expose the l
 
 
 Startup recovery: removed the two confirmed desktop test processes left running on an inaccessible desktop. The Explorer-launched window was observed through Windows UI Automation as `Frontier — Research Agent`. Repeated launches now request deiconify/lift/focus via an activation file; a Tk regression test verifies restoration from a withdrawn window. Actual model-provider and Feishu acceptance remain pending.
+
+## Windows desktop process lifecycle — 2026-11-07
+
+- Terminated the identified pre-existing Frontier GUI tree (34728 / 36608 and children), plus all diagnostic GUI instances created during this change.
+- Installed local Frontier.lnk entries in checkout, parent folder and current-user Start Menu. They target pythonw directly, with no shell wrapper. No global security policy was changed; file-level Unblock-File applied only to launcher/runtime targets.
+- 52 focused tests passed: desktop, real Windows normal/forced job cleanup, child GetConsoleWindow == 0, Console, initialization and embedded Agent. Pytest cache emitted one permissions warning.
+- Interactive desktop shortcut launch/close acceptance remains pending: Explorer automation had unreliable focus; no successful visible GUI launch was observed in this verification. Do not treat process startup alone as visible GUI acceptance.
+- Native .cmd is retained for CLI compatibility and may flash its own console; the supported zero-console entry is Frontier.lnk / Start Menu Frontier.

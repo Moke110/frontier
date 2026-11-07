@@ -31,3 +31,9 @@ Modules:
   ``audit``       existing-data reconciliation against the migration baseline
   ``release``     release tags/channels, the release index and artifact checks (CI)
 """
+
+# Propagate the desktop no-console policy to Python command workers.
+import os as _os
+if _os.environ.get('FRONTIER_DESKTOP') == '1':
+    from hostrun.desktop_processes import hide_children as _hide_children
+    _hide_children()
